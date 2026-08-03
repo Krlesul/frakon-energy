@@ -1,0 +1,23 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Přidat FRAKON Energy",
+        "description": "Vyberte zdroj energetických dat.",
+        "data": {
+          "provider": "Poskytovatel"
+        }
+      },
+      "visionq": {
+        "title": "VisionQ",
+        "description": "{note}",
+        "data": {
+          "account_email": "E-mail účtu VisionQ"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "Tento účet je již nakonfigurován."
+    }
+  }
+}
