@@ -23,12 +23,15 @@ declare global {
   }
 }
 
+type ScheduleItem = { start: string; end: string; tariff: "NT" | "VT" };
+
 export type DashboardState = {
   connected: boolean;
   tariff: "NT" | "VT" | "?";
   countdownSeconds: number | null;
   nextChange: string | null;
-  todaySchedule: Array<{ start: string; end: string; tariff: "NT" | "VT" }>;
+  todaySchedule: ScheduleItem[];
+  tomorrowSchedule: ScheduleItem[];
   currentPrice: number | null;
   batteryPercent: number | null;
   highRateKwh: number | null;
@@ -47,6 +50,13 @@ const DEMO_STATE: DashboardState = {
     { start: "2026-08-04T15:25:00+02:00", end: "2026-08-04T21:35:00+02:00", tariff: "VT" },
     { start: "2026-08-04T21:35:00+02:00", end: "2026-08-04T23:50:00+02:00", tariff: "NT" },
   ],
+  tomorrowSchedule: [
+    { start: "2026-08-05T02:00:00+02:00", end: "2026-08-05T05:30:00+02:00", tariff: "NT" },
+    { start: "2026-08-05T05:30:00+02:00", end: "2026-08-05T13:10:00+02:00", tariff: "VT" },
+    { start: "2026-08-05T13:10:00+02:00", end: "2026-08-05T15:25:00+02:00", tariff: "NT" },
+    { start: "2026-08-05T15:25:00+02:00", end: "2026-08-05T21:35:00+02:00", tariff: "VT" },
+    { start: "2026-08-05T21:35:00+02:00", end: "2026-08-05T23:50:00+02:00", tariff: "NT" },
+  ],
   currentPrice: 4.673,
   batteryPercent: 53.1,
   highRateKwh: 327.124,
@@ -55,9 +65,7 @@ const DEMO_STATE: DashboardState = {
 
 function findState(hass: HomeAssistant, suffix: string): HassEntity | undefined {
   return Object.values(hass.states).find(
-    (entity) =>
-      entity.entity_id.startsWith("sensor.frakon_energy_") &&
-      entity.entity_id.endsWith(suffix),
+    (entity) => entity.entity_id.startsWith("sensor.frakon_energy_") && entity.entity_id.endsWith(suffix),
   );
 }
 
@@ -74,16 +82,40 @@ function parseCountdown(value: string | undefined): number | null {
   return Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]);
 }
 
-function parseSchedule(entity: HassEntity | undefined): DashboardState["todaySchedule"] {
-  const raw = entity?.attributes.schedule;
+function parseRawSchedule(raw: unknown): ScheduleItem[] {
   if (!Array.isArray(raw)) return [];
   return raw.flatMap((item) => {
     if (!item || typeof item !== "object") return [];
     const candidate = item as Record<string, unknown>;
     const tariff = String(candidate.tariff ?? "").toUpperCase();
-    if (tariff !== "NT" && tariff !== "VT") return [];
-    return [{ start: String(candidate.start), end: String(candidate.end), tariff }];
+    const start = String(candidate.start ?? "");
+    const end = String(candidate.end ?? "");
+    if ((tariff !== "NT" && tariff !== "VT") || !start || !end) return [];
+    return [{ start, end, tariff } as ScheduleItem];
   });
+}
+
+function sameLocalDate(value: string, target: Date): boolean {
+  const date = new Date(value);
+  return !Number.isNaN(date.getTime()) &&
+    date.getFullYear() === target.getFullYear() &&
+    date.getMonth() === target.getMonth() &&
+    date.getDate() === target.getDate();
+}
+
+function splitSchedule(entity: HassEntity | undefined): { today: ScheduleItem[]; tomorrow: ScheduleItem[] } {
+  const directToday = parseRawSchedule(entity?.attributes.today_schedule);
+  const directTomorrow = parseRawSchedule(entity?.attributes.tomorrow_schedule);
+  const all = parseRawSchedule(entity?.attributes.schedule);
+
+  const now = new Date();
+  const tomorrow = new Date(now);
+  tomorrow.setDate(now.getDate() + 1);
+
+  return {
+    today: directToday.length > 0 ? directToday : all.filter((item) => sameLocalDate(item.start, now)),
+    tomorrow: directTomorrow.length > 0 ? directTomorrow : all.filter((item) => sameLocalDate(item.start, tomorrow)),
+  };
 }
 
 function readDashboardState(hass?: HomeAssistant): DashboardState {
@@ -92,16 +124,12 @@ function readDashboardState(hass?: HomeAssistant): DashboardState {
   const tariffEntity = findState(hass, "_tariff");
   const countdownEntity = findState(hass, "_countdown");
   const nextSwitchEntity = findState(hass, "_next_switch");
-  const scheduleEntity = findState(hass, "_today_schedule");
+  const scheduleEntity = findState(hass, "_today_schedule") ?? findState(hass, "_schedule");
+  const schedules = splitSchedule(scheduleEntity);
 
-  const tariff = tariffEntity?.state === "NT" || tariffEntity?.state === "VT"
-    ? tariffEntity.state
-    : "?";
-
+  const tariff = tariffEntity?.state === "NT" || tariffEntity?.state === "VT" ? tariffEntity.state : "?";
   const nextTimestamp = nextSwitchEntity?.state;
-  const nextDate = nextTimestamp && !["unknown", "unavailable"].includes(nextTimestamp)
-    ? new Date(nextTimestamp)
-    : null;
+  const nextDate = nextTimestamp && !["unknown", "unavailable"].includes(nextTimestamp) ? new Date(nextTimestamp) : null;
 
   return {
     connected: true,
@@ -110,7 +138,8 @@ function readDashboardState(hass?: HomeAssistant): DashboardState {
     nextChange: nextDate && !Number.isNaN(nextDate.getTime())
       ? nextDate.toLocaleTimeString("cs-CZ", { hour: "2-digit", minute: "2-digit" })
       : null,
-    todaySchedule: parseSchedule(scheduleEntity),
+    todaySchedule: schedules.today,
+    tomorrowSchedule: schedules.tomorrow,
     currentPrice: numberState(findState(hass, "_current_price")),
     batteryPercent: numberState(findState(hass, "_battery_state")),
     highRateKwh: numberState(findState(hass, "_high_rate")),
@@ -146,7 +175,10 @@ export function useFrakonEnergyState(): DashboardState {
 
   useEffect(() => {
     if (localCountdown === null || localCountdown <= 0) return;
-    const timer = window.setTimeout(() => setLocalCountdown((value) => value === null ? null : Math.max(0, value - 1)), 1000);
+    const timer = window.setTimeout(
+      () => setLocalCountdown((value) => value === null ? null : Math.max(0, value - 1)),
+      1000,
+    );
     return () => window.clearTimeout(timer);
   }, [localCountdown]);
 
