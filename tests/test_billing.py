@@ -8,7 +8,25 @@ from custom_components.frakon_energy.billing import (
     BillingCalculator,
     BillingCycle,
     MeterBaseline,
+    next_default_settlement_date,
 )
+
+
+def test_default_settlement_date_is_31_january_same_year_when_upcoming():
+    assert next_default_settlement_date(date(2026, 1, 10)) == date(2026, 1, 31)
+
+
+def test_default_settlement_date_is_31_january_next_year_when_passed():
+    assert next_default_settlement_date(date(2026, 8, 4)) == date(2027, 1, 31)
+
+
+def test_billing_cycle_factory_uses_default_31_january():
+    baseline = MeterBaseline(date(2026, 1, 31), Decimal("100"), Decimal("200"))
+    cycle = BillingCycle.with_default_settlement_date(
+        start_date=date(2026, 2, 1),
+        baseline=baseline,
+    )
+    assert cycle.expected_settlement_date == date(2027, 1, 31)
 
 
 def test_billing_snapshot_with_5000_czk_monthly_advance():
