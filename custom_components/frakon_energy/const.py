@@ -15,6 +15,8 @@ CONF_HDO_DATA_VALID_ENTITY = "hdo_data_valid_entity"
 PROVIDER_VISIONQ = "visionq"
 PROVIDER_CEZ_HDO = "cez_hdo"
 
+EVENT_TARIFF_CHANGED = "frakon_energy_tariff_changed"
+
 DEFAULT_SCAN_INTERVAL = 1800
 MIN_SCAN_INTERVAL = 900
 MAX_SCAN_INTERVAL = 86400
