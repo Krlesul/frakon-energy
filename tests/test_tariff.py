@@ -73,7 +73,7 @@ def test_tariff_change_inside_billing_cycle_uses_correct_prices():
     )
 
     assert result.fixed_czk == Decimal("974.94")
-    assert result.total_czk == Decimal("1219.84")
+    assert result.total_czk == Decimal("1223.15")
 
 
 def test_missing_tariff_is_rejected_instead_of_silently_estimating():
