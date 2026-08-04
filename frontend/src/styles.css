@@ -20,7 +20,7 @@ h1 { font-size: 22px; letter-spacing: -.02em; }
 .online.demo { border-color: rgba(225,194,127,.28); background: rgba(225,194,127,.08); color: #e1c27f; }
 
 .hero-grid { display: grid; grid-template-columns: 1.15fr .85fr; gap: 18px; }
-.tariff-card, .balance-card, .metric, .chart-card { border: 1px solid rgba(255,255,255,.07); background: linear-gradient(180deg, rgba(26,34,46,.92), rgba(15,21,30,.94)); box-shadow: 0 24px 70px rgba(0,0,0,.25); }
+.tariff-card, .balance-card, .metric, .chart-card, .hdo-plan-card { border: 1px solid rgba(255,255,255,.07); background: linear-gradient(180deg, rgba(26,34,46,.92), rgba(15,21,30,.94)); box-shadow: 0 24px 70px rgba(0,0,0,.25); }
 .tariff-card, .balance-card { min-height: 315px; border-radius: 26px; padding: 28px; }
 .tariff-card { position: relative; overflow: hidden; }
 .tariff-card::after { content: ""; position: absolute; inset: auto -80px -100px auto; width: 280px; height: 280px; border-radius: 50%; filter: blur(10px); opacity: .25; }
@@ -51,6 +51,22 @@ h1 { font-size: 22px; letter-spacing: -.02em; }
 .progress span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #b88d46, #e1c27f); }
 .balance-row { display: flex; justify-content: space-between; padding: 12px 0; border-top: 1px solid rgba(255,255,255,.06); color: #9da8b8; font-size: 14px; }
 .balance-row b { color: #f4f7fb; }
+
+.hdo-plan-card { margin-top: 18px; border-radius: 24px; padding: 22px; }
+.hdo-plan-card__header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.hdo-plan-card__header h2 { margin-top: 6px; font-size: 20px; }
+.source-badge { padding: 7px 10px; border-radius: 999px; font-size: 11px; font-weight: 800; white-space: nowrap; }
+.source-badge.live { color: #65dda0; background: rgba(73,214,143,.08); border: 1px solid rgba(73,214,143,.22); }
+.source-badge.fallback { color: #e2c584; background: rgba(225,194,127,.08); border: 1px solid rgba(225,194,127,.22); }
+.hdo-table { display: grid; gap: 8px; margin-top: 18px; }
+.hdo-row { display: grid; grid-template-columns: 10px minmax(52px, auto) 58px 18px 58px minmax(0, 1fr); align-items: center; gap: 10px; min-height: 44px; padding: 0 13px; border-radius: 14px; background: rgba(255,255,255,.035); border: 1px solid rgba(255,255,255,.04); color: #98a4b5; }
+.hdo-row.active { background: linear-gradient(90deg, rgba(73,214,143,.13), rgba(73,214,143,.035)); border-color: rgba(73,214,143,.22); box-shadow: inset 0 0 0 1px rgba(73,214,143,.04); }
+.hdo-row__dot { width: 8px; height: 8px; border-radius: 50%; background: #4bd99a; box-shadow: 0 0 14px rgba(75,217,154,.45); }
+.hdo-row__label { font-size: 12px; font-weight: 800; color: #7f8b9d; }
+.hdo-row strong { color: #f4f7fb; font-size: 15px; font-variant-numeric: tabular-nums; }
+.hdo-row__arrow { color: #5f6d81; text-align: center; }
+.active-chip { justify-self: end; padding: 5px 8px; border-radius: 999px; background: rgba(73,214,143,.13); color: #67dfa3; font-size: 10px; font-weight: 900; text-transform: uppercase; letter-spacing: .06em; }
+.hdo-plan-note { margin-top: 14px; color: #738096; font-size: 11px; line-height: 1.55; }
 
 .metrics-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-top: 18px; }
 .metrics-grid.secondary { margin-top: 14px; }
@@ -87,6 +103,11 @@ h1 { font-size: 22px; letter-spacing: -.02em; }
   .tariff-card, .balance-card { min-height: auto; padding: 22px; border-radius: 22px; }
   .tariff-card h2 { font-size: 52px; }
   .countdown { font-size: 48px; }
+  .hdo-plan-card { padding: 18px; border-radius: 21px; }
+  .hdo-plan-card__header { align-items: flex-start; }
+  .hdo-row { grid-template-columns: 8px 1fr 52px 14px 52px; gap: 8px; padding: 0 10px; }
+  .hdo-row__label { display: none; }
+  .active-chip { grid-column: 2 / -1; justify-self: start; margin: -3px 0 7px; }
   .metrics-grid { gap: 9px; }
   .metric { padding: 16px; }
   .metric strong { font-size: 22px; }
