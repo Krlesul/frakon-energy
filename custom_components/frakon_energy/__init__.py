@@ -1,22 +1,29 @@
 from __future__ import annotations
 
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import DOMAIN
+from .coordinator import FrakonEnergyCoordinator
+from .providers.visionq import VisionQApiClient
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up FRAKON Energy from a config entry."""
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
-        "provider": entry.data.get("provider"),
-    }
+    client = VisionQApiClient(
+        async_get_clientsession(hass),
+        entry.data[CONF_USERNAME],
+        entry.data[CONF_PASSWORD],
+    )
+    coordinator = FrakonEnergyCoordinator(hass, entry, client)
+    await coordinator.async_config_entry_first_refresh()
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload a FRAKON Energy config entry."""
     unloaded = await hass.config_entries.async_unload_platforms(entry, ["sensor"])
     if unloaded:
         hass.data[DOMAIN].pop(entry.entry_id, None)
