@@ -10,14 +10,51 @@
       },
       "visionq": {
         "title": "VisionQ",
-        "description": "{note}",
+        "description": "Přihlaste se ke svému účtu VisionQ.",
         "data": {
-          "account_email": "E-mail účtu VisionQ"
+          "username": "E-mail účtu VisionQ",
+          "password": "Heslo VisionQ"
+        }
+      },
+      "device": {
+        "title": "Vyberte zařízení VisionQ",
+        "data": {
+          "eui": "Zařízení"
         }
       }
     },
+    "error": {
+      "invalid_auth": "Neplatné přihlašovací údaje.",
+      "cannot_connect": "K VisionQ se nepodařilo připojit.",
+      "no_devices_found": "Na účtu nebylo nalezeno žádné zařízení."
+    },
     "abort": {
-      "already_configured": "Tento účet je již nakonfigurován."
+      "already_configured": "Toto zařízení je již nakonfigurováno."
+    }
+  },
+  "options": {
+    "step": {
+      "billing": {
+        "title": "Vyúčtování a zálohy",
+        "description": "Nastavte počáteční odečet z minulého vyúčtování, nové zúčtovací období a měsíční zálohu. Výchozí termín odečtu je 31. ledna.",
+        "data": {
+          "billing_enabled": "Zapnout výpočet vyúčtování",
+          "billing_baseline_date": "Datum konečného odečtu předchozího vyúčtování",
+          "billing_baseline_vt_kwh": "Konečný stav VT předchozího vyúčtování",
+          "billing_baseline_nt_kwh": "Konečný stav NT předchozího vyúčtování",
+          "billing_cycle_start": "Začátek nového zúčtovacího období",
+          "billing_settlement_date": "Předpokládané datum dalšího vyúčtování",
+          "monthly_advance_czk": "Měsíční záloha",
+          "advance_valid_from": "Záloha platí od",
+          "advance_valid_to": "Záloha platí do"
+        }
+      }
+    },
+    "error": {
+      "baseline_after_cycle_start": "Počáteční odečet nemůže být po začátku nového období.",
+      "settlement_before_cycle_start": "Datum vyúčtování nemůže být před začátkem období.",
+      "advance_outside_cycle": "Platnost zálohy musí ležet uvnitř zúčtovacího období.",
+      "advance_end_before_start": "Konec platnosti zálohy nemůže být před jejím začátkem."
     }
   }
 }
