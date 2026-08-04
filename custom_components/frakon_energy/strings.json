@@ -9,15 +9,35 @@
         }
       },
       "visionq": {
-        "title": "VisionQ",
-        "description": "{note}",
+        "title": "VisionQ ElIoT",
+        "description": "Zadejte klasické přihlašovací údaje VisionQ.",
         "data": {
-          "account_email": "E-mail účtu VisionQ"
+          "username": "Uživatelské jméno",
+          "password": "Heslo"
+        }
+      },
+      "device": {
+        "title": "Vyberte zařízení VisionQ",
+        "data": {
+          "eui": "Zařízení"
+        }
+      },
+      "cez_hdo": {
+        "title": "Vyberte zdroj ČEZ HDO",
+        "description": "FRAKON Energy automaticky našel více HDO zařízení.",
+        "data": {
+          "hdo_source_id": "HDO zařízení"
         }
       }
     },
+    "error": {
+      "invalid_auth": "Přihlášení se nezdařilo.",
+      "cannot_connect": "K serveru se nelze připojit.",
+      "no_devices_found": "Nebyla nalezena žádná zařízení VisionQ."
+    },
     "abort": {
-      "already_configured": "Tento účet je již nakonfigurován."
+      "already_configured": "Tento zdroj je již nakonfigurován.",
+      "cez_hdo_not_found": "Nebyla nalezena podporovaná integrace ČEZ HDO se strukturovaným rozvrhem."
     }
   }
 }
