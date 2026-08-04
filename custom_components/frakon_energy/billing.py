@@ -6,6 +6,30 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Iterable
 
 MONEY_QUANT = Decimal("0.01")
+DEFAULT_SETTLEMENT_MONTH = 1
+DEFAULT_SETTLEMENT_DAY = 31
+
+
+def next_default_settlement_date(reference_date: date) -> date:
+    """Return the next default annual settlement date.
+
+    FRAKON Energy defaults to 31 January every year. If the reference date is
+    already past 31 January, the next settlement date is 31 January of the
+    following year. The user may override this value in the UI.
+    """
+
+    candidate = date(
+        reference_date.year,
+        DEFAULT_SETTLEMENT_MONTH,
+        DEFAULT_SETTLEMENT_DAY,
+    )
+    if candidate < reference_date:
+        candidate = date(
+            reference_date.year + 1,
+            DEFAULT_SETTLEMENT_MONTH,
+            DEFAULT_SETTLEMENT_DAY,
+        )
+    return candidate
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +64,21 @@ class BillingCycle:
             raise ValueError("Settlement date must not precede cycle start")
         if self.baseline.reading_date > self.start_date:
             raise ValueError("Baseline date must not be after cycle start")
+
+    @classmethod
+    def with_default_settlement_date(
+        cls,
+        *,
+        start_date: date,
+        baseline: MeterBaseline,
+    ) -> BillingCycle:
+        """Create a cycle using the default 31 January settlement date."""
+
+        return cls(
+            start_date=start_date,
+            expected_settlement_date=next_default_settlement_date(start_date),
+            baseline=baseline,
+        )
 
 
 @dataclass(frozen=True, slots=True)
