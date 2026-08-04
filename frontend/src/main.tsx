@@ -17,16 +17,8 @@ type ClockInterval = { start: string; end: string };
 type PlannedAction = { time: string; icon: string; label: string; detail?: string };
 
 const DEFAULT_NT_SCHEDULE = {
-  weekday: [
-    ["02:00", "05:30"],
-    ["13:10", "15:25"],
-    ["21:35", "23:50"],
-  ],
-  weekend: [
-    ["03:45", "06:55"],
-    ["14:45", "17:30"],
-    ["21:30", "23:35"],
-  ],
+  weekday: [["02:00", "05:30"], ["13:10", "15:25"], ["21:35", "23:50"]],
+  weekend: [["03:45", "06:55"], ["14:45", "17:30"], ["21:30", "23:35"]],
 } as const;
 
 const DEMO_ACTIONS: PlannedAction[] = [
@@ -38,12 +30,7 @@ const DEMO_ACTIONS: PlannedAction[] = [
 ];
 
 function Metric({ label, value, suffix }: { label: string; value: string | number; suffix?: string }) {
-  return (
-    <article className="metric">
-      <span>{label}</span>
-      <strong>{value}{suffix ? <small> {suffix}</small> : null}</strong>
-    </article>
-  );
+  return <article className="metric"><span>{label}</span><strong>{value}{suffix ? <small> {suffix}</small> : null}</strong></article>;
 }
 
 function scheduleDuration(start: string, end: string): number {
@@ -98,110 +85,56 @@ function TariffCard() {
   const state = useFrakonEnergyState();
   const low = state.tariff === "NT";
   const unknown = state.tariff === "?";
-
   return (
     <article className={`tariff-card ${low ? "low" : unknown ? "unknown" : "high"}`}>
-      <div className="tariff-card__top">
-        <div>
-          <span className="eyebrow">Aktuální tarif</span>
-          <h2>{state.tariff}</h2>
-        </div>
-        <span className="status-dot" aria-label={unknown ? "Tarif není dostupný" : low ? "Nízký tarif je aktivní" : "Vysoký tarif je aktivní"} />
-      </div>
+      <div className="tariff-card__top"><div><span className="eyebrow">Aktuální tarif</span><h2>{state.tariff}</h2></div><span className="status-dot" aria-label={unknown ? "Tarif není dostupný" : low ? "Nízký tarif je aktivní" : "Vysoký tarif je aktivní"} /></div>
       <div className="countdown-label">{unknown ? "Čekám na data HDO" : low ? "Vypnutí NT za" : "Zapnutí NT za"}</div>
       <div className="countdown" aria-live="polite">{formatCountdown(state.countdownSeconds)}</div>
-      <div className="next-change">
-        {state.nextChange ? `${low ? "NT skončí" : "NT začne"} ve ${state.nextChange}` : "Čas další změny není dostupný"}
-      </div>
+      <div className="next-change">{state.nextChange ? `${low ? "NT skončí" : "NT začne"} ve ${state.nextChange}` : "Čas další změny není dostupný"}</div>
       <div className="timeline" aria-label="Dnešní rozvrh HDO">
-        {state.todaySchedule.length > 0 ? state.todaySchedule.map((item, index) => (
-          <span key={`${item.start}-${index}`} className={item.tariff.toLowerCase()} style={{ flex: scheduleDuration(item.start, item.end) }} title={`${item.tariff} ${asTime(item.start)}–${asTime(item.end)}`} />
-        )) : <span className="timeline-empty">Rozvrh není dostupný</span>}
+        {state.todaySchedule.length > 0 ? state.todaySchedule.map((item, index) => <span key={`${item.start}-${index}`} className={item.tariff.toLowerCase()} style={{ flex: scheduleDuration(item.start, item.end) }} title={`${item.tariff} ${asTime(item.start)}–${asTime(item.end)}`} />) : <span className="timeline-empty">Rozvrh není dostupný</span>}
       </div>
-      {state.currentPrice !== null ? (
-        <div className="current-price">Aktuální cena <b>{state.currentPrice.toLocaleString("cs-CZ", { minimumFractionDigits: 3, maximumFractionDigits: 3 })} Kč/kWh</b></div>
-      ) : null}
+      {state.currentPrice !== null ? <div className="current-price">Aktuální cena <b>{state.currentPrice.toLocaleString("cs-CZ", { minimumFractionDigits: 3, maximumFractionDigits: 3 })} Kč/kWh</b></div> : null}
     </article>
   );
 }
 
 function IntervalRows({ intervals, live = false }: { intervals: (ClockInterval | ScheduleItem)[]; live?: boolean }) {
-  return (
-    <div className="hdo-table" role="table">
-      {intervals.map((item, index) => {
-        const start = live ? asTime((item as ScheduleItem).start) : item.start;
-        const end = live ? asTime((item as ScheduleItem).end) : item.end;
-        const active = live && isCurrentInterval(item as ScheduleItem);
-        return (
-          <div className={`hdo-row ${active ? "active" : ""}`} role="row" key={`${start}-${end}-${index}`}>
-            <span className="hdo-row__dot" aria-hidden="true" />
-            <span className="hdo-row__label">NT {index + 1}</span>
-            <strong>{start}</strong><span className="hdo-row__arrow">→</span><strong>{end}</strong>
-            <span className="hdo-duration">{formatDuration(start, end)}</span>
-            {active ? <span className="active-chip">Právě teď</span> : null}
-          </div>
-        );
-      })}
-    </div>
-  );
+  return <div className="hdo-table" role="table">{intervals.map((item, index) => {
+    const start = live ? asTime((item as ScheduleItem).start) : item.start;
+    const end = live ? asTime((item as ScheduleItem).end) : item.end;
+    const active = live && isCurrentInterval(item as ScheduleItem);
+    return <div className={`hdo-row ${active ? "active" : ""}`} role="row" key={`${start}-${end}-${index}`}><span className="hdo-row__dot" aria-hidden="true" /><span className="hdo-row__label">NT {index + 1}</span><strong>{start}</strong><span className="hdo-row__arrow">→</span><strong>{end}</strong><span className="hdo-duration">{formatDuration(start, end)}</span>{active ? <span className="active-chip">Právě teď</span> : null}</div>;
+  })}</div>;
 }
 
 function HdoScheduleCard() {
   const energy = useFrakonEnergyState();
-  const ntFromLiveData = energy.todaySchedule.filter((item) => item.tariff === "NT");
+  const todayLiveNt = energy.todaySchedule.filter((item) => item.tariff === "NT");
+  const tomorrowLiveNt = energy.tomorrowSchedule.filter((item) => item.tariff === "NT");
   const todayFallback = fallbackNtIntervals();
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  const tomorrowFallback = fallbackNtIntervals(tomorrow);
-  const usesLiveData = ntFromLiveData.length > 0;
-  const fullToday = buildFullDay(usesLiveData ? ntFromLiveData.map((item) => ({ start: asTime(item.start), end: asTime(item.end) })) : todayFallback);
+  const tomorrowDate = new Date();
+  tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+  const tomorrowFallback = fallbackNtIntervals(tomorrowDate);
+  const todayIsLive = todayLiveNt.length > 0;
+  const tomorrowIsLive = tomorrowLiveNt.length > 0;
+  const fullToday = buildFullDay(todayIsLive ? todayLiveNt.map((item) => ({ start: asTime(item.start), end: asTime(item.end) })) : todayFallback);
+  const sourceLabel = todayIsLive && tomorrowIsLive ? "Živý rozvrh dnes i zítra" : todayIsLive ? "Dnes živě, zítra záložně" : "Výchozí plán";
 
   return (
     <article className="hdo-plan-card">
-      <div className="hdo-plan-card__header">
-        <div><span className="eyebrow">HDO plán</span><h2>Nízký tarif dnes a zítra</h2></div>
-        <span className={`source-badge ${usesLiveData ? "live" : "fallback"}`}>{usesLiveData ? "Živý rozvrh" : "Výchozí plán"}</span>
-      </div>
-
+      <div className="hdo-plan-card__header"><div><span className="eyebrow">HDO plán</span><h2>Nízký tarif dnes a zítra</h2></div><span className={`source-badge ${todayIsLive ? "live" : "fallback"}`}>{sourceLabel}</span></div>
       <div className="hdo-days-grid">
-        <section>
-          <h3>Dnes</h3>
-          <IntervalRows intervals={usesLiveData ? ntFromLiveData : todayFallback} live={usesLiveData} />
-        </section>
-        <section>
-          <h3>Zítra</h3>
-          <IntervalRows intervals={tomorrowFallback} />
-        </section>
+        <section><h3>Dnes</h3><IntervalRows intervals={todayIsLive ? todayLiveNt : todayFallback} live={todayIsLive} /></section>
+        <section><h3>Zítra</h3><IntervalRows intervals={tomorrowIsLive ? tomorrowLiveNt : tomorrowFallback} live={tomorrowIsLive} /></section>
       </div>
-
       <details className="hdo-details">
         <summary>Dalších 24 hodin a plánované akce</summary>
         <div className="hdo-detail-grid">
-          <section className="sequence-card">
-            <span className="eyebrow">Tarifní sekvence</span>
-            <div className="sequence-list">
-              {fullToday.map((item, index) => (
-                <div className={`sequence-row ${item.tariff.toLowerCase()}`} key={`${item.start}-${index}`}>
-                  <span>{item.start}</span><b>{item.tariff}</b><span>{item.end}</span>
-                </div>
-              ))}
-            </div>
-          </section>
-          <section className="actions-card">
-            <span className="eyebrow">Plán domu</span>
-            <div className="action-list">
-              {DEMO_ACTIONS.map((action) => (
-                <div className="action-row" key={`${action.time}-${action.label}`}>
-                  <time>{action.time}</time><span className="action-icon">{action.icon}</span>
-                  <div><b>{action.label}</b>{action.detail ? <small>{action.detail}</small> : null}</div>
-                </div>
-              ))}
-            </div>
-            <p className="demo-note">Akce jsou zatím návrh rozhraní. Později se načtou z automatizací Home Assistantu a FRAKONu.</p>
-          </section>
+          <section className="sequence-card"><span className="eyebrow">Tarifní sekvence</span><div className="sequence-list">{fullToday.map((item, index) => <div className={`sequence-row ${item.tariff.toLowerCase()}`} key={`${item.start}-${index}`}><span>{item.start}</span><b>{item.tariff}</b><span>{item.end}</span></div>)}</div></section>
+          <section className="actions-card"><span className="eyebrow">Plán domu</span><div className="action-list">{DEMO_ACTIONS.map((action) => <div className="action-row" key={`${action.time}-${action.label}`}><time>{action.time}</time><span className="action-icon">{action.icon}</span><div><b>{action.label}</b>{action.detail ? <small>{action.detail}</small> : null}</div></div>)}</div><p className="demo-note">Akce jsou zatím návrh rozhraní. Později se načtou z automatizací Home Assistantu a FRAKONu.</p></section>
         </div>
       </details>
-
       <div className="hdo-plan-note">Pracovní dny: 02:00–05:30, 13:10–15:25, 21:35–23:50. Víkendy a státní svátky: 03:45–06:55, 14:45–17:30, 21:30–23:35.</div>
     </article>
   );
@@ -210,7 +143,6 @@ function HdoScheduleCard() {
 function App() {
   const energy = useFrakonEnergyState();
   const meterTotal = energy.highRateKwh !== null && energy.lowRateKwh !== null ? energy.highRateKwh + energy.lowRateKwh : null;
-
   return (
     <main className="app-shell">
       <header className="topbar"><div><span className="brand-mark">F</span><div><h1>FRAKON Energy</h1><p>Energetický přehled domu</p></div></div><span className={energy.connected ? "online" : "online demo"}>{energy.connected ? "Online" : "Demo režim"}</span></header>
