@@ -36,31 +36,39 @@ export type DashboardState = {
   batteryPercent: number | null;
   highRateKwh: number | null;
   lowRateKwh: number | null;
+  monthlyAdvanceCzk: number | null;
+  paidAdvancesCzk: number | null;
+  projectedAdvancesCzk: number | null;
+  accruedCostCzk: number | null;
+  currentBalanceCzk: number | null;
+  projectedBalanceCzk: number | null;
+  recommendedAdvanceCzk: number | null;
+  todayConsumptionKwh: number | null;
+  monthConsumptionKwh: number | null;
+  settlementDate: string | null;
 };
 
-const DEMO_STATE: DashboardState = {
+const EMPTY_STATE: DashboardState = {
   connected: false,
-  tariff: "NT",
-  countdownSeconds: 2 * 3600 + 17 * 60 + 43,
-  nextChange: "23:50",
-  todaySchedule: [
-    { start: "2026-08-04T02:00:00+02:00", end: "2026-08-04T05:30:00+02:00", tariff: "NT" },
-    { start: "2026-08-04T05:30:00+02:00", end: "2026-08-04T13:10:00+02:00", tariff: "VT" },
-    { start: "2026-08-04T13:10:00+02:00", end: "2026-08-04T15:25:00+02:00", tariff: "NT" },
-    { start: "2026-08-04T15:25:00+02:00", end: "2026-08-04T21:35:00+02:00", tariff: "VT" },
-    { start: "2026-08-04T21:35:00+02:00", end: "2026-08-04T23:50:00+02:00", tariff: "NT" },
-  ],
-  tomorrowSchedule: [
-    { start: "2026-08-05T02:00:00+02:00", end: "2026-08-05T05:30:00+02:00", tariff: "NT" },
-    { start: "2026-08-05T05:30:00+02:00", end: "2026-08-05T13:10:00+02:00", tariff: "VT" },
-    { start: "2026-08-05T13:10:00+02:00", end: "2026-08-05T15:25:00+02:00", tariff: "NT" },
-    { start: "2026-08-05T15:25:00+02:00", end: "2026-08-05T21:35:00+02:00", tariff: "VT" },
-    { start: "2026-08-05T21:35:00+02:00", end: "2026-08-05T23:50:00+02:00", tariff: "NT" },
-  ],
-  currentPrice: 4.673,
-  batteryPercent: 53.1,
-  highRateKwh: 327.124,
-  lowRateKwh: 315.358,
+  tariff: "?",
+  countdownSeconds: null,
+  nextChange: null,
+  todaySchedule: [],
+  tomorrowSchedule: [],
+  currentPrice: null,
+  batteryPercent: null,
+  highRateKwh: null,
+  lowRateKwh: null,
+  monthlyAdvanceCzk: null,
+  paidAdvancesCzk: null,
+  projectedAdvancesCzk: null,
+  accruedCostCzk: null,
+  currentBalanceCzk: null,
+  projectedBalanceCzk: null,
+  recommendedAdvanceCzk: null,
+  todayConsumptionKwh: null,
+  monthConsumptionKwh: null,
+  settlementDate: null,
 };
 
 function findState(hass: HomeAssistant, suffix: string): HassEntity | undefined {
@@ -69,10 +77,23 @@ function findState(hass: HomeAssistant, suffix: string): HassEntity | undefined 
   );
 }
 
+function findAnyState(hass: HomeAssistant, suffixes: string[]): HassEntity | undefined {
+  for (const suffix of suffixes) {
+    const entity = findState(hass, suffix);
+    if (entity) return entity;
+  }
+  return undefined;
+}
+
 function numberState(entity: HassEntity | undefined): number | null {
-  if (!entity || ["unknown", "unavailable"].includes(entity.state)) return null;
+  if (!entity || ["unknown", "unavailable", "none", "null"].includes(entity.state.toLowerCase())) return null;
   const value = Number(entity.state);
   return Number.isFinite(value) ? value : null;
+}
+
+function textState(entity: HassEntity | undefined): string | null {
+  if (!entity || ["unknown", "unavailable", "none", "null"].includes(entity.state.toLowerCase())) return null;
+  return entity.state;
 }
 
 function parseCountdown(value: string | undefined): number | null {
@@ -119,12 +140,12 @@ function splitSchedule(entity: HassEntity | undefined): { today: ScheduleItem[];
 }
 
 function readDashboardState(hass?: HomeAssistant): DashboardState {
-  if (!hass) return DEMO_STATE;
+  if (!hass) return EMPTY_STATE;
 
-  const tariffEntity = findState(hass, "_tariff");
-  const countdownEntity = findState(hass, "_countdown");
-  const nextSwitchEntity = findState(hass, "_next_switch");
-  const scheduleEntity = findState(hass, "_today_schedule") ?? findState(hass, "_schedule");
+  const tariffEntity = findAnyState(hass, ["_tariff", "_tarif"]);
+  const countdownEntity = findAnyState(hass, ["_countdown", "_odpocet"]);
+  const nextSwitchEntity = findAnyState(hass, ["_next_switch", "_dalsi_zmena"]);
+  const scheduleEntity = findAnyState(hass, ["_today_schedule", "_schedule", "_dnesni_rozvrh"]);
   const schedules = splitSchedule(scheduleEntity);
 
   const tariff = tariffEntity?.state === "NT" || tariffEntity?.state === "VT" ? tariffEntity.state : "?";
@@ -140,10 +161,20 @@ function readDashboardState(hass?: HomeAssistant): DashboardState {
       : null,
     todaySchedule: schedules.today,
     tomorrowSchedule: schedules.tomorrow,
-    currentPrice: numberState(findState(hass, "_current_price")),
-    batteryPercent: numberState(findState(hass, "_battery_state")),
-    highRateKwh: numberState(findState(hass, "_high_rate")),
-    lowRateKwh: numberState(findState(hass, "_low_rate")),
+    currentPrice: numberState(findAnyState(hass, ["_current_price", "_aktualni_cena", "_skutecna_cena"])),
+    batteryPercent: numberState(findAnyState(hass, ["_battery_state", "_stav_baterie"])),
+    highRateKwh: numberState(findAnyState(hass, ["_high_rate", "_vt_celkem"])),
+    lowRateKwh: numberState(findAnyState(hass, ["_low_rate", "_nt_celkem"])),
+    monthlyAdvanceCzk: numberState(findAnyState(hass, ["_billing_monthly_advance", "_mesicni_zaloha"])),
+    paidAdvancesCzk: numberState(findAnyState(hass, ["_billing_paid_advances", "_zaplacene_zalohy"])),
+    projectedAdvancesCzk: numberState(findAnyState(hass, ["_billing_projected_advances", "_zalohy_za_cele_obdobi"])),
+    accruedCostCzk: numberState(findAnyState(hass, ["_billing_accrued_cost", "_dosavadni_naklady", "_skutecne_naklady"])),
+    currentBalanceCzk: numberState(findAnyState(hass, ["_billing_current_balance", "_prubezny_rozdil", "_prubezny_preplatek_nedoplatek"])),
+    projectedBalanceCzk: numberState(findAnyState(hass, ["_billing_projected_balance", "_odhad_preplatku_nedoplatku"])),
+    recommendedAdvanceCzk: numberState(findAnyState(hass, ["_billing_recommended_advance", "_doporucena_zaloha"])),
+    todayConsumptionKwh: numberState(findAnyState(hass, ["_today_consumption", "_spotreba_dnes_celkem"])),
+    monthConsumptionKwh: numberState(findAnyState(hass, ["_month_consumption", "_spotreba_tento_mesic"])),
+    settlementDate: textState(findAnyState(hass, ["_billing_settlement_date", "_predpokladane_vyuctovani"])),
   };
 }
 
