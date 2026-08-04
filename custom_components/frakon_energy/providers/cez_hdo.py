@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
@@ -80,7 +80,7 @@ class CezHdoAdapter:
         if parsed is not None:
             parsed = dt_util.as_local(parsed)
             if parsed <= now:
-                parsed = parsed.replace(day=parsed.day) + dt_util.dt.timedelta(days=1)
+                parsed += timedelta(days=1)
             return parsed
 
         parsed_time = dt_util.parse_time(raw)
@@ -94,5 +94,5 @@ class CezHdoAdapter:
             microsecond=0,
         )
         if candidate <= now:
-            candidate += dt_util.dt.timedelta(days=1)
+            candidate += timedelta(days=1)
         return candidate
