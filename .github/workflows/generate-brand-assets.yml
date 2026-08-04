@@ -1,0 +1,43 @@
+name: Generate brand assets
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - chore/brand-assets
+    paths:
+      - "branding/source/**"
+      - "scripts/generate_brand_assets.sh"
+      - ".github/workflows/generate-brand-assets.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install render tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y librsvg2-bin imagemagick
+
+      - name: Generate assets
+        run: bash scripts/generate_brand_assets.sh
+
+      - name: Commit generated files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add branding/generated custom_components/frakon_energy/brand
+          if git diff --cached --quiet; then
+            echo "No generated changes"
+          else
+            git commit -m "brand: generate complete FRAKON asset set"
+            git push
+          fi
