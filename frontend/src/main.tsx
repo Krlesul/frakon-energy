@@ -3,34 +3,24 @@ import { createRoot } from "react-dom/client";
 import { formatCountdown, useFrakonEnergyState } from "./home-assistant";
 import "./styles.css";
 
-const demoBilling = {
-  todayKwh: 18.4,
-  monthKwh: 542,
-  paidAdvances: 35000,
-  currentCosts: 32780,
-  projectedBalance: 1590,
-  monthlyAdvance: 5000,
-};
-
 type ScheduleItem = { start: string; end: string; tariff: string };
 type ClockInterval = { start: string; end: string };
-type PlannedAction = { time: string; icon: string; label: string; detail?: string };
 
 const DEFAULT_NT_SCHEDULE = {
   weekday: [["02:00", "05:30"], ["13:10", "15:25"], ["21:35", "23:50"]],
   weekend: [["03:45", "06:55"], ["14:45", "17:30"], ["21:30", "23:35"]],
 } as const;
 
-const DEMO_ACTIONS: PlannedAction[] = [
-  { time: "21:35", icon: "⚡", label: "Nízký tarif začíná", detail: "HDO" },
-  { time: "21:36", icon: "🔥", label: "Ohřev bojleru", detail: "Připraveno pro automatizaci" },
-  { time: "21:37", icon: "🚗", label: "Nabíjení Enyaqu", detail: "Připraveno pro wallbox" },
-  { time: "23:45", icon: "🔥", label: "Vypnutí bojleru", detail: "Bezpečná rezerva 5 minut" },
-  { time: "23:50", icon: "○", label: "Nízký tarif končí", detail: "Přechod na VT" },
-];
+function formatNumber(value: number | null, digits = 0): string {
+  return value === null ? "—" : value.toLocaleString("cs-CZ", { maximumFractionDigits: digits, minimumFractionDigits: digits });
+}
 
-function Metric({ label, value, suffix }: { label: string; value: string | number; suffix?: string }) {
-  return <article className="metric"><span>{label}</span><strong>{value}{suffix ? <small> {suffix}</small> : null}</strong></article>;
+function formatMoney(value: number | null): string {
+  return value === null ? "—" : `${value >= 0 ? "+" : ""}${value.toLocaleString("cs-CZ", { maximumFractionDigits: 0 })} Kč`;
+}
+
+function Metric({ label, value, suffix }: { label: string; value: string; suffix?: string }) {
+  return <article className="metric"><span>{label}</span><strong>{value}{suffix && value !== "—" ? <small> {suffix}</small> : null}</strong></article>;
 }
 
 function scheduleDuration(start: string, end: string): number {
@@ -85,18 +75,16 @@ function TariffCard() {
   const state = useFrakonEnergyState();
   const low = state.tariff === "NT";
   const unknown = state.tariff === "?";
-  return (
-    <article className={`tariff-card ${low ? "low" : unknown ? "unknown" : "high"}`}>
-      <div className="tariff-card__top"><div><span className="eyebrow">Aktuální tarif</span><h2>{state.tariff}</h2></div><span className="status-dot" aria-label={unknown ? "Tarif není dostupný" : low ? "Nízký tarif je aktivní" : "Vysoký tarif je aktivní"} /></div>
-      <div className="countdown-label">{unknown ? "Čekám na data HDO" : low ? "Vypnutí NT za" : "Zapnutí NT za"}</div>
-      <div className="countdown" aria-live="polite">{formatCountdown(state.countdownSeconds)}</div>
-      <div className="next-change">{state.nextChange ? `${low ? "NT skončí" : "NT začne"} ve ${state.nextChange}` : "Čas další změny není dostupný"}</div>
-      <div className="timeline" aria-label="Dnešní rozvrh HDO">
-        {state.todaySchedule.length > 0 ? state.todaySchedule.map((item, index) => <span key={`${item.start}-${index}`} className={item.tariff.toLowerCase()} style={{ flex: scheduleDuration(item.start, item.end) }} title={`${item.tariff} ${asTime(item.start)}–${asTime(item.end)}`} />) : <span className="timeline-empty">Rozvrh není dostupný</span>}
-      </div>
-      {state.currentPrice !== null ? <div className="current-price">Aktuální cena <b>{state.currentPrice.toLocaleString("cs-CZ", { minimumFractionDigits: 3, maximumFractionDigits: 3 })} Kč/kWh</b></div> : null}
-    </article>
-  );
+  return <article className={`tariff-card ${low ? "low" : unknown ? "unknown" : "high"}`}>
+    <div className="tariff-card__top"><div><span className="eyebrow">Aktuální tarif</span><h2>{state.tariff}</h2></div><span className="status-dot" /></div>
+    <div className="countdown-label">{unknown ? "Čekám na data HDO" : low ? "Vypnutí NT za" : "Zapnutí NT za"}</div>
+    <div className="countdown" aria-live="polite">{formatCountdown(state.countdownSeconds)}</div>
+    <div className="next-change">{state.nextChange ? `${low ? "NT skončí" : "NT začne"} ve ${state.nextChange}` : "Čas další změny není dostupný"}</div>
+    <div className="timeline" aria-label="Dnešní rozvrh HDO">
+      {state.todaySchedule.length > 0 ? state.todaySchedule.map((item, index) => <span key={`${item.start}-${index}`} className={item.tariff.toLowerCase()} style={{ flex: scheduleDuration(item.start, item.end) }} title={`${item.tariff} ${asTime(item.start)}–${asTime(item.end)}`} />) : <span className="timeline-empty">Rozvrh není dostupný</span>}
+    </div>
+    {state.currentPrice !== null ? <div className="current-price">Aktuální cena <b>{formatNumber(state.currentPrice, 3)} Kč/kWh</b></div> : null}
+  </article>;
 }
 
 function IntervalRows({ intervals, live = false }: { intervals: (ClockInterval | ScheduleItem)[]; live?: boolean }) {
@@ -104,7 +92,7 @@ function IntervalRows({ intervals, live = false }: { intervals: (ClockInterval |
     const start = live ? asTime((item as ScheduleItem).start) : item.start;
     const end = live ? asTime((item as ScheduleItem).end) : item.end;
     const active = live && isCurrentInterval(item as ScheduleItem);
-    return <div className={`hdo-row ${active ? "active" : ""}`} role="row" key={`${start}-${end}-${index}`}><span className="hdo-row__dot" aria-hidden="true" /><span className="hdo-row__label">NT {index + 1}</span><strong>{start}</strong><span className="hdo-row__arrow">→</span><strong>{end}</strong><span className="hdo-duration">{formatDuration(start, end)}</span>{active ? <span className="active-chip">Právě teď</span> : null}</div>;
+    return <div className={`hdo-row ${active ? "active" : ""}`} role="row" key={`${start}-${end}-${index}`}><span className="hdo-row__dot" /><span className="hdo-row__label">NT {index + 1}</span><strong>{start}</strong><span className="hdo-row__arrow">→</span><strong>{end}</strong><span className="hdo-duration">{formatDuration(start, end)}</span>{active ? <span className="active-chip">Právě teď</span> : null}</div>;
   })}</div>;
 }
 
@@ -120,40 +108,33 @@ function HdoScheduleCard() {
   const tomorrowIsLive = tomorrowLiveNt.length > 0;
   const fullToday = buildFullDay(todayIsLive ? todayLiveNt.map((item) => ({ start: asTime(item.start), end: asTime(item.end) })) : todayFallback);
   const sourceLabel = todayIsLive && tomorrowIsLive ? "Živý rozvrh dnes i zítra" : todayIsLive ? "Dnes živě, zítra záložně" : "Výchozí plán";
+  return <article className="hdo-plan-card">
+    <div className="hdo-plan-card__header"><div><span className="eyebrow">HDO plán</span><h2>Nízký tarif dnes a zítra</h2></div><span className={`source-badge ${todayIsLive ? "live" : "fallback"}`}>{sourceLabel}</span></div>
+    <div className="hdo-days-grid"><section><h3>Dnes</h3><IntervalRows intervals={todayIsLive ? todayLiveNt : todayFallback} live={todayIsLive} /></section><section><h3>Zítra</h3><IntervalRows intervals={tomorrowIsLive ? tomorrowLiveNt : tomorrowFallback} live={tomorrowIsLive} /></section></div>
+    <details className="hdo-details"><summary>Tarifní sekvence na celý den</summary><section className="sequence-card"><div className="sequence-list">{fullToday.map((item, index) => <div className={`sequence-row ${item.tariff.toLowerCase()}`} key={`${item.start}-${index}`}><span>{item.start}</span><b>{item.tariff}</b><span>{item.end}</span></div>)}</div></section></details>
+    <div className="hdo-plan-note">Pracovní dny: 02:00–05:30, 13:10–15:25, 21:35–23:50. Víkendy a státní svátky: 03:45–06:55, 14:45–17:30, 21:30–23:35.</div>
+  </article>;
+}
 
-  return (
-    <article className="hdo-plan-card">
-      <div className="hdo-plan-card__header"><div><span className="eyebrow">HDO plán</span><h2>Nízký tarif dnes a zítra</h2></div><span className={`source-badge ${todayIsLive ? "live" : "fallback"}`}>{sourceLabel}</span></div>
-      <div className="hdo-days-grid">
-        <section><h3>Dnes</h3><IntervalRows intervals={todayIsLive ? todayLiveNt : todayFallback} live={todayIsLive} /></section>
-        <section><h3>Zítra</h3><IntervalRows intervals={tomorrowIsLive ? tomorrowLiveNt : tomorrowFallback} live={tomorrowIsLive} /></section>
-      </div>
-      <details className="hdo-details">
-        <summary>Dalších 24 hodin a plánované akce</summary>
-        <div className="hdo-detail-grid">
-          <section className="sequence-card"><span className="eyebrow">Tarifní sekvence</span><div className="sequence-list">{fullToday.map((item, index) => <div className={`sequence-row ${item.tariff.toLowerCase()}`} key={`${item.start}-${index}`}><span>{item.start}</span><b>{item.tariff}</b><span>{item.end}</span></div>)}</div></section>
-          <section className="actions-card"><span className="eyebrow">Plán domu</span><div className="action-list">{DEMO_ACTIONS.map((action) => <div className="action-row" key={`${action.time}-${action.label}`}><time>{action.time}</time><span className="action-icon">{action.icon}</span><div><b>{action.label}</b>{action.detail ? <small>{action.detail}</small> : null}</div></div>)}</div><p className="demo-note">Akce jsou zatím návrh rozhraní. Později se načtou z automatizací Home Assistantu a FRAKONu.</p></section>
-        </div>
-      </details>
-      <div className="hdo-plan-note">Pracovní dny: 02:00–05:30, 13:10–15:25, 21:35–23:50. Víkendy a státní svátky: 03:45–06:55, 14:45–17:30, 21:30–23:35.</div>
-    </article>
-  );
+function BillingCard() {
+  const energy = useFrakonEnergyState();
+  const projected = energy.projectedBalanceCzk;
+  const label = projected === null ? "Predikce zatím není dostupná" : projected >= 0 ? "Předpokládaný přeplatek" : "Předpokládaný nedoplatek";
+  return <article className="balance-card"><span className="eyebrow">Odhad vyúčtování</span><strong className="balance">{formatMoney(projected)}</strong><p>{label}{energy.settlementDate ? ` k ${new Date(energy.settlementDate).toLocaleDateString("cs-CZ")}` : ""}</p><div className="balance-row"><span>Zaplacené zálohy</span><b>{formatMoney(energy.paidAdvancesCzk)}</b></div><div className="balance-row"><span>Dosavadní náklady</span><b>{formatMoney(energy.accruedCostCzk)}</b></div><div className="balance-row"><span>Doporučená záloha</span><b>{energy.recommendedAdvanceCzk === null ? "—" : `${formatNumber(energy.recommendedAdvanceCzk)} Kč`}</b></div></article>;
 }
 
 function App() {
   const energy = useFrakonEnergyState();
   const meterTotal = energy.highRateKwh !== null && energy.lowRateKwh !== null ? energy.highRateKwh + energy.lowRateKwh : null;
-  return (
-    <main className="app-shell">
-      <header className="topbar"><div><span className="brand-mark">F</span><div><h1>FRAKON Energy</h1><p>Energetický přehled domu</p></div></div><span className={energy.connected ? "online" : "online demo"}>{energy.connected ? "Online" : "Demo režim"}</span></header>
-      <section className="hero-grid"><TariffCard /><article className="balance-card"><span className="eyebrow">Odhad vyúčtování</span><strong className="balance">+{demoBilling.projectedBalance.toLocaleString("cs-CZ")} Kč</strong><p>Předpokládaný přeplatek k 31. 1.</p><div className="progress"><span style={{ width: "78%" }} /></div><div className="balance-row"><span>Zaplacené zálohy</span><b>{demoBilling.paidAdvances.toLocaleString("cs-CZ")} Kč</b></div><div className="balance-row"><span>Dosavadní náklady</span><b>{demoBilling.currentCosts.toLocaleString("cs-CZ")} Kč</b></div></article></section>
-      <HdoScheduleCard />
-      <section className="metrics-grid"><Metric label="Spotřeba dnes" value={demoBilling.todayKwh} suffix="kWh" /><Metric label="Tento měsíc" value={demoBilling.monthKwh} suffix="kWh" /><Metric label="Měsíční záloha" value={demoBilling.monthlyAdvance.toLocaleString("cs-CZ")} suffix="Kč" /><Metric label="Baterie VisionQ" value={energy.batteryPercent?.toLocaleString("cs-CZ", { maximumFractionDigits: 1 }) ?? "—"} suffix="%" /></section>
-      <section className="metrics-grid secondary"><Metric label="Elektroměr celkem" value={meterTotal?.toLocaleString("cs-CZ", { maximumFractionDigits: 3 }) ?? "—"} suffix="kWh" /><Metric label="VT celkem" value={energy.highRateKwh?.toLocaleString("cs-CZ", { maximumFractionDigits: 3 }) ?? "—"} suffix="kWh" /><Metric label="NT celkem" value={energy.lowRateKwh?.toLocaleString("cs-CZ", { maximumFractionDigits: 3 }) ?? "—"} suffix="kWh" /><Metric label="Datový zdroj" value={energy.connected ? "Home Assistant" : "Ukázková data"} /></section>
-      <section className="chart-card"><div className="section-title"><div><span className="eyebrow">Spotřeba a náklady</span><h2>Průběh zúčtovacího období</h2></div><div className="segmented"><button className="active">Měsíc</button><button>Rok</button></div></div><div className="chart-placeholder"><div className="chart-line actual" /><div className="chart-line advances" /><span className="chart-caption">Skutečná data a budoucí predikce budou zřetelně oddělené.</span></div></section>
-      <nav className="bottom-nav"><button className="active">Přehled</button><button>Vyúčtování</button><button>Tarify</button><button>Historie</button><button>Nastavení</button></nav>
-    </main>
-  );
+  return <main className="app-shell">
+    <header className="topbar"><div><span className="brand-mark">F</span><div><h1>FRAKON Energy</h1><p>Energetický přehled domu</p></div></div><span className={energy.connected ? "online" : "online demo"}>{energy.connected ? "Online" : "Čekám na Home Assistant"}</span></header>
+    <section className="hero-grid"><TariffCard /><BillingCard /></section>
+    <HdoScheduleCard />
+    <section className="metrics-grid"><Metric label="Spotřeba dnes" value={formatNumber(energy.todayConsumptionKwh, 1)} suffix="kWh" /><Metric label="Tento měsíc" value={formatNumber(energy.monthConsumptionKwh, 1)} suffix="kWh" /><Metric label="Měsíční záloha" value={formatNumber(energy.monthlyAdvanceCzk)} suffix="Kč" /><Metric label="Baterie VisionQ" value={formatNumber(energy.batteryPercent, 1)} suffix="%" /></section>
+    <section className="metrics-grid secondary"><Metric label="Elektroměr celkem" value={formatNumber(meterTotal, 3)} suffix="kWh" /><Metric label="VT celkem" value={formatNumber(energy.highRateKwh, 3)} suffix="kWh" /><Metric label="NT celkem" value={formatNumber(energy.lowRateKwh, 3)} suffix="kWh" /><Metric label="Průběžný rozdíl" value={formatMoney(energy.currentBalanceCzk)} /></section>
+    <section className="chart-card"><div className="section-title"><div><span className="eyebrow">Spotřeba a náklady</span><h2>Průběh zúčtovacího období</h2></div></div><div className="chart-placeholder"><span className="chart-caption">Graf se zobrazí po načtení historických denních hodnot z FRAKON Energy.</span></div></section>
+    <nav className="bottom-nav"><button className="active">Přehled</button><button>Vyúčtování</button><button>Tarify</button><button>Historie</button><button>Nastavení</button></nav>
+  </main>;
 }
 
 createRoot(document.getElementById("root")!).render(<React.StrictMode><App /></React.StrictMode>);
