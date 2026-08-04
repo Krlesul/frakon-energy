@@ -39,5 +39,11 @@
       "already_configured": "Tento zdroj je již nakonfigurován.",
       "cez_hdo_not_found": "Nebyla nalezena podporovaná integrace ČEZ HDO se strukturovaným rozvrhem."
     }
+  },
+  "device_automation": {
+    "trigger_type": {
+      "low_tariff_started": "Nízký tarif byl zapnut",
+      "low_tariff_ended": "Nízký tarif byl ukončen"
+    }
   }
 }
