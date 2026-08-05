@@ -91,6 +91,14 @@ function numberState(entity: HassEntity | undefined): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
+function percentageState(entity: HassEntity | undefined): number | null {
+  const value = numberState(entity);
+  if (value === null) return null;
+  const unit = String(entity?.attributes.unit_of_measurement ?? "").trim();
+  const normalized = unit === "%" ? value : value >= 0 && value <= 1 ? value * 100 : value;
+  return normalized >= 0 && normalized <= 100 ? normalized : null;
+}
+
 function textState(entity: HassEntity | undefined): string | null {
   if (!entity || ["unknown", "unavailable", "none", "null"].includes(entity.state.toLowerCase())) return null;
   return entity.state;
@@ -162,7 +170,7 @@ function readDashboardState(hass?: HomeAssistant): DashboardState {
     todaySchedule: schedules.today,
     tomorrowSchedule: schedules.tomorrow,
     currentPrice: numberState(findAnyState(hass, ["_current_price", "_aktualni_cena", "_skutecna_cena"])),
-    batteryPercent: numberState(findAnyState(hass, ["_battery_state", "_stav_baterie"])),
+    batteryPercent: percentageState(findAnyState(hass, ["_battery_state", "_stav_baterie"])),
     highRateKwh: numberState(findAnyState(hass, ["_high_rate", "_vt_celkem"])),
     lowRateKwh: numberState(findAnyState(hass, ["_low_rate", "_nt_celkem"])),
     monthlyAdvanceCzk: numberState(findAnyState(hass, ["_billing_monthly_advance", "_mesicni_zaloha"])),
