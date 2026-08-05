@@ -25,6 +25,10 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.13"
+          cache: pip
+
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pip pytest
 
       - name: Compile integration
         run: python -m compileall -q custom_components/frakon_energy
@@ -39,44 +43,5 @@ jobs:
               print(f"OK {path}")
           PY
 
-      - name: Run pure domain smoke test
-        run: |
-          python - <<'PY'
-          import importlib.util
-          import sys
-          from datetime import date
-          from decimal import Decimal
-          from pathlib import Path
-
-          def load(name):
-              path = Path("custom_components/frakon_energy") / f"{name}.py"
-              module_name = f"frakon_energy_smoke_{name}"
-              spec = importlib.util.spec_from_file_location(module_name, path)
-              if spec is None or spec.loader is None:
-                  raise RuntimeError(f"Cannot load {path}")
-              module = importlib.util.module_from_spec(spec)
-              sys.modules[module_name] = module
-              try:
-                  spec.loader.exec_module(module)
-              except Exception:
-                  sys.modules.pop(module_name, None)
-                  raise
-              return module
-
-          cost = load("cost")
-          result = cost.calculate_cost_projection(
-              cycle_start=date(2026, 2, 1),
-              settlement_date=date(2027, 1, 31),
-              as_of=date(2026, 8, 5),
-              baseline_high_rate_kwh=Decimal("1000"),
-              baseline_low_rate_kwh=Decimal("2000"),
-              current_high_rate_kwh=Decimal("1300"),
-              current_low_rate_kwh=Decimal("2500"),
-              prices=cost.TariffPrices(Decimal("7.52"), Decimal("4.67"), Decimal("300")),
-          )
-          assert result.high_rate_consumption_kwh == Decimal("300.000")
-          assert result.low_rate_consumption_kwh == Decimal("500.000")
-          assert result.accrued_total_cost_czk > 0
-          assert result.projected_total_cost_czk >= result.accrued_total_cost_czk
-          print(result)
-          PY
+      - name: Run domain tests
+        run: python -m pytest -q tests/test_domain.py
