@@ -43,20 +43,26 @@
   "options": {
     "step": {
       "billing": {
-        "title": "Vyúčtování a ceny elektřiny",
-        "description": "Nastavte zúčtovací období, počáteční stavy elektroměru, zálohy a ceny. Počáteční VT a NT jsou kumulativní stavy elektroměru, nikoli spotřeba za období.",
+        "title": "Vyúčtování, elektroměry a ceny",
+        "description": "Počáteční VT a NT jsou kumulativní registry elektroměru na začátku období, nikoli spotřeba. Pokud byl elektroměr během období vyměněn, zapněte výměnu a zadejte konečné registry starého elektroměru i počáteční registry nového elektroměru. Při instalaci nového elektroměru bývají často 0 kWh.",
         "data": {
           "billing_enabled": "Zapnout výpočty vyúčtování",
           "billing_baseline_date": "Datum počátečního odečtu",
-          "billing_baseline_vt_kwh": "Počáteční stav VT",
-          "billing_baseline_nt_kwh": "Počáteční stav NT",
+          "billing_baseline_vt_kwh": "Počáteční stav VT původního elektroměru",
+          "billing_baseline_nt_kwh": "Počáteční stav NT původního elektroměru",
           "billing_cycle_start": "Začátek zúčtovacího období",
           "billing_settlement_date": "Předpokládané datum vyúčtování",
+          "meter_replaced_during_cycle": "Výměna elektroměru během zúčtovacího období",
+          "meter_replacement_date": "Datum výměny elektroměru",
+          "old_meter_end_vt_kwh": "Konečný stav VT starého elektroměru",
+          "old_meter_end_nt_kwh": "Konečný stav NT starého elektroměru",
+          "new_meter_start_vt_kwh": "Počáteční stav VT nového elektroměru",
+          "new_meter_start_nt_kwh": "Počáteční stav NT nového elektroměru",
           "monthly_advance_czk": "Měsíční záloha",
           "advance_valid_from": "Záloha platí od",
           "advance_valid_to": "Záloha platí do",
-          "price_vt_czk_kwh": "Cena VT",
-          "price_nt_czk_kwh": "Cena NT",
+          "price_vt_czk_kwh": "Celková cena VT",
+          "price_nt_czk_kwh": "Celková cena NT",
           "fixed_monthly_czk": "Stálé měsíční platby"
         }
       }
@@ -65,7 +71,12 @@
       "baseline_after_cycle_start": "Datum počátečního odečtu nesmí být po začátku zúčtovacího období.",
       "settlement_before_cycle_start": "Datum vyúčtování nesmí být před začátkem zúčtovacího období.",
       "advance_outside_cycle": "Začátek platnosti zálohy musí být uvnitř zúčtovacího období.",
-      "advance_end_before_start": "Konec platnosti zálohy nesmí být před jejím začátkem."
+      "advance_end_before_start": "Konec platnosti zálohy nesmí být před jejím začátkem.",
+      "replacement_date_required": "Zadejte datum výměny elektroměru.",
+      "replacement_outside_cycle": "Datum výměny musí být uvnitř zúčtovacího období.",
+      "old_meter_vt_below_start": "Konečný stav VT starého elektroměru nesmí být nižší než jeho počáteční stav.",
+      "old_meter_nt_below_start": "Konečný stav NT starého elektroměru nesmí být nižší než jeho počáteční stav.",
+      "new_meter_start_negative": "Počáteční registry nového elektroměru nesmí být záporné."
     },
     "abort": {
       "no_options_available": "Pro tento zdroj nejsou k dispozici žádná nastavení."
