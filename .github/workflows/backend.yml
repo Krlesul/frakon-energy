@@ -9,6 +9,8 @@ on:
     paths:
       - "custom_components/**"
       - "tests/**"
+      - "hacs.json"
+      - "CHANGELOG.md"
       - ".github/workflows/backend.yml"
 
 permissions:
@@ -41,6 +43,36 @@ jobs:
           for path in Path("custom_components/frakon_energy").rglob("*.json"):
               json.loads(path.read_text(encoding="utf-8"))
               print(f"OK {path}")
+          json.loads(Path("hacs.json").read_text(encoding="utf-8"))
+          print("OK hacs.json")
+          PY
+
+      - name: Validate HACS and release structure
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          required = [
+              Path("hacs.json"),
+              Path("README.md"),
+              Path("CHANGELOG.md"),
+              Path("custom_components/frakon_energy/__init__.py"),
+              Path("custom_components/frakon_energy/manifest.json"),
+              Path("custom_components/frakon_energy/config_flow.py"),
+              Path("custom_components/frakon_energy/translations/cs.json"),
+          ]
+          missing = [str(path) for path in required if not path.is_file()]
+          if missing:
+              raise SystemExit(f"Missing required files: {missing}")
+
+          manifest = json.loads(Path("custom_components/frakon_energy/manifest.json").read_text(encoding="utf-8"))
+          hacs = json.loads(Path("hacs.json").read_text(encoding="utf-8"))
+          assert manifest["domain"] == "frakon_energy"
+          assert manifest["config_flow"] is True
+          assert manifest["version"] == "1.0.0-rc.1"
+          assert hacs["name"] == manifest["name"]
+          print(f"Validated {manifest['name']} {manifest['version']}")
           PY
 
       - name: Run domain tests
