@@ -11,6 +11,8 @@ on:
       - "tests/**"
       - "hacs.json"
       - "CHANGELOG.md"
+      - "VERSION"
+      - "frontend/package.json"
       - ".github/workflows/backend.yml"
 
 permissions:
@@ -50,12 +52,15 @@ jobs:
         run: |
           python - <<'PY'
           import json
+          import re
           from pathlib import Path
 
           required = [
+              Path("VERSION"),
               Path("hacs.json"),
               Path("README.md"),
               Path("CHANGELOG.md"),
+              Path("frontend/package.json"),
               Path("custom_components/frakon_energy/__init__.py"),
               Path("custom_components/frakon_energy/manifest.json"),
               Path("custom_components/frakon_energy/config_flow.py"),
@@ -65,13 +70,20 @@ jobs:
           if missing:
               raise SystemExit(f"Missing required files: {missing}")
 
+          version = Path("VERSION").read_text(encoding="utf-8").strip()
+          if not re.fullmatch(r"\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+)?", version):
+              raise SystemExit(f"Invalid semantic version: {version}")
+
           manifest = json.loads(Path("custom_components/frakon_energy/manifest.json").read_text(encoding="utf-8"))
+          frontend = json.loads(Path("frontend/package.json").read_text(encoding="utf-8"))
           hacs = json.loads(Path("hacs.json").read_text(encoding="utf-8"))
+
           assert manifest["domain"] == "frakon_energy"
           assert manifest["config_flow"] is True
-          assert manifest["version"] == "1.0.0-rc.1"
+          assert manifest["version"] == version
+          assert frontend["version"] == version
           assert hacs["name"] == manifest["name"]
-          print(f"Validated {manifest['name']} {manifest['version']}")
+          print(f"Validated {manifest['name']} {version}")
           PY
 
       - name: Run domain tests
