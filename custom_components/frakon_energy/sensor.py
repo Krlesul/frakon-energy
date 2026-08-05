@@ -23,7 +23,13 @@ from .config_flow import (
     CONF_BILLING_ENABLED,
     CONF_BILLING_SETTLEMENT_DATE,
     CONF_FIXED_MONTHLY,
+    CONF_METER_REPLACED,
+    CONF_METER_REPLACEMENT_DATE,
     CONF_MONTHLY_ADVANCE,
+    CONF_NEW_METER_START_NT,
+    CONF_NEW_METER_START_VT,
+    CONF_OLD_METER_END_NT,
+    CONF_OLD_METER_END_VT,
     CONF_PRICE_NT,
     CONF_PRICE_VT,
 )
@@ -31,6 +37,7 @@ from .const import CONF_PROVIDER, DOMAIN, PROVIDER_CEZ_HDO
 from .coordinator import FrakonEnergyCoordinator
 from .cost import TariffPrices, calculate_cost_projection
 from .hdo_coordinator import CezHdoCoordinator
+from .metering import MeterSegment, total_cycle_consumption
 from .providers.cez_hdo import CezHdoSnapshot
 from .providers.visionq import VisionQMeasurement
 
@@ -131,19 +138,50 @@ class FrakonBillingSensor(CoordinatorEntity[FrakonEnergyCoordinator], SensorEnti
 
     @property
     def native_value(self):
-        values = self._values()
-        return values.get(self._key)
+        return self._values().get(self._key)
 
     @property
     def extra_state_attributes(self):
+        options = self._entry.options
         return {
-            "baseline_date": self._entry.options.get(CONF_BILLING_BASELINE_DATE),
-            "advance_valid_from": self._entry.options.get(CONF_ADVANCE_VALID_FROM),
-            "advance_valid_to": self._entry.options.get(CONF_ADVANCE_VALID_TO) or None,
-            "price_vt_czk_kwh": self._entry.options.get(CONF_PRICE_VT),
-            "price_nt_czk_kwh": self._entry.options.get(CONF_PRICE_NT),
-            "fixed_monthly_czk": self._entry.options.get(CONF_FIXED_MONTHLY),
+            "baseline_date": options.get(CONF_BILLING_BASELINE_DATE),
+            "advance_valid_from": options.get(CONF_ADVANCE_VALID_FROM),
+            "advance_valid_to": options.get(CONF_ADVANCE_VALID_TO) or None,
+            "price_vt_czk_kwh": options.get(CONF_PRICE_VT),
+            "price_nt_czk_kwh": options.get(CONF_PRICE_NT),
+            "fixed_monthly_czk": options.get(CONF_FIXED_MONTHLY),
+            "meter_replaced_during_cycle": options.get(CONF_METER_REPLACED, False),
+            "meter_replacement_date": options.get(CONF_METER_REPLACEMENT_DATE) or None,
+            "old_meter_end_vt_kwh": options.get(CONF_OLD_METER_END_VT),
+            "old_meter_end_nt_kwh": options.get(CONF_OLD_METER_END_NT),
+            "new_meter_start_vt_kwh": options.get(CONF_NEW_METER_START_VT),
+            "new_meter_start_nt_kwh": options.get(CONF_NEW_METER_START_NT),
         }
+
+    def _meter_segments(self, cycle: BillingCycle) -> tuple[MeterSegment, ...]:
+        options = self._entry.options
+        baseline_vt = cycle.baseline.high_rate_kwh
+        baseline_nt = cycle.baseline.low_rate_kwh
+        if not options.get(CONF_METER_REPLACED, False):
+            return (MeterSegment(valid_from=cycle.start_date, start_high_rate_kwh=baseline_vt, start_low_rate_kwh=baseline_nt, label="Elektroměr 1"),)
+        replacement = date.fromisoformat(options[CONF_METER_REPLACEMENT_DATE])
+        return (
+            MeterSegment(
+                valid_from=cycle.start_date,
+                valid_to=replacement,
+                start_high_rate_kwh=baseline_vt,
+                start_low_rate_kwh=baseline_nt,
+                end_high_rate_kwh=Decimal(str(options[CONF_OLD_METER_END_VT])),
+                end_low_rate_kwh=Decimal(str(options[CONF_OLD_METER_END_NT])),
+                label="Původní elektroměr",
+            ),
+            MeterSegment(
+                valid_from=replacement,
+                start_high_rate_kwh=Decimal(str(options[CONF_NEW_METER_START_VT])),
+                start_low_rate_kwh=Decimal(str(options[CONF_NEW_METER_START_NT])),
+                label="Nový elektroměr",
+            ),
+        )
 
     def _values(self) -> dict[str, object]:
         options = self._entry.options
@@ -166,14 +204,21 @@ class FrakonBillingSensor(CoordinatorEntity[FrakonEnergyCoordinator], SensorEnti
             today = date.today()
             as_of = min(max(today, cycle.start_date), cycle.expected_settlement_date)
             measurement = self.coordinator.data
+            consumption_vt, consumption_nt = total_cycle_consumption(
+                self._meter_segments(cycle),
+                cycle_start=cycle.start_date,
+                settlement_date=cycle.expected_settlement_date,
+                current_high_rate_kwh=Decimal(str(measurement.high_rate_kwh)),
+                current_low_rate_kwh=Decimal(str(measurement.low_rate_kwh)),
+            )
             cost = calculate_cost_projection(
                 cycle_start=cycle.start_date,
                 settlement_date=cycle.expected_settlement_date,
                 as_of=as_of,
-                baseline_high_rate_kwh=cycle.baseline.high_rate_kwh,
-                baseline_low_rate_kwh=cycle.baseline.low_rate_kwh,
-                current_high_rate_kwh=Decimal(str(measurement.high_rate_kwh)),
-                current_low_rate_kwh=Decimal(str(measurement.low_rate_kwh)),
+                baseline_high_rate_kwh=Decimal("0"),
+                baseline_low_rate_kwh=Decimal("0"),
+                current_high_rate_kwh=consumption_vt,
+                current_low_rate_kwh=consumption_nt,
                 prices=TariffPrices(
                     high_rate_czk_per_kwh=Decimal(str(options[CONF_PRICE_VT])),
                     low_rate_czk_per_kwh=Decimal(str(options[CONF_PRICE_NT])),
@@ -196,8 +241,8 @@ class FrakonBillingSensor(CoordinatorEntity[FrakonEnergyCoordinator], SensorEnti
                 "baseline_nt": cycle.baseline.low_rate_kwh,
                 "cycle_start": cycle.start_date,
                 "settlement_date": cycle.expected_settlement_date,
-                "cycle_consumption_vt": cost.high_rate_consumption_kwh,
-                "cycle_consumption_nt": cost.low_rate_consumption_kwh,
+                "cycle_consumption_vt": consumption_vt,
+                "cycle_consumption_nt": consumption_nt,
                 "today_consumption": today_total,
                 "month_consumption": month_total,
                 "accrued_cost": billing.accrued_cost_czk,
