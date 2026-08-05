@@ -1,0 +1,80 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Add FRAKON Energy",
+        "description": "Select the energy data source.",
+        "data": {
+          "provider": "Provider"
+        }
+      },
+      "visionq": {
+        "title": "VisionQ ElIoT",
+        "description": "Enter your VisionQ account credentials.",
+        "data": {
+          "username": "Username",
+          "password": "Password"
+        }
+      },
+      "device": {
+        "title": "Select a VisionQ device",
+        "data": {
+          "eui": "Device"
+        }
+      },
+      "cez_hdo": {
+        "title": "Select a ČEZ HDO source",
+        "description": "FRAKON Energy found multiple HDO devices.",
+        "data": {
+          "hdo_source_id": "HDO device"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Authentication failed.",
+      "cannot_connect": "Unable to connect to the server.",
+      "no_devices_found": "No VisionQ devices were found."
+    },
+    "abort": {
+      "already_configured": "This source is already configured.",
+      "cez_hdo_not_found": "No supported ČEZ HDO integration with a structured schedule was found."
+    }
+  },
+  "options": {
+    "step": {
+      "billing": {
+        "title": "Billing and electricity prices",
+        "description": "Configure the billing period, cumulative meter baselines, advances and prices. Initial high- and low-tariff values must be cumulative meter readings, not consumption for the period.",
+        "data": {
+          "billing_enabled": "Enable billing calculations",
+          "billing_baseline_date": "Baseline reading date",
+          "billing_baseline_vt_kwh": "Initial high-tariff reading",
+          "billing_baseline_nt_kwh": "Initial low-tariff reading",
+          "billing_cycle_start": "Billing period start",
+          "billing_settlement_date": "Expected settlement date",
+          "monthly_advance_czk": "Monthly advance",
+          "advance_valid_from": "Advance valid from",
+          "advance_valid_to": "Advance valid to",
+          "price_vt_czk_kwh": "High-tariff price",
+          "price_nt_czk_kwh": "Low-tariff price",
+          "fixed_monthly_czk": "Fixed monthly charges"
+        }
+      }
+    },
+    "error": {
+      "baseline_after_cycle_start": "The baseline reading date must not be after the billing period start.",
+      "settlement_before_cycle_start": "The settlement date must not be before the billing period start.",
+      "advance_outside_cycle": "The advance start date must be within the billing period.",
+      "advance_end_before_start": "The advance end date must not be before its start date."
+    },
+    "abort": {
+      "no_options_available": "No options are available for this source."
+    }
+  },
+  "device_automation": {
+    "trigger_type": {
+      "low_tariff_started": "Low tariff started",
+      "low_tariff_ended": "Low tariff ended"
+    }
+  }
+}

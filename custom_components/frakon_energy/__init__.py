@@ -5,21 +5,32 @@ from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .const import DOMAIN
+from .const import CONF_PROVIDER, DOMAIN, PROVIDER_CEZ_HDO, PROVIDER_VISIONQ
 from .coordinator import FrakonEnergyCoordinator
+from .hdo_coordinator import CezHdoCoordinator
+from .panel import async_register_panel
 from .providers.visionq import VisionQApiClient
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    client = VisionQApiClient(
-        async_get_clientsession(hass),
-        entry.data[CONF_USERNAME],
-        entry.data[CONF_PASSWORD],
-    )
-    coordinator = FrakonEnergyCoordinator(hass, entry, client)
+    provider = entry.data.get(CONF_PROVIDER, PROVIDER_VISIONQ)
+
+    if provider == PROVIDER_CEZ_HDO:
+        coordinator = CezHdoCoordinator(hass, entry)
+    else:
+        client = VisionQApiClient(
+            async_get_clientsession(hass),
+            entry.data[CONF_USERNAME],
+            entry.data[CONF_PASSWORD],
+        )
+        coordinator = FrakonEnergyCoordinator(hass, entry, client)
+        await coordinator.async_initialize_history()
+
     await coordinator.async_config_entry_first_refresh()
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
+    entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
+    await async_register_panel(hass)
     return True
 
 
@@ -28,3 +39,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unloaded:
         hass.data[DOMAIN].pop(entry.entry_id, None)
     return unloaded
+
+
+async def _async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    await hass.config_entries.async_reload(entry.entry_id)
