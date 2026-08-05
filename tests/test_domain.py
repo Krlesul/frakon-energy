@@ -80,10 +80,12 @@ def test_billing_snapshot_with_5000_czk_advance() -> None:
         accrued_cost_czk=Decimal("25000"),
         projected_total_cost_czk=Decimal("58000"),
     )
-    assert snapshot.paid_advances_czk == Decimal("35000.00")
-    assert snapshot.current_balance_czk == Decimal("10000.00")
-    assert snapshot.projected_total_advances_czk == Decimal("65000.00")
-    assert snapshot.projected_settlement_balance_czk == Decimal("7000.00")
+    # The advance starts on 27 January, so the first complete scheduled month
+    # is February. Through 10 July, six monthly advances have been counted.
+    assert snapshot.paid_advances_czk == Decimal("30000.00")
+    assert snapshot.current_balance_czk == Decimal("5000.00")
+    assert snapshot.projected_total_advances_czk == Decimal("60000.00")
+    assert snapshot.projected_settlement_balance_czk == Decimal("2000.00")
 
 
 def test_default_settlement_date_is_next_31_january() -> None:
