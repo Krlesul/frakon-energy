@@ -1,7 +1,7 @@
 {
   "domain": "frakon_energy",
   "name": "FRAKON Energy",
-  "version": "0.1.0-dev.1",
+  "version": "1.0.0-rc.1",
   "config_flow": true,
   "iot_class": "cloud_polling",
   "requirements": [],
