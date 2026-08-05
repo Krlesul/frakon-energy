@@ -31,6 +31,9 @@ class FrakonEnergyCoordinator(DataUpdateCoordinator[VisionQMeasurement]):
         self.eui = entry.data["eui"]
         self.history = VisionQHistoryStore(hass, self.eui)
         self._last_history_sync: datetime | None = None
+        self._official_history_supported = callable(
+            getattr(client, "async_get_history", None)
+        )
         interval = int(entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL))
         super().__init__(
             hass,
@@ -56,7 +59,21 @@ class FrakonEnergyCoordinator(DataUpdateCoordinator[VisionQMeasurement]):
             raise UpdateFailed(str(err)) from err
 
     async def _async_sync_official_history(self, *, force: bool = False) -> None:
-        """Import VisionQ history at most once per day and continue incrementally."""
+        """Import official VisionQ history when the API client supports it.
+
+        Current VisionQ accounts may expose only the latest-measurement endpoint.
+        In that case the integration must still start and will build local history
+        from subsequent measurements instead of failing setup.
+        """
+        if not self._official_history_supported:
+            if force:
+                _LOGGER.info(
+                    "VisionQ official history endpoint is unavailable; "
+                    "continuing with locally recorded history for %s",
+                    self.eui,
+                )
+            return
+
         now = datetime.now().astimezone()
         if (
             not force
@@ -75,7 +92,8 @@ class FrakonEnergyCoordinator(DataUpdateCoordinator[VisionQMeasurement]):
             )
 
         try:
-            points = await self.client.async_get_history(self.eui, from_timestamp)
+            history_getter = getattr(self.client, "async_get_history")
+            points = await history_getter(self.eui, from_timestamp)
         except VisionQAuthError:
             raise
         except VisionQConnectionError as err:
