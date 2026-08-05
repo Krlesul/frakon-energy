@@ -37,6 +37,12 @@ CONF_ADVANCE_VALID_TO = "advance_valid_to"
 CONF_PRICE_VT = "price_vt_czk_kwh"
 CONF_PRICE_NT = "price_nt_czk_kwh"
 CONF_FIXED_MONTHLY = "fixed_monthly_czk"
+CONF_METER_REPLACED = "meter_replaced_during_cycle"
+CONF_METER_REPLACEMENT_DATE = "meter_replacement_date"
+CONF_OLD_METER_END_VT = "old_meter_end_vt_kwh"
+CONF_OLD_METER_END_NT = "old_meter_end_nt_kwh"
+CONF_NEW_METER_START_VT = "new_meter_start_vt_kwh"
+CONF_NEW_METER_START_NT = "new_meter_start_nt_kwh"
 
 
 class FrakonEnergyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -136,6 +142,12 @@ class FrakonEnergyOptionsFlow(config_entries.OptionsFlow):
             vol.Required(CONF_BILLING_BASELINE_NT, default=defaults[CONF_BILLING_BASELINE_NT]): number("kWh"),
             vol.Required(CONF_BILLING_CYCLE_START, default=defaults[CONF_BILLING_CYCLE_START]): selector.DateSelector(),
             vol.Required(CONF_BILLING_SETTLEMENT_DATE, default=defaults[CONF_BILLING_SETTLEMENT_DATE]): selector.DateSelector(),
+            vol.Required(CONF_METER_REPLACED, default=defaults[CONF_METER_REPLACED]): selector.BooleanSelector(),
+            vol.Optional(CONF_METER_REPLACEMENT_DATE, default=defaults[CONF_METER_REPLACEMENT_DATE]): selector.DateSelector(),
+            vol.Optional(CONF_OLD_METER_END_VT, default=defaults[CONF_OLD_METER_END_VT]): number("kWh"),
+            vol.Optional(CONF_OLD_METER_END_NT, default=defaults[CONF_OLD_METER_END_NT]): number("kWh"),
+            vol.Optional(CONF_NEW_METER_START_VT, default=defaults[CONF_NEW_METER_START_VT]): number("kWh"),
+            vol.Optional(CONF_NEW_METER_START_NT, default=defaults[CONF_NEW_METER_START_NT]): number("kWh"),
             vol.Required(CONF_MONTHLY_ADVANCE, default=defaults[CONF_MONTHLY_ADVANCE]): number("Kč", 1),
             vol.Required(CONF_ADVANCE_VALID_FROM, default=defaults[CONF_ADVANCE_VALID_FROM]): selector.DateSelector(),
             vol.Optional(CONF_ADVANCE_VALID_TO, default=defaults[CONF_ADVANCE_VALID_TO]): selector.DateSelector(),
@@ -158,6 +170,12 @@ class FrakonEnergyOptionsFlow(config_entries.OptionsFlow):
             CONF_BILLING_BASELINE_NT: options.get(CONF_BILLING_BASELINE_NT, 0.0),
             CONF_BILLING_CYCLE_START: options.get(CONF_BILLING_CYCLE_START, cycle_start.isoformat()),
             CONF_BILLING_SETTLEMENT_DATE: options.get(CONF_BILLING_SETTLEMENT_DATE, settlement.isoformat()),
+            CONF_METER_REPLACED: options.get(CONF_METER_REPLACED, False),
+            CONF_METER_REPLACEMENT_DATE: options.get(CONF_METER_REPLACEMENT_DATE, ""),
+            CONF_OLD_METER_END_VT: options.get(CONF_OLD_METER_END_VT, 0.0),
+            CONF_OLD_METER_END_NT: options.get(CONF_OLD_METER_END_NT, 0.0),
+            CONF_NEW_METER_START_VT: options.get(CONF_NEW_METER_START_VT, 0.0),
+            CONF_NEW_METER_START_NT: options.get(CONF_NEW_METER_START_NT, 0.0),
             CONF_MONTHLY_ADVANCE: options.get(CONF_MONTHLY_ADVANCE, 5000.0),
             CONF_ADVANCE_VALID_FROM: options.get(CONF_ADVANCE_VALID_FROM, cycle_start.isoformat()),
             CONF_ADVANCE_VALID_TO: options.get(CONF_ADVANCE_VALID_TO, ""),
@@ -182,3 +200,20 @@ class FrakonEnergyOptionsFlow(config_entries.OptionsFlow):
             raise ValueError("advance_outside_cycle")
         if advance_to is not None and advance_to < advance_from:
             raise ValueError("advance_end_before_start")
+        if user_input.get(CONF_METER_REPLACED):
+            replacement_raw = user_input.get(CONF_METER_REPLACEMENT_DATE)
+            if not replacement_raw:
+                raise ValueError("replacement_date_required")
+            replacement = date.fromisoformat(replacement_raw)
+            if replacement < cycle_start or replacement > settlement:
+                raise ValueError("replacement_outside_cycle")
+            old_vt = float(user_input.get(CONF_OLD_METER_END_VT, 0))
+            old_nt = float(user_input.get(CONF_OLD_METER_END_NT, 0))
+            new_vt = float(user_input.get(CONF_NEW_METER_START_VT, 0))
+            new_nt = float(user_input.get(CONF_NEW_METER_START_NT, 0))
+            if old_vt < float(user_input[CONF_BILLING_BASELINE_VT]):
+                raise ValueError("old_meter_vt_below_start")
+            if old_nt < float(user_input[CONF_BILLING_BASELINE_NT]):
+                raise ValueError("old_meter_nt_below_start")
+            if new_vt < 0 or new_nt < 0:
+                raise ValueError("new_meter_start_negative")
