@@ -10,7 +10,7 @@
       },
       "visionq": {
         "title": "VisionQ ElIoT",
-        "description": "Zadejte klasické přihlašovací údaje VisionQ.",
+        "description": "Zadejte přihlašovací údaje k účtu VisionQ.",
         "data": {
           "username": "Uživatelské jméno",
           "password": "Heslo"
@@ -38,6 +38,37 @@
     "abort": {
       "already_configured": "Tento zdroj je již nakonfigurován.",
       "cez_hdo_not_found": "Nebyla nalezena podporovaná integrace ČEZ HDO se strukturovaným rozvrhem."
+    }
+  },
+  "options": {
+    "step": {
+      "billing": {
+        "title": "Vyúčtování a ceny elektřiny",
+        "description": "Nastavte zúčtovací období, počáteční stavy elektroměru, zálohy a ceny. Počáteční VT a NT jsou kumulativní stavy elektroměru, nikoli spotřeba za období.",
+        "data": {
+          "billing_enabled": "Zapnout výpočty vyúčtování",
+          "billing_baseline_date": "Datum počátečního odečtu",
+          "billing_baseline_vt_kwh": "Počáteční stav VT",
+          "billing_baseline_nt_kwh": "Počáteční stav NT",
+          "billing_cycle_start": "Začátek zúčtovacího období",
+          "billing_settlement_date": "Předpokládané datum vyúčtování",
+          "monthly_advance_czk": "Měsíční záloha",
+          "advance_valid_from": "Záloha platí od",
+          "advance_valid_to": "Záloha platí do",
+          "price_vt_czk_kwh": "Cena VT",
+          "price_nt_czk_kwh": "Cena NT",
+          "fixed_monthly_czk": "Stálé měsíční platby"
+        }
+      }
+    },
+    "error": {
+      "baseline_after_cycle_start": "Datum počátečního odečtu nesmí být po začátku zúčtovacího období.",
+      "settlement_before_cycle_start": "Datum vyúčtování nesmí být před začátkem zúčtovacího období.",
+      "advance_outside_cycle": "Začátek platnosti zálohy musí být uvnitř zúčtovacího období.",
+      "advance_end_before_start": "Konec platnosti zálohy nesmí být před jejím začátkem."
+    },
+    "abort": {
+      "no_options_available": "Pro tento zdroj nejsou k dispozici žádná nastavení."
     }
   },
   "device_automation": {
