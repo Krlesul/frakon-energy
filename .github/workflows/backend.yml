@@ -1,0 +1,73 @@
+name: Backend
+
+on:
+  push:
+    branches:
+      - main
+      - feat/frakon-energy-1.0-integration
+  pull_request:
+    paths:
+      - "custom_components/**"
+      - "tests/**"
+      - ".github/workflows/backend.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Compile integration
+        run: python -m compileall -q custom_components/frakon_energy
+
+      - name: Validate JSON files
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          for path in Path("custom_components/frakon_energy").rglob("*.json"):
+              json.loads(path.read_text(encoding="utf-8"))
+              print(f"OK {path}")
+          PY
+
+      - name: Run pure domain smoke test
+        run: |
+          python - <<'PY'
+          import importlib.util
+          from datetime import date
+          from decimal import Decimal
+          from pathlib import Path
+
+          def load(name):
+              path = Path("custom_components/frakon_energy") / f"{name}.py"
+              spec = importlib.util.spec_from_file_location(name, path)
+              module = importlib.util.module_from_spec(spec)
+              spec.loader.exec_module(module)
+              return module
+
+          cost = load("cost")
+          result = cost.calculate_cost_projection(
+              cycle_start=date(2026, 2, 1),
+              settlement_date=date(2027, 1, 31),
+              as_of=date(2026, 8, 5),
+              baseline_high_rate_kwh=Decimal("1000"),
+              baseline_low_rate_kwh=Decimal("2000"),
+              current_high_rate_kwh=Decimal("1300"),
+              current_low_rate_kwh=Decimal("2500"),
+              prices=cost.TariffPrices(Decimal("7.52"), Decimal("4.67"), Decimal("300")),
+          )
+          assert result.high_rate_consumption_kwh == Decimal("300.000")
+          assert result.low_rate_consumption_kwh == Decimal("500.000")
+          assert result.accrued_total_cost_czk > 0
+          assert result.projected_total_cost_czk >= result.accrued_total_cost_czk
+          print(result)
+          PY
