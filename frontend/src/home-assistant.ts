@@ -162,7 +162,7 @@ function readDashboardState(hass?: HomeAssistant): DashboardState {
   const schedules = splitSchedule(scheduleEntity);
 
   let tariff: "NT" | "VT" | "?" = "?";
-  const tariffText = tariffEntity?.state.toUpperCase();
+  const tariffText = tariffEntity?.state.toUpperCase() ?? "";
   if (tariffText === "NT" || tariffText.includes("NIZKY")) tariff = "NT";
   else if (tariffText === "VT" || tariffText.includes("VYSOKY")) tariff = "VT";
   else if (ntActive?.state === "on" || ntActive?.state.toLowerCase() === "true") tariff = "NT";
