@@ -4,6 +4,8 @@ export type HassEntity = {
   entity_id: string;
   state: string;
   attributes: Record<string, unknown>;
+  last_changed?: string;
+  last_updated?: string;
 };
 
 export type HomeAssistant = {
@@ -24,6 +26,7 @@ declare global {
 }
 
 type ScheduleItem = { start: string; end: string; tariff: "NT" | "VT" };
+export type DataQuality = "live" | "fallback" | "missing";
 
 export type DashboardState = {
   connected: boolean;
@@ -46,6 +49,9 @@ export type DashboardState = {
   todayConsumptionKwh: number | null;
   monthConsumptionKwh: number | null;
   settlementDate: string | null;
+  lastUpdated: string | null;
+  hdoQuality: DataQuality;
+  missingSetup: string[];
 };
 
 const EMPTY_STATE: DashboardState = {
@@ -69,30 +75,34 @@ const EMPTY_STATE: DashboardState = {
   todayConsumptionKwh: null,
   monthConsumptionKwh: null,
   settlementDate: null,
+  lastUpdated: null,
+  hdoQuality: "missing",
+  missingSetup: [],
 };
 
-function findState(hass: HomeAssistant, suffix: string): HassEntity | undefined {
-  return Object.values(hass.states).find(
-    (entity) => entity.entity_id.startsWith("sensor.frakon_energy_") && entity.entity_id.endsWith(suffix),
-  );
+const normalize = (value: string) => value.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "_");
+
+function allStates(hass: HomeAssistant): HassEntity[] {
+  return Object.values(hass.states);
 }
 
-function findAnyState(hass: HomeAssistant, suffixes: string[]): HassEntity | undefined {
-  for (const suffix of suffixes) {
-    const entity = findState(hass, suffix);
-    if (entity) return entity;
-  }
-  return undefined;
+function findByAliases(hass: HomeAssistant, aliases: string[]): HassEntity | undefined {
+  const normalizedAliases = aliases.map(normalize);
+  return allStates(hass).find((entity) => {
+    const friendlyName = String(entity.attributes.friendly_name ?? "");
+    const haystack = normalize(`${entity.entity_id} ${friendlyName}`);
+    return normalizedAliases.some((alias) => haystack.includes(alias));
+  });
 }
 
 function numberState(entity: HassEntity | undefined): number | null {
-  if (!entity || ["unknown", "unavailable", "none", "null"].includes(entity.state.toLowerCase())) return null;
-  const value = Number(entity.state);
+  if (!entity || ["unknown", "unavailable", "none", "null", ""].includes(entity.state.toLowerCase())) return null;
+  const value = Number(String(entity.state).replace(",", "."));
   return Number.isFinite(value) ? value : null;
 }
 
 function textState(entity: HassEntity | undefined): string | null {
-  if (!entity || ["unknown", "unavailable", "none", "null"].includes(entity.state.toLowerCase())) return null;
+  if (!entity || ["unknown", "unavailable", "none", "null", ""].includes(entity.state.toLowerCase())) return null;
   return entity.state;
 }
 
@@ -108,9 +118,9 @@ function parseRawSchedule(raw: unknown): ScheduleItem[] {
   return raw.flatMap((item) => {
     if (!item || typeof item !== "object") return [];
     const candidate = item as Record<string, unknown>;
-    const tariff = String(candidate.tariff ?? "").toUpperCase();
-    const start = String(candidate.start ?? "");
-    const end = String(candidate.end ?? "");
+    const tariff = String(candidate.tariff ?? candidate.rate ?? "").toUpperCase();
+    const start = String(candidate.start ?? candidate.from ?? "");
+    const end = String(candidate.end ?? candidate.to ?? "");
     if ((tariff !== "NT" && tariff !== "VT") || !start || !end) return [];
     return [{ start, end, tariff } as ScheduleItem];
   });
@@ -118,63 +128,85 @@ function parseRawSchedule(raw: unknown): ScheduleItem[] {
 
 function sameLocalDate(value: string, target: Date): boolean {
   const date = new Date(value);
-  return !Number.isNaN(date.getTime()) &&
-    date.getFullYear() === target.getFullYear() &&
-    date.getMonth() === target.getMonth() &&
-    date.getDate() === target.getDate();
+  return !Number.isNaN(date.getTime()) && date.getFullYear() === target.getFullYear() && date.getMonth() === target.getMonth() && date.getDate() === target.getDate();
 }
 
 function splitSchedule(entity: HassEntity | undefined): { today: ScheduleItem[]; tomorrow: ScheduleItem[] } {
-  const directToday = parseRawSchedule(entity?.attributes.today_schedule);
-  const directTomorrow = parseRawSchedule(entity?.attributes.tomorrow_schedule);
-  const all = parseRawSchedule(entity?.attributes.schedule);
-
+  const directToday = parseRawSchedule(entity?.attributes.today_schedule ?? entity?.attributes.dnesni_rozvrh);
+  const directTomorrow = parseRawSchedule(entity?.attributes.tomorrow_schedule ?? entity?.attributes.zitrejsi_rozvrh);
+  const all = parseRawSchedule(entity?.attributes.schedule ?? entity?.attributes.intervals ?? entity?.attributes.raw_data);
   const now = new Date();
   const tomorrow = new Date(now);
   tomorrow.setDate(now.getDate() + 1);
-
   return {
     today: directToday.length > 0 ? directToday : all.filter((item) => sameLocalDate(item.start, now)),
     tomorrow: directTomorrow.length > 0 ? directTomorrow : all.filter((item) => sameLocalDate(item.start, tomorrow)),
   };
 }
 
+function normalizeBattery(value: number | null): number | null {
+  if (value === null) return null;
+  if (value >= 0 && value <= 1) return Math.round(value * 1000) / 10;
+  if (value >= 0 && value <= 100) return Math.round(value * 10) / 10;
+  return null;
+}
+
 function readDashboardState(hass?: HomeAssistant): DashboardState {
   if (!hass) return EMPTY_STATE;
 
-  const tariffEntity = findAnyState(hass, ["_tariff", "_tarif"]);
-  const countdownEntity = findAnyState(hass, ["_countdown", "_odpocet"]);
-  const nextSwitchEntity = findAnyState(hass, ["_next_switch", "_dalsi_zmena"]);
-  const scheduleEntity = findAnyState(hass, ["_today_schedule", "_schedule", "_dnesni_rozvrh"]);
+  const tariffEntity = findByAliases(hass, ["frakon energy tariff", "aktualni tarif", "cez hdo aktivni interval", "nizky tarif aktivni", "vysoky tarif aktivni"]);
+  const ntActive = findByAliases(hass, ["nizky tarif aktivni"]);
+  const countdownEntity = findByAliases(hass, ["frakon energy countdown", "cez hdo odpocet", "cez hdo dalsi zmena odpocet", "nizky tarif zbyva", "vysoky tarif zbyva"]);
+  const nextSwitchEntity = findByAliases(hass, ["frakon energy next switch", "cez hdo dalsi zmena", "nizky tarif konec", "nizky tarif zacatek"]);
+  const scheduleEntity = findByAliases(hass, ["frakon energy schedule", "cez hdo dnesni rozvrh", "hdo rozvrh"]);
   const schedules = splitSchedule(scheduleEntity);
 
-  const tariff = tariffEntity?.state === "NT" || tariffEntity?.state === "VT" ? tariffEntity.state : "?";
+  let tariff: "NT" | "VT" | "?" = "?";
+  const tariffText = tariffEntity?.state.toUpperCase();
+  if (tariffText === "NT" || tariffText.includes("NIZKY")) tariff = "NT";
+  else if (tariffText === "VT" || tariffText.includes("VYSOKY")) tariff = "VT";
+  else if (ntActive?.state === "on" || ntActive?.state.toLowerCase() === "true") tariff = "NT";
+  else if (ntActive?.state === "off" || ntActive?.state.toLowerCase() === "false") tariff = "VT";
+
   const nextTimestamp = nextSwitchEntity?.state;
   const nextDate = nextTimestamp && !["unknown", "unavailable"].includes(nextTimestamp) ? new Date(nextTimestamp) : null;
+  const highRateKwh = numberState(findByAliases(hass, ["frakon energy high rate", "vt celkem"]));
+  const lowRateKwh = numberState(findByAliases(hass, ["frakon energy low rate", "nt celkem"]));
+  const monthlyAdvanceCzk = numberState(findByAliases(hass, ["billing monthly advance", "mesicni zaloha", "stala mesicni platba"]));
+  const settlementDate = textState(findByAliases(hass, ["billing settlement date", "predpokladane vyuctovani", "datum vyuctovani"]));
+  const missingSetup: string[] = [];
+  if (monthlyAdvanceCzk === null) missingSetup.push("Měsíční záloha");
+  if (settlementDate === null) missingSetup.push("Datum vyúčtování");
+  if (findByAliases(hass, ["pocatecni stav vt", "baseline high rate"]) === undefined) missingSetup.push("Počáteční stav VT");
+  if (findByAliases(hass, ["pocatecni stav nt", "baseline low rate"]) === undefined) missingSetup.push("Počáteční stav NT");
+
+  const lastEntity = findByAliases(hass, ["posledni aktivita", "frakon energy last activity"]);
+  const lastUpdated = lastEntity?.last_updated ?? lastEntity?.last_changed ?? null;
 
   return {
     connected: true,
     tariff,
     countdownSeconds: parseCountdown(countdownEntity?.state),
-    nextChange: nextDate && !Number.isNaN(nextDate.getTime())
-      ? nextDate.toLocaleTimeString("cs-CZ", { hour: "2-digit", minute: "2-digit" })
-      : null,
+    nextChange: nextDate && !Number.isNaN(nextDate.getTime()) ? nextDate.toLocaleTimeString("cs-CZ", { hour: "2-digit", minute: "2-digit" }) : null,
     todaySchedule: schedules.today,
     tomorrowSchedule: schedules.tomorrow,
-    currentPrice: numberState(findAnyState(hass, ["_current_price", "_aktualni_cena", "_skutecna_cena"])),
-    batteryPercent: numberState(findAnyState(hass, ["_battery_state", "_stav_baterie"])),
-    highRateKwh: numberState(findAnyState(hass, ["_high_rate", "_vt_celkem"])),
-    lowRateKwh: numberState(findAnyState(hass, ["_low_rate", "_nt_celkem"])),
-    monthlyAdvanceCzk: numberState(findAnyState(hass, ["_billing_monthly_advance", "_mesicni_zaloha"])),
-    paidAdvancesCzk: numberState(findAnyState(hass, ["_billing_paid_advances", "_zaplacene_zalohy"])),
-    projectedAdvancesCzk: numberState(findAnyState(hass, ["_billing_projected_advances", "_zalohy_za_cele_obdobi"])),
-    accruedCostCzk: numberState(findAnyState(hass, ["_billing_accrued_cost", "_dosavadni_naklady", "_skutecne_naklady"])),
-    currentBalanceCzk: numberState(findAnyState(hass, ["_billing_current_balance", "_prubezny_rozdil", "_prubezny_preplatek_nedoplatek"])),
-    projectedBalanceCzk: numberState(findAnyState(hass, ["_billing_projected_balance", "_odhad_preplatku_nedoplatku"])),
-    recommendedAdvanceCzk: numberState(findAnyState(hass, ["_billing_recommended_advance", "_doporucena_zaloha"])),
-    todayConsumptionKwh: numberState(findAnyState(hass, ["_today_consumption", "_spotreba_dnes_celkem"])),
-    monthConsumptionKwh: numberState(findAnyState(hass, ["_month_consumption", "_spotreba_tento_mesic"])),
-    settlementDate: textState(findAnyState(hass, ["_billing_settlement_date", "_predpokladane_vyuctovani"])),
+    currentPrice: numberState(findByAliases(hass, ["aktualni cena", "skutecna cena", "current price"])),
+    batteryPercent: normalizeBattery(numberState(findByAliases(hass, ["stav baterie", "battery state", "battery level"]))),
+    highRateKwh,
+    lowRateKwh,
+    monthlyAdvanceCzk,
+    paidAdvancesCzk: numberState(findByAliases(hass, ["zaplacene zalohy", "billing paid advances"])),
+    projectedAdvancesCzk: numberState(findByAliases(hass, ["zalohy za cele obdobi", "billing projected advances"])),
+    accruedCostCzk: numberState(findByAliases(hass, ["dosavadni naklady", "skutecne naklady", "billing accrued cost"])),
+    currentBalanceCzk: numberState(findByAliases(hass, ["prubezny rozdil", "prubezny preplatek nedoplatek", "billing current balance"])),
+    projectedBalanceCzk: numberState(findByAliases(hass, ["odhad preplatku nedoplatku", "billing projected balance"])),
+    recommendedAdvanceCzk: numberState(findByAliases(hass, ["doporucena zaloha", "billing recommended advance"])),
+    todayConsumptionKwh: numberState(findByAliases(hass, ["spotreba dnes celkem", "today consumption"])),
+    monthConsumptionKwh: numberState(findByAliases(hass, ["spotreba tento mesic", "month consumption"])),
+    settlementDate,
+    lastUpdated,
+    hdoQuality: schedules.today.length > 0 || tariff !== "?" ? "live" : "fallback",
+    missingSetup,
   };
 }
 
@@ -185,31 +217,18 @@ export function useFrakonEnergyState(): DashboardState {
   useEffect(() => {
     const timer = window.setInterval(() => setRevision((value) => value + 1), 1000);
     let unsubscribe: (() => void) | undefined;
-
-    hass?.connection?.subscribeEvents?.(
-      () => setRevision((value) => value + 1),
-      "frakon_energy_tariff_changed",
-    ).then((remove) => { unsubscribe = remove; }).catch(() => undefined);
-
-    return () => {
-      window.clearInterval(timer);
-      unsubscribe?.();
-    };
+    hass?.connection?.subscribeEvents?.(() => setRevision((value) => value + 1), "state_changed")
+      .then((remove) => { unsubscribe = remove; }).catch(() => undefined);
+    return () => { window.clearInterval(timer); unsubscribe?.(); };
   }, [hass]);
 
   const source = useMemo(() => readDashboardState(hass), [hass, revision]);
   const [localCountdown, setLocalCountdown] = useState(source.countdownSeconds);
 
-  useEffect(() => {
-    setLocalCountdown(source.countdownSeconds);
-  }, [source.countdownSeconds, source.tariff]);
-
+  useEffect(() => { setLocalCountdown(source.countdownSeconds); }, [source.countdownSeconds, source.tariff]);
   useEffect(() => {
     if (localCountdown === null || localCountdown <= 0) return;
-    const timer = window.setTimeout(
-      () => setLocalCountdown((value) => value === null ? null : Math.max(0, value - 1)),
-      1000,
-    );
+    const timer = window.setTimeout(() => setLocalCountdown((value) => value === null ? null : Math.max(0, value - 1)), 1000);
     return () => window.clearTimeout(timer);
   }, [localCountdown]);
 
