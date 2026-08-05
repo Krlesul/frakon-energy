@@ -8,6 +8,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .const import CONF_PROVIDER, DOMAIN, PROVIDER_CEZ_HDO, PROVIDER_VISIONQ
 from .coordinator import FrakonEnergyCoordinator
 from .hdo_coordinator import CezHdoCoordinator
+from .panel import async_register_panel
 from .providers.visionq import VisionQApiClient
 
 
@@ -29,6 +30,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
+    await async_register_panel(hass)
     return True
 
 
