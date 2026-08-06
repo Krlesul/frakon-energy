@@ -35,9 +35,12 @@ type DiscoverySnapshot = {
 };
 
 type ConfigEntry = { entry_id: string; domain?: string; title?: string };
+type WsConnection = {
+  sendMessagePromise?: <T>(message: Record<string, unknown>) => Promise<T>;
+};
 
 async function callWs<T>(hass: HomeAssistant, message: Record<string, unknown>): Promise<T> {
-  const connection = hass.connection;
+  const connection = hass.connection as WsConnection | undefined;
   if (!connection?.sendMessagePromise) throw new Error("WebSocket Home Assistantu není dostupný.");
   return connection.sendMessagePromise<T>(message);
 }
@@ -84,7 +87,7 @@ export function TechnologySettings({ hass }: { hass?: HomeAssistant }) {
   const technologies = useMemo(() => snapshot?.technologies ?? [], [snapshot]);
 
   const save = async (technology: string, role: string, entityId: string) => {
-    if (!hass || !entry) return;
+    if (!hass || !entry || !entityId) return;
     setBusy(true);
     setError(null);
     try {
