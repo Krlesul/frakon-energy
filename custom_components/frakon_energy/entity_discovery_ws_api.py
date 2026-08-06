@@ -6,7 +6,7 @@ import voluptuous as vol
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 
-from .entity_discovery_runtime import EntityDiscoveryRuntime
+from .entity_discovery_lifecycle import EntityDiscoveryRuntimeRegistry
 from .entity_discovery_websocket import (
     COMMAND_GET,
     COMMAND_REMOVE,
@@ -20,6 +20,7 @@ _REGISTERED_KEY = "entity_discovery_websocket_registered"
 def _command_schema(command: str, *, include_entity: bool = False) -> dict[vol.Marker, Any]:
     schema: dict[vol.Marker, Any] = {
         vol.Required("type"): command,
+        vol.Required("entry_id"): str,
         vol.Optional("include_unavailable", default=False): bool,
     }
     if command in (COMMAND_SAVE, COMMAND_REMOVE):
@@ -30,12 +31,23 @@ def _command_schema(command: str, *, include_entity: bool = False) -> dict[vol.M
     return schema
 
 
+def _runtime(
+    runtime_registry: EntityDiscoveryRuntimeRegistry,
+    msg: Mapping[str, Any],
+):
+    return runtime_registry.get(str(msg["entry_id"]))
+
+
 @callback
 def async_register_entity_discovery_websocket(
     hass: HomeAssistant,
-    runtime: EntityDiscoveryRuntime,
+    runtime_registry: EntityDiscoveryRuntimeRegistry,
 ) -> None:
-    """Register FRAKON Energy entity-discovery WebSocket commands once."""
+    """Register FRAKON Energy entity-discovery WebSocket commands once.
+
+    Commands resolve the runtime from the requested config-entry id so installations
+    with multiple FRAKON Energy entries never read or modify another entry's mapping.
+    """
 
     domain_data = hass.data.setdefault("frakon_energy", {})
     if domain_data.get(_REGISTERED_KEY):
@@ -50,7 +62,9 @@ def async_register_entity_discovery_websocket(
     ) -> None:
         connection.send_result(
             msg["id"],
-            runtime.dispatch(COMMAND_GET, msg, is_admin=connection.user.is_admin),
+            _runtime(runtime_registry, msg).dispatch(
+                COMMAND_GET, msg, is_admin=connection.user.is_admin
+            ),
         )
 
     @websocket_api.websocket_command(_command_schema(COMMAND_RESCAN))
@@ -63,7 +77,7 @@ def async_register_entity_discovery_websocket(
         connection.require_admin()
         connection.send_result(
             msg["id"],
-            runtime.dispatch(COMMAND_RESCAN, msg, is_admin=True),
+            _runtime(runtime_registry, msg).dispatch(COMMAND_RESCAN, msg, is_admin=True),
         )
 
     @websocket_api.websocket_command(_command_schema(COMMAND_SAVE, include_entity=True))
@@ -76,7 +90,7 @@ def async_register_entity_discovery_websocket(
         connection.require_admin()
         connection.send_result(
             msg["id"],
-            runtime.dispatch(COMMAND_SAVE, msg, is_admin=True),
+            _runtime(runtime_registry, msg).dispatch(COMMAND_SAVE, msg, is_admin=True),
         )
 
     @websocket_api.websocket_command(_command_schema(COMMAND_REMOVE))
@@ -89,7 +103,7 @@ def async_register_entity_discovery_websocket(
         connection.require_admin()
         connection.send_result(
             msg["id"],
-            runtime.dispatch(COMMAND_REMOVE, msg, is_admin=True),
+            _runtime(runtime_registry, msg).dispatch(COMMAND_REMOVE, msg, is_admin=True),
         )
 
     websocket_api.async_register_command(hass, websocket_get)
