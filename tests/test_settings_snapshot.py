@@ -5,6 +5,14 @@ from custom_components.frakon_energy.design import (
     DesignStudioPreferences,
     default_design_preferences,
 )
+from custom_components.frakon_energy.overview import (
+    ChartStyle,
+    CostView,
+    OverviewChartPreferences,
+    OverviewPreferences,
+    OverviewWidget,
+    OverviewWidgetPreference,
+)
 from custom_components.frakon_energy.settings_snapshot import (
     build_settings_snapshot,
     settings_completion,
@@ -73,6 +81,44 @@ def test_snapshot_serializes_custom_design_preferences() -> None:
     assert snapshot.design["theme"]["shadow_strength"] == 20
 
 
+def test_snapshot_includes_default_overview_preferences() -> None:
+    snapshot = build_settings_snapshot()
+
+    assert snapshot.overview["visible_widgets"][0] == "current_tariff"
+    assert "hdo_timeline" in snapshot.overview["visible_widgets"]
+    assert "daily_consumption_cost" in snapshot.overview["visible_widgets"]
+    assert "monthly_consumption_cost" in snapshot.overview["visible_widgets"]
+    assert snapshot.overview["charts"]["cost_view"] == "variable_only"
+
+
+def test_snapshot_serializes_custom_overview_preferences() -> None:
+    overview = OverviewPreferences(
+        widgets=(
+            OverviewWidgetPreference(OverviewWidget.HDO_TIMELINE, visible=False, order=0),
+            OverviewWidgetPreference(OverviewWidget.DAILY_CONSUMPTION_COST, order=1),
+            OverviewWidgetPreference(OverviewWidget.MONTHLY_CONSUMPTION_COST, order=2),
+        ),
+        charts=OverviewChartPreferences(
+            daily_style=ChartStyle.TABLE,
+            monthly_style=ChartStyle.SPLIT,
+            cost_view=CostView.TOTAL_WITH_FIXED,
+            show_vt_nt_split=False,
+            show_comparison=True,
+        ),
+    )
+
+    snapshot = build_settings_snapshot(overview=overview)
+
+    assert snapshot.overview["visible_widgets"] == [
+        "daily_consumption_cost",
+        "monthly_consumption_cost",
+    ]
+    assert snapshot.overview["charts"]["daily_style"] == "table"
+    assert snapshot.overview["charts"]["monthly_style"] == "split"
+    assert snapshot.overview["charts"]["cost_view"] == "total_with_fixed"
+    assert snapshot.overview["charts"]["show_vt_nt_split"] is False
+
+
 def test_settings_completion_reports_missing_sections() -> None:
     snapshot = build_settings_snapshot(
         connection={"username": "u", "password": "p"},
@@ -93,6 +139,7 @@ def test_settings_completion_reports_missing_sections() -> None:
         "hdo": False,
         "documents": True,
         "design": True,
+        "overview": True,
         "diagnostics": True,
         "updates": True,
     }
