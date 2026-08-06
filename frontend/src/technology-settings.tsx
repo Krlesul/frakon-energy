@@ -146,6 +146,31 @@ export function TechnologySettings({ hass }: { hass?: HomeAssistant }) {
     }
   };
 
+  const setTechnologyEnabled = async (technology: string, enabled: boolean) => {
+    if (!hass || !entry) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await callWs(hass, {
+        type: "frakon_energy/technology/set_enabled",
+        entry_id: entry.entry_id,
+        technology,
+        enabled,
+      });
+      setSnapshot((current) => current ? {
+        ...current,
+        technologies: (current.technologies ?? []).map((item) =>
+          item.technology === technology ? { ...item, enabled } : item
+        ),
+      } : current);
+      await load(false);
+    } catch (reason) {
+      setError(errorMessage(reason, "Změnu technologie se nepodařilo uložit."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return <article className="chart-card technology-settings">
     <div className="technology-settings__header">
       <div><span className="eyebrow">Technologie domu</span><h2>Existující zařízení a entity</h2></div>
@@ -161,12 +186,21 @@ export function TechnologySettings({ hass }: { hass?: HomeAssistant }) {
     <div className="technology-list">{technologies.map((technology) => {
       const configured = technology.configured_roles ?? technology.configured ?? 0;
       const required = technology.total_roles ?? technology.required ?? technology.roles?.length ?? 0;
+      const enabled = Boolean(technology.enabled);
       return <section className="technology-item" key={technology.technology}>
         <div className="technology-item__title">
           <div><h3>{technology.label ?? technology.technology}</h3><small>{configured} z {required} položek nastaveno</small></div>
-          <span className={technology.enabled ? "technology-state enabled" : "technology-state"}>{technology.enabled ? "Zapnuto" : "Vypnuto"}</span>
+          <label className="technology-toggle">
+            <input
+              type="checkbox"
+              checked={enabled}
+              disabled={busy}
+              onChange={(event) => void setTechnologyEnabled(technology.technology, event.target.checked)}
+            />
+            <span>{enabled ? "Zapnuto" : "Vypnuto"}</span>
+          </label>
         </div>
-        <div className="role-list">{(technology.roles ?? []).map((role) => {
+        {enabled ? <div className="role-list">{(technology.roles ?? []).map((role) => {
           const recommended = role.recommended ?? role.candidates?.[0] ?? null;
           const confirmed = role.selected_entity_id ?? role.confirmed_entity_id ?? null;
           const selected = confirmed ?? recommended?.entity_id ?? "";
@@ -182,7 +216,7 @@ export function TechnologySettings({ hass }: { hass?: HomeAssistant }) {
               {confirmed ? <button disabled={busy} onClick={() => void remove(technology.technology, role.role)}>Odebrat</button> : null}
             </div>
           </div>;
-        })}</div>
+        })}</div> : <p className="missing-reason">Technologie je vypnutá. Přiřazené entity zůstávají uložené.</p>}
       </section>;
     })}</div>
   </article>;
