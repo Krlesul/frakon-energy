@@ -77,15 +77,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await coordinator.async_config_entry_first_refresh()
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
-    runtime = setup_entity_discovery_runtime(
+    runtime_registry = _runtime_registry(hass)
+    setup_entity_discovery_runtime(
         entry_id=entry.entry_id,
-        runtime_registry=_runtime_registry(hass),
+        runtime_registry=runtime_registry,
         profile_provider=lambda: technology_profile_from_options(entry.options),
         registry_provider=lambda: _entity_registry_snapshot(hass),
         options_provider=lambda: entry.options,
         options_updater=lambda options: _update_entry_options(hass, entry, options),
     )
-    async_register_entity_discovery_websocket(hass, runtime)
+    async_register_entity_discovery_websocket(hass, runtime_registry)
 
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
