@@ -1,3 +1,10 @@
+from custom_components.frakon_energy.design import (
+    AccentFamily,
+    AppearanceMode,
+    ThemePreferences,
+    DesignStudioPreferences,
+    default_design_preferences,
+)
 from custom_components.frakon_energy.settings_snapshot import (
     build_settings_snapshot,
     settings_completion,
@@ -36,6 +43,36 @@ def test_snapshot_copies_section_data() -> None:
     assert snapshot.billing["monthly_advance_czk"] == 5000
 
 
+def test_snapshot_includes_default_design_studio_payload() -> None:
+    snapshot = build_settings_snapshot()
+
+    assert snapshot.design["active_layout"] == "Výchozí"
+    assert snapshot.design["theme"]["appearance"] == "system"
+    assert snapshot.design["theme"]["accent"] == "gold"
+    assert len(snapshot.design["layouts"]) == 1
+
+
+def test_snapshot_serializes_custom_design_preferences() -> None:
+    defaults = default_design_preferences()
+    custom = DesignStudioPreferences(
+        theme=ThemePreferences(
+            appearance=AppearanceMode.DARK,
+            accent=AccentFamily.SAPPHIRE,
+            corner_radius_px=16,
+            shadow_strength=20,
+        ),
+        active_layout=defaults.active_layout,
+        layouts=defaults.layouts,
+    )
+
+    snapshot = build_settings_snapshot(design=custom)
+
+    assert snapshot.design["theme"]["appearance"] == "dark"
+    assert snapshot.design["theme"]["accent"] == "sapphire"
+    assert snapshot.design["theme"]["corner_radius_px"] == 16
+    assert snapshot.design["theme"]["shadow_strength"] == 20
+
+
 def test_settings_completion_reports_missing_sections() -> None:
     snapshot = build_settings_snapshot(
         connection={"username": "u", "password": "p"},
@@ -55,6 +92,7 @@ def test_settings_completion_reports_missing_sections() -> None:
         "contract": True,
         "hdo": False,
         "documents": True,
+        "design": True,
         "diagnostics": True,
         "updates": True,
     }
