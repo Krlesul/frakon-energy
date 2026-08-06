@@ -13,7 +13,9 @@ type Candidate = {
 type RoleSuggestion = {
   role: string;
   label?: string;
+  selected_entity_id?: string | null;
   confirmed_entity_id?: string | null;
+  configured?: boolean;
   recommended?: Candidate | null;
   candidates?: Candidate[];
   requires_confirmation?: boolean;
@@ -24,7 +26,9 @@ type TechnologySuggestion = {
   label?: string;
   enabled?: boolean;
   configured?: number;
+  configured_roles?: number;
   required?: number;
+  total_roles?: number;
   roles?: RoleSuggestion[];
 };
 
@@ -41,7 +45,9 @@ type WsConnection = {
 
 async function callWs<T>(hass: HomeAssistant, message: Record<string, unknown>): Promise<T> {
   const connection = hass.connection as WsConnection | undefined;
-  if (!connection?.sendMessagePromise) throw new Error("WebSocket Home Assistantu není dostupný.");
+  if (!connection?.sendMessagePromise) {
+    throw new Error("WebSocket Home Assistantu není dostupný.");
+  }
   return connection.sendMessagePromise<T>(message);
 }
 
@@ -56,6 +62,15 @@ function confidence(candidate?: Candidate | null): number | null {
   return value <= 1 ? Math.round(value * 100) : Math.round(value);
 }
 
+function errorMessage(reason: unknown, fallback: string): string {
+  if (reason instanceof Error && reason.message) return reason.message;
+  if (typeof reason === "object" && reason !== null && "message" in reason) {
+    const message = String((reason as { message?: unknown }).message ?? "");
+    if (message) return message;
+  }
+  return fallback;
+}
+
 export function TechnologySettings({ hass }: { hass?: HomeAssistant }) {
   const [entry, setEntry] = useState<ConfigEntry | null>(null);
   const [snapshot, setSnapshot] = useState<DiscoverySnapshot | null>(null);
@@ -67,22 +82,28 @@ export function TechnologySettings({ hass }: { hass?: HomeAssistant }) {
     setBusy(true);
     setError(null);
     try {
-      const activeEntry = entry ?? await findEntry(hass);
-      if (!activeEntry) throw new Error("Nebyla nalezena položka integrace FRAKON Energy.");
+      const activeEntry = await findEntry(hass);
+      if (!activeEntry) {
+        throw new Error("Nebyla nalezena položka integrace FRAKON Energy.");
+      }
       setEntry(activeEntry);
       const result = await callWs<DiscoverySnapshot>(hass, {
-        type: rescan ? "frakon_energy/entity_discovery/rescan" : "frakon_energy/entity_discovery/get",
+        type: rescan
+          ? "frakon_energy/entity_discovery/rescan"
+          : "frakon_energy/entity_discovery/get",
         entry_id: activeEntry.entry_id,
       });
       setSnapshot(result);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Načtení technologií se nezdařilo.");
+      setError(errorMessage(reason, "Načtení technologií se nezdařilo."));
     } finally {
       setBusy(false);
     }
-  }, [entry, hass]);
+  }, [hass]);
 
-  useEffect(() => { void load(false); }, [load]);
+  useEffect(() => {
+    void load(false);
+  }, [load]);
 
   const technologies = useMemo(() => snapshot?.technologies ?? [], [snapshot]);
 
@@ -100,7 +121,7 @@ export function TechnologySettings({ hass }: { hass?: HomeAssistant }) {
       });
       setSnapshot(result);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Uložení mapování se nezdařilo.");
+      setError(errorMessage(reason, "Uložení mapování se nezdařilo."));
     } finally {
       setBusy(false);
     }
@@ -119,7 +140,7 @@ export function TechnologySettings({ hass }: { hass?: HomeAssistant }) {
       });
       setSnapshot(result);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Odebrání mapování se nezdařilo.");
+      setError(errorMessage(reason, "Odebrání mapování se nezdařilo."));
     } finally {
       setBusy(false);
     }
@@ -128,28 +149,41 @@ export function TechnologySettings({ hass }: { hass?: HomeAssistant }) {
   return <article className="chart-card technology-settings">
     <div className="technology-settings__header">
       <div><span className="eyebrow">Technologie domu</span><h2>Existující zařízení a entity</h2></div>
-      <button className="secondary-action" disabled={busy || !hass} onClick={() => void load(true)}>{busy ? "Pracuji…" : "Znovu vyhledat"}</button>
+      <button className="secondary-action" disabled={busy || !hass} onClick={() => void load(true)}>
+        {busy ? "Pracuji…" : "Znovu vyhledat"}
+      </button>
     </div>
     <p className="settings-copy">FRAKON nejprve použije entity, které už v Home Assistantu existují. Nové entity vytvoří jen pro vlastní výpočty.</p>
     {snapshot ? <div className="discovery-summary"><span>Prohledáno <b>{snapshot.scanned_entities ?? 0}</b></span><span>Použitelných <b>{snapshot.usable_entities ?? 0}</b></span></div> : null}
     {error ? <div className="settings-error">{error}</div> : null}
     {!hass ? <p className="missing-reason">Čekám na připojení k Home Assistantu.</p> : null}
     {hass && !snapshot && !error ? <p className="missing-reason">Načítám technologie a doporučené entity…</p> : null}
-    <div className="technology-list">{technologies.map((technology) => <section className="technology-item" key={technology.technology}>
-      <div className="technology-item__title"><div><h3>{technology.label ?? technology.technology}</h3><small>{technology.configured ?? 0} z {technology.required ?? technology.roles?.length ?? 0} položek nastaveno</small></div><span className={technology.enabled ? "technology-state enabled" : "technology-state"}>{technology.enabled ? "Zapnuto" : "Vypnuto"}</span></div>
-      <div className="role-list">{(technology.roles ?? []).map((role) => {
-        const recommended = role.recommended ?? role.candidates?.[0] ?? null;
-        const selected = role.confirmed_entity_id ?? recommended?.entity_id ?? "";
-        const match = confidence(recommended);
-        return <div className="role-row" key={role.role}>
-          <div className="role-row__label"><b>{role.label ?? role.role}</b>{recommended ? <small>{recommended.device_name || recommended.name || recommended.integration || recommended.entity_id}{match !== null ? ` · shoda ${match} %` : ""}</small> : <small>Nebyla nalezena vhodná entita</small>}</div>
-          <select value={selected} onChange={(event) => void save(technology.technology, role.role, event.target.value)} disabled={busy}>
-            <option value="">Vyberte entitu</option>
-            {(role.candidates ?? (recommended ? [recommended] : [])).map((candidate) => <option key={candidate.entity_id} value={candidate.entity_id}>{candidate.entity_id}</option>)}
-          </select>
-          <div className="role-actions">{recommended && !role.confirmed_entity_id ? <button disabled={busy} onClick={() => void save(technology.technology, role.role, recommended.entity_id)}>Použít doporučené</button> : null}{role.confirmed_entity_id ? <button disabled={busy} onClick={() => void remove(technology.technology, role.role)}>Odebrat</button> : null}</div>
-        </div>;
-      })}</div>
-    </section>)}</div>
+    <div className="technology-list">{technologies.map((technology) => {
+      const configured = technology.configured_roles ?? technology.configured ?? 0;
+      const required = technology.total_roles ?? technology.required ?? technology.roles?.length ?? 0;
+      return <section className="technology-item" key={technology.technology}>
+        <div className="technology-item__title">
+          <div><h3>{technology.label ?? technology.technology}</h3><small>{configured} z {required} položek nastaveno</small></div>
+          <span className={technology.enabled ? "technology-state enabled" : "technology-state"}>{technology.enabled ? "Zapnuto" : "Vypnuto"}</span>
+        </div>
+        <div className="role-list">{(technology.roles ?? []).map((role) => {
+          const recommended = role.recommended ?? role.candidates?.[0] ?? null;
+          const confirmed = role.selected_entity_id ?? role.confirmed_entity_id ?? null;
+          const selected = confirmed ?? recommended?.entity_id ?? "";
+          const match = confidence(recommended);
+          return <div className="role-row" key={role.role}>
+            <div className="role-row__label"><b>{role.label ?? role.role}</b>{recommended ? <small>{recommended.device_name || recommended.name || recommended.integration || recommended.entity_id}{match !== null ? ` · shoda ${match} %` : ""}</small> : <small>Nebyla nalezena vhodná entita</small>}</div>
+            <select value={selected} onChange={(event) => void save(technology.technology, role.role, event.target.value)} disabled={busy}>
+              <option value="">Vyberte entitu</option>
+              {(role.candidates ?? (recommended ? [recommended] : [])).map((candidate) => <option key={candidate.entity_id} value={candidate.entity_id}>{candidate.entity_id}</option>)}
+            </select>
+            <div className="role-actions">
+              {recommended && !confirmed ? <button disabled={busy} onClick={() => void save(technology.technology, role.role, recommended.entity_id)}>Použít doporučené</button> : null}
+              {confirmed ? <button disabled={busy} onClick={() => void remove(technology.technology, role.role)}>Odebrat</button> : null}
+            </div>
+          </div>;
+        })}</div>
+      </section>;
+    })}</div>
   </article>;
 }
