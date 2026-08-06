@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from .dashboard_plan import dashboard_plan_payload
 from .design import DesignStudioPreferences, default_design_preferences, design_payload
 from .overview import OverviewPreferences, default_overview_preferences, overview_payload
 from .settings import public_settings_payload, redact_connection_data
@@ -27,6 +28,7 @@ class SettingsSnapshot:
     design: dict[str, object]
     overview: dict[str, object]
     technologies: dict[str, object]
+    dashboard: dict[str, object]
     diagnostics: dict[str, object]
     updates: dict[str, object]
 
@@ -42,6 +44,7 @@ class SettingsSnapshot:
             "design": self.design,
             "overview": self.overview,
             "technologies": self.technologies,
+            "dashboard": self.dashboard,
             "diagnostics": self.diagnostics,
             "updates": self.updates,
         }
@@ -70,7 +73,11 @@ def build_settings_snapshot(
     Secret connection values are removed before the payload leaves the backend.
     Other sections are copied to prevent the caller from mutating the snapshot.
     Design, Overview and house technology preferences use validated models.
+    The dashboard plan is derived from the same technology profile so unavailable
+    modules never reach the frontend.
     """
+
+    technology_profile = technologies or default_technology_profile()
 
     return SettingsSnapshot(
         sections=public_settings_payload(),
@@ -82,7 +89,8 @@ def build_settings_snapshot(
         documents=_copy_mapping(documents),
         design=design_payload(design or default_design_preferences()),
         overview=overview_payload(overview or default_overview_preferences()),
-        technologies=technology_profile_payload(technologies or default_technology_profile()),
+        technologies=technology_profile_payload(technology_profile),
+        dashboard=dashboard_plan_payload(technology_profile),
         diagnostics=_copy_mapping(diagnostics),
         updates=_copy_mapping(updates),
     )
@@ -101,6 +109,7 @@ def settings_completion(snapshot: SettingsSnapshot) -> dict[str, bool]:
         "design": bool(snapshot.design.get("active_layout")),
         "overview": bool(snapshot.overview.get("widgets")),
         "technologies": bool(snapshot.technologies.get("enabled")),
+        "dashboard": bool(snapshot.dashboard.get("module_ids")),
         "diagnostics": True,
         "updates": bool(snapshot.updates.get("version")),
     }

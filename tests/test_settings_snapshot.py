@@ -17,6 +17,11 @@ from custom_components.frakon_energy.settings_snapshot import (
     build_settings_snapshot,
     settings_completion,
 )
+from custom_components.frakon_energy.technology_profile import (
+    HouseTechnology,
+    HouseTechnologyProfile,
+    TechnologySelection,
+)
 
 
 def test_settings_snapshot_never_exposes_visionq_secrets() -> None:
@@ -119,6 +124,45 @@ def test_snapshot_serializes_custom_overview_preferences() -> None:
     assert snapshot.overview["charts"]["show_vt_nt_split"] is False
 
 
+def test_dashboard_plan_is_derived_from_selected_technologies() -> None:
+    profile = HouseTechnologyProfile(
+        technologies=(
+            TechnologySelection(HouseTechnology.PHOTOVOLTAICS, enabled=True),
+            TechnologySelection(HouseTechnology.HOME_BATTERY, enabled=True),
+            TechnologySelection(HouseTechnology.ELECTRIC_VEHICLE, enabled=True),
+            TechnologySelection(HouseTechnology.WALLBOX, enabled=True),
+            TechnologySelection(HouseTechnology.HDO, enabled=True),
+        )
+    )
+
+    snapshot = build_settings_snapshot(technologies=profile)
+
+    assert snapshot.technologies["enabled"] == [
+        "photovoltaics",
+        "home_battery",
+        "electric_vehicle",
+        "wallbox",
+        "hdo",
+    ]
+    assert "photovoltaics" in snapshot.dashboard["module_ids"]
+    assert "home_battery" in snapshot.dashboard["module_ids"]
+    assert "electric_vehicle" in snapshot.dashboard["module_ids"]
+    assert "wallbox" in snapshot.dashboard["module_ids"]
+    assert "smart_charging" in snapshot.dashboard["module_ids"]
+    assert "hdo_timeline" in snapshot.dashboard["module_ids"]
+    assert "heat_pump" not in snapshot.dashboard["module_ids"]
+
+
+def test_default_dashboard_contains_only_core_modules() -> None:
+    snapshot = build_settings_snapshot()
+
+    assert snapshot.dashboard["module_ids"] == [
+        "energy_summary",
+        "current_tariff",
+        "billing",
+    ]
+
+
 def test_settings_completion_reports_missing_sections() -> None:
     snapshot = build_settings_snapshot(
         connection={"username": "u", "password": "p"},
@@ -140,6 +184,8 @@ def test_settings_completion_reports_missing_sections() -> None:
         "documents": True,
         "design": True,
         "overview": True,
+        "technologies": False,
+        "dashboard": True,
         "diagnostics": True,
         "updates": True,
     }
