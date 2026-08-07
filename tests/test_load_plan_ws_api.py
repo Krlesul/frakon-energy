@@ -3,6 +3,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from custom_components.frakon_energy import load_plan_ws_api
+from custom_components.frakon_energy.const import DOMAIN
+from custom_components.frakon_energy.load_profiles import PROFILE_KIND_EV, LoadProfile, upsert_profile
 
 
 def _interval(start: datetime, price: float) -> dict[str, object]:
@@ -102,3 +104,59 @@ async def test_preview_respects_deadline(monkeypatch: pytest.MonkeyPatch) -> Non
     )
 
     assert plan is None
+
+
+class _FakeEntry:
+    domain = DOMAIN
+
+    def __init__(self, options: dict[str, object]) -> None:
+        self.options = options
+
+
+class _FakeConfigEntries:
+    def __init__(self, entry: _FakeEntry) -> None:
+        self.entry = entry
+
+    def async_get_entry(self, entry_id: str) -> _FakeEntry | None:
+        return self.entry if entry_id == "entry-1" else None
+
+
+class _FakeHass:
+    def __init__(self, entry: _FakeEntry) -> None:
+        self.config_entries = _FakeConfigEntries(entry)
+
+
+@pytest.mark.asyncio
+async def test_preview_profile_uses_persisted_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    profile = LoadProfile("ev-home", "Enyaq", PROFILE_KIND_EV, 120, 11.0)
+    entry = _FakeEntry(upsert_profile({}, profile))
+    hass = _FakeHass(entry)
+    captured: dict[str, object] = {}
+
+    async def fake_preview(hass_arg: object, **kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return {"starts_at": "2026-08-07T22:00:00+02:00", "read_only": True}
+
+    monkeypatch.setattr(load_plan_ws_api, "async_preview_load_plan", fake_preview)
+
+    resolved, plan = await load_plan_ws_api.async_preview_profile_plan(
+        hass, entry_id="entry-1", profile_id="ev-home"
+    )
+
+    assert resolved == profile
+    assert plan is not None
+    assert captured["load_id"] == "ev-home"
+    assert captured["name"] == "Enyaq"
+    assert captured["duration_minutes"] == 120
+    assert captured["power_kw"] == 11.0
+
+
+@pytest.mark.asyncio
+async def test_preview_profile_rejects_disabled_profile() -> None:
+    profile = LoadProfile("ev-home", "Enyaq", PROFILE_KIND_EV, 120, 11.0, enabled=False)
+    hass = _FakeHass(_FakeEntry(upsert_profile({}, profile)))
+
+    with pytest.raises(ValueError, match="disabled"):
+        await load_plan_ws_api.async_preview_profile_plan(
+            hass, entry_id="entry-1", profile_id="ev-home"
+        )
