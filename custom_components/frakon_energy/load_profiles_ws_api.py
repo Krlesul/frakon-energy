@@ -10,6 +10,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 
 from .const import DOMAIN
+from .load_execution_policy import delete_execution_policy, policies_from_options
 from .load_profiles import (
     PROFILE_KINDS,
     LoadProfile,
@@ -118,6 +119,8 @@ def async_register_load_profiles_websocket(hass: HomeAssistant) -> None:
         try:
             entry = _entry(hass, msg["entry_id"])
             options = delete_profile(entry.options, msg["profile_id"])
+            if any(policy.profile_id == msg["profile_id"] for policy in policies_from_options(options)):
+                options = delete_execution_policy(options, msg["profile_id"])
             hass.config_entries.async_update_entry(entry, options=options)
         except (ValueError, TypeError) as err:
             connection.send_error(msg["id"], "invalid_load_profile", str(err))
