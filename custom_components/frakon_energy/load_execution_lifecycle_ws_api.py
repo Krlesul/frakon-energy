@@ -13,6 +13,7 @@ import voluptuous as vol
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 
+from . import load_execution_readiness_ws_api as readiness_ws
 from .const import DOMAIN
 from .energy_load_planner import LoadPlan
 from .load_execution_action_snapshot import ExecutionActionSnapshot
@@ -33,7 +34,7 @@ from .load_execution_readiness import (
     ExecutionReadinessDecision,
     READINESS_READY,
 )
-from . import load_execution_readiness_ws_api as readiness_ws
+from .load_execution_start_scheduler import async_refresh_start_scheduler_if_started
 
 COMMAND_PREPARE_LIFECYCLE = f"{DOMAIN}/load_execution_lifecycle/prepare"
 COMMAND_LIST_LIFECYCLES = f"{DOMAIN}/load_execution_lifecycle/list"
@@ -100,7 +101,7 @@ async def async_prepare_execution_lifecycle(
                 "execution attempt already has a lifecycle for a different plan snapshot"
             )
         existing_call = existing.as_dict()["service_call_performed"]
-        return {
+        payload = {
             "lifecycle": existing.as_dict(),
             "created": False,
             "idempotent_replay": True,
@@ -109,6 +110,8 @@ async def async_prepare_execution_lifecycle(
             "service_call_performed": existing_call,
             "executor_available": False,
         }
+        await async_refresh_start_scheduler_if_started(hass, entry_id)
+        return payload
 
     readiness_payload = await readiness_ws.async_execution_readiness(
         hass,
@@ -145,6 +148,7 @@ async def async_prepare_execution_lifecycle(
         created_at=int(current.timestamp()),
     )
     result = await repository.async_prepare(record)
+    await async_refresh_start_scheduler_if_started(hass, entry_id)
     return {
         **result.as_dict(),
         "prepared_only": True,
