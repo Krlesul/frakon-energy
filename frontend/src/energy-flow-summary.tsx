@@ -1,0 +1,141 @@
+import React, { useEffect, useMemo, useState } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import type { HomeAssistant } from "./home-assistant";
+import "./energy-flow-summary.css";
+
+type CandidateRole = { role: string; selected_entity_id?: string | null; confirmed_entity_id?: string | null };
+type TechnologySuggestion = { technology: string; enabled?: boolean; roles?: CandidateRole[] };
+type DiscoverySnapshot = { technologies?: TechnologySuggestion[] };
+type ConfigEntry = { entry_id: string; domain?: string };
+type WsConnection = { sendMessagePromise?: <T>(message: Record<string, unknown>) => Promise<T> };
+type FlowNode = { id: string; label: string; value: string | null; numeric: number | null; active: boolean };
+
+const HOST_ID = "frakon-energy-flow-host";
+const PROFILE_CHANGED_EVENT = "frakon-energy-technology-profile-changed";
+let root: Root | null = null;
+let cachedSnapshot: DiscoverySnapshot | null = null;
+
+function currentHass(): HomeAssistant | undefined {
+  return window.__FRAKON_ENERGY_HASS__ ?? window.hass;
+}
+
+async function callWs<T>(hass: HomeAssistant, message: Record<string, unknown>): Promise<T> {
+  const connection = hass.connection as WsConnection | undefined;
+  if (!connection?.sendMessagePromise) throw new Error("WebSocket Home Assistantu není dostupný.");
+  return connection.sendMessagePromise<T>(message);
+}
+
+async function loadSnapshot(hass: HomeAssistant): Promise<DiscoverySnapshot> {
+  const entries = await callWs<ConfigEntry[]>(hass, { type: "config_entries/get" });
+  const entry = entries.find((item) => item.domain === "frakon_energy");
+  if (!entry) return {};
+  return callWs<DiscoverySnapshot>(hass, { type: "frakon_energy/entity_discovery/get", entry_id: entry.entry_id });
+}
+
+function isOverviewVisible(): boolean {
+  const label = document.querySelector<HTMLElement>(".view-header > span");
+  return label?.textContent?.trim() === "Přehled";
+}
+
+function overviewAnchor(): HTMLElement | null {
+  if (!isOverviewVisible()) return null;
+  return document.getElementById("frakon-technology-overview-host")
+    ?? document.querySelector<HTMLElement>(".hdo-plan-card")
+    ?? document.querySelector<HTMLElement>(".metrics-grid");
+}
+
+function roleEntity(snapshot: DiscoverySnapshot, technology: string, role: string): string | null {
+  const item = (snapshot.technologies ?? []).find((entry) => entry.technology === technology && entry.enabled);
+  const mapped = item?.roles?.find((entry) => entry.role === role);
+  return mapped?.selected_entity_id ?? mapped?.confirmed_entity_id ?? null;
+}
+
+function powerValue(hass: HomeAssistant, entityId: string | null): { text: string | null; numeric: number | null } {
+  if (!entityId) return { text: null, numeric: null };
+  const entity = hass.states[entityId];
+  if (!entity) return { text: null, numeric: null };
+  const raw = Number(entity.state.replace(",", "."));
+  if (!Number.isFinite(raw)) return { text: null, numeric: null };
+  const unit = String(entity.attributes.unit_of_measurement ?? "").trim();
+  let kw = raw;
+  if (unit === "W") kw = raw / 1000;
+  else if (unit === "MW") kw = raw * 1000;
+  else if (unit && unit !== "kW") return { text: `${entity.state} ${unit}`, numeric: null };
+  const abs = Math.abs(kw);
+  return { text: `${abs.toLocaleString("cs-CZ", { maximumFractionDigits: abs >= 10 ? 1 : 2 })} kW`, numeric: kw };
+}
+
+function EnergyFlow({ hass }: { hass: HomeAssistant }) {
+  const [snapshot, setSnapshot] = useState<DiscoverySnapshot | null>(cachedSnapshot);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    const refresh = () => loadSnapshot(hass).then((value) => {
+      if (!active) return;
+      cachedSnapshot = value;
+      setSnapshot(value);
+      setError(null);
+    }).catch((reason) => {
+      if (active) setError(reason instanceof Error ? reason.message : "Energetický tok se nepodařilo načíst.");
+    });
+    if (!cachedSnapshot) void refresh();
+    window.addEventListener(PROFILE_CHANGED_EVENT, refresh);
+    return () => { active = false; window.removeEventListener(PROFILE_CHANGED_EVENT, refresh); };
+  }, [hass.connection]);
+
+  const nodes = useMemo<FlowNode[]>(() => {
+    if (!snapshot) return [];
+    const specs = [
+      ["pv", "FVE", roleEntity(snapshot, "photovoltaics", "pv_power")],
+      ["grid-in", "Síť · odběr", roleEntity(snapshot, "smart_meter", "grid_import") ?? roleEntity(snapshot, "photovoltaics", "grid_import")],
+      ["grid-out", "Síť · přetok", roleEntity(snapshot, "smart_meter", "grid_export") ?? roleEntity(snapshot, "energy_export", "grid_export") ?? roleEntity(snapshot, "photovoltaics", "grid_export")],
+      ["battery", "Baterie", roleEntity(snapshot, "home_battery", "power")],
+      ["wallbox", "Wallbox", roleEntity(snapshot, "wallbox", "power")],
+      ["ev", "Elektromobil", roleEntity(snapshot, "electric_vehicle", "power")],
+      ["heatpump", "Tepelné čerpadlo", roleEntity(snapshot, "heat_pump", "power")],
+    ] as const;
+    return specs.map(([id, label, entityId]) => {
+      const value = powerValue(hass, entityId);
+      return { id, label, value: value.text, numeric: value.numeric, active: Boolean(entityId) };
+    }).filter((node) => node.active);
+  }, [snapshot, hass.states]);
+
+  if (error) return <section className="energy-flow energy-flow--error">{error}</section>;
+  if (!snapshot || nodes.length < 2) return null;
+
+  const activePower = nodes.filter((node) => node.numeric !== null && Math.abs(node.numeric) > 0.03).length;
+  return <section className="energy-flow">
+    <div className="energy-flow__heading">
+      <div><span className="eyebrow">Živý energetický tok</span><h2>Kam právě teče energie</h2></div>
+      <small>{activePower > 0 ? `${activePower} aktivní toky` : "Toky jsou právě téměř nulové"}</small>
+    </div>
+    <div className="energy-flow__map">
+      <div className="energy-flow__hub"><span>Dům</span><strong>FRAKON</strong><small>živý stav</small></div>
+      {nodes.map((node, index) => {
+        const direction = node.numeric === null || Math.abs(node.numeric) <= 0.03 ? "idle" : node.numeric > 0 ? "positive" : "negative";
+        return <article className={`energy-flow__node energy-flow__node--${direction}`} key={node.id} style={{ "--flow-index": index } as React.CSSProperties}>
+          <span>{node.label}</span><strong>{node.value ?? "Bez dat"}</strong>
+          <i aria-hidden="true" />
+        </article>;
+      })}
+    </div>
+    <p className="energy-flow__note">Směr znaménka u baterie a některých měničů závisí na konkrétní integraci. FRAKON proto zatím zobrazuje naměřené toky bez riskantního dopočtu spotřeby domu.</p>
+  </section>;
+}
+
+function mount(): void {
+  const anchor = overviewAnchor();
+  const stale = document.getElementById(HOST_ID);
+  if (!anchor) { stale?.remove(); root = null; return; }
+  let host = stale;
+  if (!host) { host = document.createElement("section"); host.id = HOST_ID; anchor.insertAdjacentElement("afterend", host); root = createRoot(host); }
+  const hass = currentHass();
+  if (hass) root?.render(<EnergyFlow hass={hass} />);
+}
+
+const observer = new MutationObserver(mount);
+observer.observe(document.documentElement, { childList: true, subtree: true });
+window.addEventListener("frakon-energy-hass-updated", mount);
+window.addEventListener("load", mount);
+mount();
