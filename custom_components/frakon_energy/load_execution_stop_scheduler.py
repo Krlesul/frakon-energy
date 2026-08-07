@@ -1,8 +1,8 @@
 """Internal timer scheduler for durable FRAKON Energy stop obligations.
 
-The scheduler wakes at persisted stop deadlines and may only perform audit-safe
-no-op/verification resolution. It never calls a Home Assistant service and never
-starts or retries a physical stop dispatch.
+The scheduler reconstructs timers from persistent stop state. At an exact due
+boundary it may call only the isolated crash-safe bounded stop dispatcher. An
+unknown physical outcome is never automatically retried.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from homeassistant.helpers.event import async_track_point_in_utc_time
 
 from .const import DOMAIN
 from .load_execution_stop_due_gate import (
+    REASON_DISPATCH_CONFIRMED_STATE_ON,
     STOP_DUE_ALREADY_OFF,
     STOP_DUE_BLOCKED,
     STOP_DUE_COMPLETED,
@@ -44,6 +45,7 @@ STATUS_PROCESSING = "processing"
 STATUS_READY_TO_STOP = "ready_to_stop"
 STATUS_SATISFIED = "satisfied"
 STATUS_VERIFIED = "verified"
+STATUS_DISPATCHED_PENDING_VERIFICATION = "dispatched_pending_verification"
 STATUS_COMPLETED = "completed"
 STATUS_RECOVERY_REVIEW = "recovery_review"
 STATUS_BLOCKED = "blocked"
@@ -164,6 +166,117 @@ class ExecutionStopScheduler:
     def _timestamp(now: datetime) -> str:
         return now.astimezone(timezone.utc).isoformat()
 
+    def _set_status_from_dispatch_result(
+        self,
+        record: ExecutionStopLifecycleRecord,
+        *,
+        result: dict[str, Any],
+        timestamp: str,
+    ) -> None:
+        result_status = str(result.get("status", ""))
+        if result_status in ("stop_verified", "verified_without_redispatch", "already_verified"):
+            status = STATUS_VERIFIED
+        elif result_status in ("already_off_no_dispatch", "already_satisfied_without_dispatch"):
+            status = STATUS_SATISFIED
+        elif result_status in (
+            "stop_dispatched_pending_verification",
+            "stop_confirmed_verification_persistence_failed",
+        ):
+            status = STATUS_DISPATCHED_PENDING_VERIFICATION
+        else:
+            status = STATUS_ERROR
+        self._status_by_start_lifecycle[record.start_lifecycle_id] = StopSchedulerStatus(
+            start_lifecycle_id=record.start_lifecycle_id,
+            stop_lifecycle_id=record.stop_lifecycle_id,
+            entity_id=record.entity_id,
+            status=status,
+            ends_at=record.ends_at,
+            last_processed_at=timestamp,
+            last_error=str(result.get("verification_error")) if result.get("verification_error") else None,
+            dispatch_required=False,
+            resolution_performed=result.get("state_transition_performed") is True,
+            service_call_performed=result.get("service_call_performed"),
+            execution_performed=result.get("execution_performed") is True,
+            executor_available=True,
+        )
+
+    async def _resolve_after_unknown_dispatch(
+        self,
+        start_lifecycle_id: str,
+        *,
+        now: datetime,
+        error: Exception,
+    ) -> None:
+        """Re-observe unknown outcome without ever retrying the physical stop."""
+        repository = stop_lifecycle_repository(self._hass, self._entry_id)
+        record = await repository.async_get_by_start_lifecycle_id(start_lifecycle_id)
+        if record is None:
+            self._status_by_start_lifecycle.pop(start_lifecycle_id, None)
+            return
+        recovery_ready = (
+            stop_recovery_summary(self._hass, self._entry_id).status == STOP_RECOVERY_OK
+        )
+        decision = evaluate_stop_due_gate(
+            record=record,
+            current_state=self._live_state(record),
+            now=now,
+            recovery_ready=recovery_ready,
+        )
+        timestamp = self._timestamp(now)
+        if decision.status == STOP_DUE_SAFE_TO_VERIFY and decision.can_mark_verified:
+            try:
+                result = await async_verify_stop_resolution(
+                    self._hass,
+                    entry_id=self._entry_id,
+                    start_lifecycle_id=start_lifecycle_id,
+                    now=now,
+                )
+            except Exception as verify_err:
+                self._status_by_start_lifecycle[start_lifecycle_id] = StopSchedulerStatus(
+                    start_lifecycle_id=start_lifecycle_id,
+                    stop_lifecycle_id=record.stop_lifecycle_id,
+                    entity_id=record.entity_id,
+                    status=STATUS_ERROR,
+                    ends_at=record.ends_at,
+                    last_processed_at=timestamp,
+                    last_error=f"{error}; recovery verification failed: {verify_err}",
+                    service_call_performed=record.as_dict()["service_call_performed"],
+                    executor_available=True,
+                )
+                return
+            self._status_by_start_lifecycle[start_lifecycle_id] = StopSchedulerStatus(
+                start_lifecycle_id=start_lifecycle_id,
+                stop_lifecycle_id=record.stop_lifecycle_id,
+                entity_id=record.entity_id,
+                status=STATUS_VERIFIED,
+                ends_at=record.ends_at,
+                last_processed_at=timestamp,
+                last_error=str(error),
+                resolution_performed=result.get("resolution_performed") is True,
+                service_call_performed=result.get("service_call_performed"),
+                execution_performed=False,
+                executor_available=True,
+            )
+            return
+        if decision.status == STOP_DUE_RECOVERY_REVIEW:
+            status = STATUS_RECOVERY_REVIEW
+        elif decision.status == STOP_DUE_BLOCKED:
+            status = STATUS_BLOCKED
+        else:
+            status = STATUS_ERROR
+        self._status_by_start_lifecycle[start_lifecycle_id] = StopSchedulerStatus(
+            start_lifecycle_id=start_lifecycle_id,
+            stop_lifecycle_id=record.stop_lifecycle_id,
+            entity_id=record.entity_id,
+            status=status,
+            ends_at=record.ends_at,
+            last_processed_at=timestamp,
+            last_error=str(error),
+            service_call_performed=record.as_dict()["service_call_performed"],
+            execution_performed=False,
+            executor_available=True,
+        )
+
     async def _async_process(self, start_lifecycle_id: str, now: datetime) -> None:
         if not self._started:
             return
@@ -230,6 +343,48 @@ class ExecutionStopScheduler:
                     service_call_performed=result.get("service_call_performed"),
                 )
                 return
+            if decision.status == STOP_DUE_READY and decision.can_dispatch_stop:
+                # Runtime import avoids the scheduler<->dispatcher module import cycle.
+                from .load_execution_stop_dispatcher import (  # noqa: PLC0415
+                    StopDispatchError,
+                    StopDispatchUnknownOutcomeError,
+                    async_dispatch_due_stop,
+                )
+
+                try:
+                    result = await async_dispatch_due_stop(
+                        self._hass,
+                        entry_id=self._entry_id,
+                        start_lifecycle_id=start_lifecycle_id,
+                        context=None,
+                        now=now,
+                        refresh_scheduler=False,
+                    )
+                except StopDispatchUnknownOutcomeError as err:
+                    await self._resolve_after_unknown_dispatch(
+                        start_lifecycle_id,
+                        now=now,
+                        error=err,
+                    )
+                    return
+                except StopDispatchError as err:
+                    self._status_by_start_lifecycle[start_lifecycle_id] = StopSchedulerStatus(
+                        start_lifecycle_id=start_lifecycle_id,
+                        stop_lifecycle_id=record.stop_lifecycle_id,
+                        entity_id=record.entity_id,
+                        status=STATUS_BLOCKED,
+                        ends_at=record.ends_at,
+                        last_processed_at=timestamp,
+                        last_error=str(err),
+                        executor_available=True,
+                    )
+                    return
+                self._set_status_from_dispatch_result(
+                    record,
+                    result=result,
+                    timestamp=timestamp,
+                )
+                return
         except Exception as err:
             self._status_by_start_lifecycle[start_lifecycle_id] = StopSchedulerStatus(
                 start_lifecycle_id=start_lifecycle_id,
@@ -242,17 +397,17 @@ class ExecutionStopScheduler:
             )
             return
 
-        if decision.status == STOP_DUE_READY and decision.can_dispatch_stop:
-            status = STATUS_READY_TO_STOP
-            dispatch_required = True
-        elif decision.status == STOP_DUE_RECOVERY_REVIEW:
+        if decision.status == STOP_DUE_RECOVERY_REVIEW:
             status = STATUS_RECOVERY_REVIEW
             dispatch_required = False
         elif decision.status == STOP_DUE_COMPLETED:
             status = STATUS_COMPLETED
             dispatch_required = False
         elif decision.status == STOP_DUE_BLOCKED:
-            status = STATUS_FAILED if record.state == STOP_STATE_FAILED else STATUS_BLOCKED
+            if decision.reason == REASON_DISPATCH_CONFIRMED_STATE_ON:
+                status = STATUS_DISPATCHED_PENDING_VERIFICATION
+            else:
+                status = STATUS_FAILED if record.state == STOP_STATE_FAILED else STATUS_BLOCKED
             dispatch_required = False
         elif decision.status == STOP_DUE_WAITING:
             status = STATUS_SCHEDULED
@@ -269,10 +424,12 @@ class ExecutionStopScheduler:
             ends_at=record.ends_at,
             last_processed_at=timestamp,
             dispatch_required=dispatch_required,
+            service_call_performed=record.as_dict()["service_call_performed"],
+            executor_available=True,
         )
 
     async def async_refresh(self, *, now: datetime | None = None) -> None:
-        """Rebuild timers from durable stop lifecycles and process due safe work."""
+        """Rebuild timers and process all due stop work exactly once."""
         if not self._started:
             return
         current = now or datetime.now(timezone.utc)
@@ -311,7 +468,11 @@ class ExecutionStopScheduler:
                         timer_active=True,
                     )
                     continue
-                if decision.status in (STOP_DUE_ALREADY_OFF, STOP_DUE_SAFE_TO_VERIFY):
+                if decision.status in (
+                    STOP_DUE_ALREADY_OFF,
+                    STOP_DUE_SAFE_TO_VERIFY,
+                    STOP_DUE_READY,
+                ):
                     immediate.append(record.start_lifecycle_id)
                     new_status[record.start_lifecycle_id] = StopSchedulerStatus(
                         start_lifecycle_id=record.start_lifecycle_id,
@@ -319,30 +480,29 @@ class ExecutionStopScheduler:
                         entity_id=record.entity_id,
                         status=STATUS_PROCESSING,
                         ends_at=record.ends_at,
+                        dispatch_required=decision.status == STOP_DUE_READY,
+                        executor_available=decision.status == STOP_DUE_READY,
                     )
                     continue
-                if decision.status == STOP_DUE_READY:
-                    status = STATUS_READY_TO_STOP
-                    dispatch_required = True
-                elif decision.status == STOP_DUE_RECOVERY_REVIEW:
+                if decision.status == STOP_DUE_RECOVERY_REVIEW:
                     status = STATUS_RECOVERY_REVIEW
-                    dispatch_required = False
                 elif decision.status == STOP_DUE_COMPLETED:
                     status = STATUS_COMPLETED
-                    dispatch_required = False
                 elif decision.status == STOP_DUE_BLOCKED:
-                    status = STATUS_FAILED if record.state == STOP_STATE_FAILED else STATUS_BLOCKED
-                    dispatch_required = False
+                    if decision.reason == REASON_DISPATCH_CONFIRMED_STATE_ON:
+                        status = STATUS_DISPATCHED_PENDING_VERIFICATION
+                    else:
+                        status = STATUS_FAILED if record.state == STOP_STATE_FAILED else STATUS_BLOCKED
                 else:
                     status = STATUS_BLOCKED
-                    dispatch_required = False
                 new_status[record.start_lifecycle_id] = StopSchedulerStatus(
                     start_lifecycle_id=record.start_lifecycle_id,
                     stop_lifecycle_id=record.stop_lifecycle_id,
                     entity_id=record.entity_id,
                     status=status,
                     ends_at=record.ends_at,
-                    dispatch_required=dispatch_required,
+                    service_call_performed=record.as_dict()["service_call_performed"],
+                    executor_available=True,
                 )
             self._status_by_start_lifecycle = new_status
             self._healthy = True
