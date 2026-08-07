@@ -15,7 +15,13 @@ COMMAND_GET_ENERGY_FLOW_SETTINGS = "frakon_energy/energy_flow/get"
 COMMAND_SET_ENERGY_FLOW_SETTINGS = "frakon_energy/energy_flow/set"
 CONF_ENERGY_FLOW = "energy_flow"
 CONF_BATTERY_POWER_SIGN = "battery_power_sign"
+CONF_GRID_METER_SCOPE = "grid_meter_scope"
+CONF_PV_POWER_SCOPE = "pv_power_scope"
+CONF_EV_WALLBOX_RELATION = "ev_wallbox_relation"
 BATTERY_POWER_SIGNS = ("unknown", "positive_is_charge", "positive_is_discharge")
+GRID_METER_SCOPES = ("unknown", "whole_site")
+PV_POWER_SCOPES = ("unknown", "ac_output")
+EV_WALLBOX_RELATIONS = ("unknown", "same_flow", "separate")
 _REGISTERED_KEY = "technology_profile_websocket_registered"
 
 
@@ -35,13 +41,28 @@ def _entry_or_error(
     return entry
 
 
+def _validated(value: Any, allowed: tuple[str, ...], default: str = "unknown") -> str:
+    candidate = str(value if value is not None else default)
+    return candidate if candidate in allowed else default
+
+
 def _flow_settings(options: Mapping[str, Any]) -> dict[str, str]:
     raw = options.get(CONF_ENERGY_FLOW, {})
     stored = raw if isinstance(raw, Mapping) else {}
-    sign = str(stored.get(CONF_BATTERY_POWER_SIGN, "unknown"))
-    if sign not in BATTERY_POWER_SIGNS:
-        sign = "unknown"
-    return {CONF_BATTERY_POWER_SIGN: sign}
+    return {
+        CONF_BATTERY_POWER_SIGN: _validated(
+            stored.get(CONF_BATTERY_POWER_SIGN), BATTERY_POWER_SIGNS
+        ),
+        CONF_GRID_METER_SCOPE: _validated(
+            stored.get(CONF_GRID_METER_SCOPE), GRID_METER_SCOPES
+        ),
+        CONF_PV_POWER_SCOPE: _validated(
+            stored.get(CONF_PV_POWER_SCOPE), PV_POWER_SCOPES
+        ),
+        CONF_EV_WALLBOX_RELATION: _validated(
+            stored.get(CONF_EV_WALLBOX_RELATION), EV_WALLBOX_RELATIONS
+        ),
+    }
 
 
 @callback
@@ -108,7 +129,10 @@ def async_register_technology_profile_websocket(hass: HomeAssistant) -> None:
         {
             vol.Required("type"): COMMAND_SET_ENERGY_FLOW_SETTINGS,
             vol.Required("entry_id"): str,
-            vol.Required(CONF_BATTERY_POWER_SIGN): vol.In(BATTERY_POWER_SIGNS),
+            vol.Optional(CONF_BATTERY_POWER_SIGN): vol.In(BATTERY_POWER_SIGNS),
+            vol.Optional(CONF_GRID_METER_SCOPE): vol.In(GRID_METER_SCOPES),
+            vol.Optional(CONF_PV_POWER_SCOPE): vol.In(PV_POWER_SCOPES),
+            vol.Optional(CONF_EV_WALLBOX_RELATION): vol.In(EV_WALLBOX_RELATIONS),
         }
     )
     @websocket_api.async_response
@@ -122,7 +146,14 @@ def async_register_technology_profile_websocket(hass: HomeAssistant) -> None:
         if entry is None:
             return
         settings = _flow_settings(entry.options)
-        settings[CONF_BATTERY_POWER_SIGN] = str(msg[CONF_BATTERY_POWER_SIGN])
+        for key in (
+            CONF_BATTERY_POWER_SIGN,
+            CONF_GRID_METER_SCOPE,
+            CONF_PV_POWER_SCOPE,
+            CONF_EV_WALLBOX_RELATION,
+        ):
+            if key in msg:
+                settings[key] = str(msg[key])
         options = dict(entry.options)
         options[CONF_ENERGY_FLOW] = settings
         hass.config_entries.async_update_entry(entry, options=options)
