@@ -7,13 +7,16 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant.components import websocket_api
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 
 from .const import DOMAIN
 from .energy_load_planner import FlexibleLoad, plan_flexible_load
+from .load_profiles import LoadProfile, profile_by_id
 from .spot_price_ws_api import async_customer_spot_payload
 
 COMMAND_PREVIEW_LOAD_PLAN = f"{DOMAIN}/load_plan/preview"
+COMMAND_PREVIEW_PROFILE_PLAN = f"{DOMAIN}/load_plan/preview_profile"
 _REGISTERED_KEY = "load_plan_websocket_registered"
 
 
@@ -27,6 +30,20 @@ def _parse_datetime(value: str | None, field: str) -> datetime | None:
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise ValueError(f"{field} must include a timezone offset")
     return parsed
+
+
+def _entry(hass: HomeAssistant, entry_id: str) -> ConfigEntry:
+    entry = hass.config_entries.async_get_entry(entry_id)
+    if entry is None or entry.domain != DOMAIN:
+        raise ValueError("FRAKON Energy config entry not found")
+    return entry
+
+
+def _enabled_profile(entry: ConfigEntry, profile_id: str) -> LoadProfile:
+    profile = profile_by_id(entry.options, profile_id)
+    if not profile.enabled:
+        raise ValueError(f"load profile is disabled: {profile_id}")
+    return profile
 
 
 def _available_intervals(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -78,9 +95,33 @@ async def async_preview_load_plan(
     return result
 
 
+async def async_preview_profile_plan(
+    hass: HomeAssistant,
+    *,
+    entry_id: str,
+    profile_id: str,
+    earliest_start: datetime | None = None,
+    deadline: datetime | None = None,
+    now: datetime | None = None,
+) -> tuple[LoadProfile, dict[str, Any] | None]:
+    """Calculate a preview using persisted profile defaults."""
+    profile = _enabled_profile(_entry(hass, entry_id), profile_id)
+    plan = await async_preview_load_plan(
+        hass,
+        load_id=profile.profile_id,
+        name=profile.name,
+        duration_minutes=profile.duration_minutes,
+        power_kw=profile.power_kw,
+        earliest_start=earliest_start,
+        deadline=deadline,
+        now=now,
+    )
+    return profile, plan
+
+
 @callback
 def async_register_load_plan_websocket(hass: HomeAssistant) -> None:
-    """Register the read-only flexible-load planning command once."""
+    """Register the read-only flexible-load planning commands once."""
     domain_data = hass.data.setdefault(DOMAIN, {})
     if domain_data.get(_REGISTERED_KEY):
         return
@@ -131,5 +172,49 @@ def async_register_load_plan_websocket(hass: HomeAssistant) -> None:
             },
         )
 
+    @websocket_api.websocket_command(
+        {
+            vol.Required("type"): COMMAND_PREVIEW_PROFILE_PLAN,
+            vol.Required("entry_id"): str,
+            vol.Required("profile_id"): str,
+            vol.Optional("earliest_start"): str,
+            vol.Optional("deadline"): str,
+        }
+    )
+    @websocket_api.async_response
+    async def websocket_preview_profile_plan(
+        hass: HomeAssistant,
+        connection: websocket_api.ActiveConnection,
+        msg: dict[str, Any],
+    ) -> None:
+        try:
+            earliest_start = _parse_datetime(msg.get("earliest_start"), "earliest_start")
+            deadline = _parse_datetime(msg.get("deadline"), "deadline")
+            profile, plan = await async_preview_profile_plan(
+                hass,
+                entry_id=msg["entry_id"],
+                profile_id=msg["profile_id"],
+                earliest_start=earliest_start,
+                deadline=deadline,
+            )
+        except ValueError as err:
+            connection.send_error(msg["id"], "invalid_load_profile_plan", str(err))
+            return
+        except Exception as err:
+            connection.send_error(msg["id"], "load_plan_unavailable", str(err))
+            return
+
+        connection.send_result(
+            msg["id"],
+            {
+                "available": plan is not None,
+                "profile": profile.as_dict(),
+                "plan": plan,
+                "command": COMMAND_PREVIEW_PROFILE_PLAN,
+                "read_only": True,
+            },
+        )
+
     websocket_api.async_register_command(hass, websocket_preview_load_plan)
+    websocket_api.async_register_command(hass, websocket_preview_profile_plan)
     domain_data[_REGISTERED_KEY] = True
