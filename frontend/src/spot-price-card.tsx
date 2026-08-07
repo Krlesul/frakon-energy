@@ -3,7 +3,8 @@ import React, { useEffect, useMemo, useState } from "react";
 type CostBreakdown = { wholesale_czk_kwh: number; supplier_fee_czk_kwh: number; variable_additions_czk_kwh: number; vat_czk_kwh: number; total_czk_kwh: number; eur_czk: number };
 type Interval = { starts_at: string; ends_at: string; price_eur_mwh: number; price_czk_kwh: number; wholesale_czk_kwh: number; cost_breakdown: CostBreakdown };
 type DayBucket = { date: string; available: boolean; interval_count: number; intervals: Interval[]; minimum_czk_kwh: number | null; maximum_czk_kwh: number | null; average_czk_kwh: number | null; has_negative_price: boolean };
-type Payload = { today: DayBucket; tomorrow: DayBucket; provider: string; stale: boolean; fallback_used: boolean };
+type ExchangeRate = { pair: string; rate: number; mode: "auto" | "manual"; source: string; fetched_at: string | null; fallback_used: boolean; error: string | null };
+type Payload = { today: DayBucket; tomorrow: DayBucket; provider: string; stale: boolean; fallback_used: boolean; exchange_rate: ExchangeRate };
 type Hass = { callWS<T>(message: Record<string, unknown>): Promise<T> };
 const czk = (value: number) => `${value.toLocaleString("cs-CZ", { minimumFractionDigits: 2, maximumFractionDigits: 3 })} Kč/kWh`;
 
@@ -29,8 +30,10 @@ function DayChart({ day, active }: { day: DayBucket; active: boolean }) {
 
 export function SpotPriceCard() {
   const { data, error } = useSpotPrices(); const [dayKey, setDayKey] = useState<"today" | "tomorrow">("today"); const day = data?.[dayKey];
+  const fx = data?.exchange_rate; const fxLabel = fx ? `${fx.rate.toLocaleString("cs-CZ", { minimumFractionDigits: 2, maximumFractionDigits: 3 })} Kč/EUR · ${fx.source === "CNB" ? "ČNB" : fx.source === "manual" ? "ruční" : "ruční fallback"}` : null;
   return <article className="spot-price-card"><div className="spot-header"><div><span className="eyebrow">Spotový trh · OTE</span><h2>Výsledná cena elektřiny</h2></div><div className="spot-tabs"><button className={dayKey === "today" ? "active" : ""} onClick={() => setDayKey("today")}>Dnes</button><button className={dayKey === "tomorrow" ? "active" : ""} onClick={() => setDayKey("tomorrow")}>Zítra</button></div></div>
     {!data && !error ? <div className="spot-empty">Načítám spotové ceny…</div> : null}{error ? <div className="spot-empty error"><b>Spotové ceny se nepodařilo načíst</b><span>{error}</span></div> : null}
     {day ? <><div className="spot-stats"><div><span>Minimum</span><b>{day.minimum_czk_kwh === null ? "—" : czk(day.minimum_czk_kwh)}</b></div><div><span>Průměr</span><b>{day.average_czk_kwh === null ? "—" : czk(day.average_czk_kwh)}</b></div><div><span>Maximum</span><b>{day.maximum_czk_kwh === null ? "—" : czk(day.maximum_czk_kwh)}</b></div><div><span>Intervaly</span><b>{day.interval_count}</b></div></div><DayChart day={day} active={dayKey === "today"}/></> : null}
+    {fx ? <div className={`spot-fx-status ${fx.fallback_used ? "fallback" : ""}`}><span>Kurz EUR/CZK</span><b>{fxLabel}</b>{fx.fallback_used ? <small>ČNB není dostupná, výpočet bezpečně používá uložený ruční kurz.</small> : fx.mode === "auto" ? <small>Automatický kurz pro přepočet OTE.</small> : <small>Ruční kurz uzamčený v nastavení.</small>}</div> : null}
     {data ? <div className="spot-footer"><span>Zdroj {data.provider} · výsledná cena dle nastavení FRAKON</span>{data.stale ? <b>Poslední známá data</b> : <b>Aktuální data</b>}</div> : null}</article>;
 }
