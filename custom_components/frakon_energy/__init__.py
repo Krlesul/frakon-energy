@@ -21,6 +21,7 @@ from .ha_entity_registry_adapter import registry_records_from_home_assistant
 from .hdo_coordinator import CezHdoCoordinator
 from .panel import async_register_panel
 from .providers.visionq import VisionQApiClient
+from .spot_price_ws_api import async_register_spot_price_websocket
 from .technology_profile_options import technology_profile_from_options
 from .technology_profile_ws_api import async_register_technology_profile_websocket
 
@@ -89,6 +90,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     async_register_entity_discovery_websocket(hass, runtime_registry)
     async_register_technology_profile_websocket(hass)
+    async_register_spot_price_websocket(hass)
 
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
