@@ -108,6 +108,7 @@ async def test_missing_policy_evaluates_as_disabled(monkeypatch: pytest.MonkeyPa
 
     assert result["status"] == DECISION_BLOCKED
     assert REASON_POLICY_DISABLED in result["reasons"]
+    assert result["entity_state"] == "off"
     assert result["execution_performed"] is False
     assert result["executor_available"] is False
 
@@ -130,6 +131,7 @@ async def test_valid_policy_can_only_require_approval(monkeypatch: pytest.Monkey
     assert result["status"] == DECISION_APPROVAL_REQUIRED
     assert result["reasons"] == []
     assert result["entity_available"] is True
+    assert result["entity_state"] == "off"
     assert result["execution_performed"] is False
     assert result["executor_available"] is False
 
@@ -148,6 +150,8 @@ async def test_unavailable_entity_blocks_policy(monkeypatch: pytest.MonkeyPatch)
 
     assert result["status"] == DECISION_BLOCKED
     assert REASON_ENTITY_UNAVAILABLE in result["reasons"]
+    assert result["entity_available"] is False
+    assert result["entity_state"] == "unavailable"
     assert result["execution_performed"] is False
 
 
@@ -166,5 +170,6 @@ async def test_missing_plan_is_blocked_without_execution(monkeypatch: pytest.Mon
     assert result["status"] == DECISION_BLOCKED
     assert REASON_PLAN_UNAVAILABLE in result["reasons"]
     assert result["plan"] is None
+    assert result["entity_state"] == "off"
     assert result["execution_performed"] is False
     assert result["executor_available"] is False
