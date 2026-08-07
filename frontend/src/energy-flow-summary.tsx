@@ -7,7 +7,15 @@ type CandidateRole = { role: string; selected_entity_id?: string | null; confirm
 type TechnologySuggestion = { technology: string; enabled?: boolean; roles?: CandidateRole[] };
 type DiscoverySnapshot = { technologies?: TechnologySuggestion[] };
 type BatteryPowerSign = "unknown" | "positive_is_charge" | "positive_is_discharge";
-type EnergyFlowSettings = { battery_power_sign: BatteryPowerSign };
+type GridMeterScope = "unknown" | "whole_house" | "inverter_branch";
+type PvPowerScope = "unknown" | "gross_generation" | "inverter_net";
+type EvWallboxRelation = "unknown" | "same_flow" | "separate";
+type EnergyFlowSettings = {
+  battery_power_sign: BatteryPowerSign;
+  grid_meter_scope: GridMeterScope;
+  pv_power_scope: PvPowerScope;
+  ev_wallbox_relation: EvWallboxRelation;
+};
 type ConfigEntry = { entry_id: string; domain?: string };
 type WsConnection = { sendMessagePromise?: <T>(message: Record<string, unknown>) => Promise<T> };
 type FlowDirection = "into-house" | "out-of-house" | "house-load" | "bidirectional";
@@ -15,9 +23,15 @@ type FlowNode = { id: string; label: string; entityId: string | null; value: str
 
 const HOST_ID = "frakon-energy-flow-host";
 const PROFILE_CHANGED_EVENT = "frakon-energy-technology-profile-changed";
+const DEFAULT_FLOW_SETTINGS: EnergyFlowSettings = {
+  battery_power_sign: "unknown",
+  grid_meter_scope: "unknown",
+  pv_power_scope: "unknown",
+  ev_wallbox_relation: "unknown",
+};
 let root: Root | null = null;
 let cachedSnapshot: DiscoverySnapshot | null = null;
-let cachedFlowSettings: EnergyFlowSettings = { battery_power_sign: "unknown" };
+let cachedFlowSettings: EnergyFlowSettings = DEFAULT_FLOW_SETTINGS;
 
 function currentHass(): HomeAssistant | undefined { return window.__FRAKON_ENERGY_HASS__ ?? window.hass; }
 
@@ -34,12 +48,12 @@ async function findEntry(hass: HomeAssistant): Promise<ConfigEntry | null> {
 
 async function loadData(hass: HomeAssistant): Promise<{ snapshot: DiscoverySnapshot; settings: EnergyFlowSettings }> {
   const entry = await findEntry(hass);
-  if (!entry) return { snapshot: {}, settings: { battery_power_sign: "unknown" } };
+  if (!entry) return { snapshot: {}, settings: DEFAULT_FLOW_SETTINGS };
   const [snapshot, settings] = await Promise.all([
     callWs<DiscoverySnapshot>(hass, { type: "frakon_energy/entity_discovery/get", entry_id: entry.entry_id }),
-    callWs<EnergyFlowSettings>(hass, { type: "frakon_energy/energy_flow/get", entry_id: entry.entry_id }),
+    callWs<Partial<EnergyFlowSettings>>(hass, { type: "frakon_energy/energy_flow/get", entry_id: entry.entry_id }),
   ]);
-  return { snapshot, settings };
+  return { snapshot, settings: { ...DEFAULT_FLOW_SETTINGS, ...settings } };
 }
 
 function isOverviewVisible(): boolean {
@@ -79,12 +93,12 @@ function formatKw(value: number | null): string {
   return `${abs.toLocaleString("cs-CZ", { maximumFractionDigits: abs >= 10 ? 1 : 2 })} kW`;
 }
 
-function sumUnique(nodes: FlowNode[], directions: FlowDirection[]): number | null {
+function sumUnique(nodes: FlowNode[], directions: FlowDirection[], excludedIds: Set<string> = new Set()): number | null {
   const seen = new Set<string>();
   let total = 0;
   let count = 0;
   for (const node of nodes) {
-    if (!directions.includes(node.direction) || node.numeric === null || !node.entityId || seen.has(node.entityId)) continue;
+    if (excludedIds.has(node.id) || !directions.includes(node.direction) || node.numeric === null || !node.entityId || seen.has(node.entityId)) continue;
     seen.add(node.entityId);
     total += Math.abs(node.numeric);
     count += 1;
@@ -100,6 +114,32 @@ function batteryDirection(value: number | null, sign: BatteryPowerSign): { direc
   return charging
     ? { direction: "house-load", label: "nabíjení baterie" }
     : { direction: "into-house", label: "vybíjení do domu" };
+}
+
+function nodePower(nodes: FlowNode[], id: string): number | null {
+  const value = nodes.find((node) => node.id === id)?.numeric;
+  return typeof value === "number" && Number.isFinite(value) ? Math.abs(value) : null;
+}
+
+function deriveWholeHousePower(nodes: FlowNode[], settings: EnergyFlowSettings): { value: number | null; reason: string } {
+  if (settings.grid_meter_scope !== "whole_house") {
+    return { value: null, reason: "Pro výpočet nastav hlavní elektroměr jako měření celého domu." };
+  }
+  if (settings.pv_power_scope !== "gross_generation") {
+    return { value: null, reason: "Pro bezpečný výpočet musí být výkon FVE označen jako hrubá AC výroba." };
+  }
+  const pv = nodePower(nodes, "pv");
+  if (pv === null) return { value: null, reason: "Chybí potvrzený aktuální výkon FVE." };
+  const gridImport = nodePower(nodes, "grid-in") ?? 0;
+  const gridExport = nodePower(nodes, "grid-out") ?? 0;
+  const batteryNode = nodes.find((node) => node.id === "battery");
+  if (batteryNode?.numeric !== null && batteryNode?.numeric !== undefined && settings.battery_power_sign === "unknown") {
+    return { value: null, reason: "Je připojena baterie, ale není nastaven význam znaménka jejího výkonu." };
+  }
+  const batteryCharge = batteryNode?.direction === "house-load" ? Math.abs(batteryNode.numeric ?? 0) : 0;
+  const batteryDischarge = batteryNode?.direction === "into-house" ? Math.abs(batteryNode.numeric ?? 0) : 0;
+  const value = pv + gridImport + batteryDischarge - gridExport - batteryCharge;
+  return { value: Math.max(0, value), reason: "Odvozeno z FVE, sítě a známého směru baterie." };
 }
 
 function EnergyFlow({ hass }: { hass: HomeAssistant }) {
@@ -158,11 +198,13 @@ function EnergyFlow({ hass }: { hass: HomeAssistant }) {
   if (!snapshot || nodes.length < 2) return null;
 
   const activePower = nodes.filter((node) => node.numeric !== null && Math.abs(node.numeric) > 0.03).length;
+  const duplicateLoads = flowSettings.ev_wallbox_relation === "same_flow" ? new Set(["ev"]) : new Set<string>();
   const knownSources = sumUnique(nodes, ["into-house"]);
-  const knownLoads = sumUnique(nodes, ["house-load"]);
+  const knownLoads = sumUnique(nodes, ["house-load"], duplicateLoads);
   const knownExport = sumUnique(nodes, ["out-of-house"]);
   const battery = nodes.find((node) => node.id === "battery" && node.numeric !== null)?.numeric ?? null;
   const batteryKnown = flowSettings.battery_power_sign !== "unknown";
+  const wholeHouse = deriveWholeHousePower(nodes, flowSettings);
 
   return <section className="energy-flow">
     <div className="energy-flow__heading">
@@ -170,7 +212,7 @@ function EnergyFlow({ hass }: { hass: HomeAssistant }) {
       <small>{activePower > 0 ? `${activePower} aktivní toky` : "Toky jsou právě téměř nulové"}</small>
     </div>
     <div className="energy-flow__map">
-      <div className="energy-flow__hub"><span>Dům</span><strong>FRAKON</strong><small>živý stav</small></div>
+      <div className="energy-flow__hub"><span>Dům</span><strong>{wholeHouse.value !== null ? formatKw(wholeHouse.value) : "FRAKON"}</strong><small>{wholeHouse.value !== null ? "aktuální spotřeba" : "živý stav"}</small></div>
       {nodes.map((node, index) => {
         const live = node.numeric !== null && Math.abs(node.numeric) > 0.03;
         return <article className={`energy-flow__node energy-flow__node--${node.direction}${live ? " energy-flow__node--live" : " energy-flow__node--idle"}`} key={node.id} style={{ "--flow-index": index } as React.CSSProperties}>
@@ -179,12 +221,13 @@ function EnergyFlow({ hass }: { hass: HomeAssistant }) {
       })}
     </div>
     <div className="energy-flow__balance" aria-label="Souhrn dostupných energetických toků">
+      <div><span>Spotřeba domu</span><strong>{formatKw(wholeHouse.value)}</strong><small>{wholeHouse.reason}</small></div>
       <div><span>Zdroje do domu</span><strong>{formatKw(knownSources)}</strong><small>FVE + síť + známé vybíjení baterie</small></div>
-      <div><span>Známé spotřeby</span><strong>{formatKw(knownLoads)}</strong><small>spotřebiče + známé nabíjení baterie</small></div>
+      <div><span>Známé spotřeby</span><strong>{formatKw(knownLoads)}</strong><small>{flowSettings.ev_wallbox_relation === "same_flow" ? "EV není započten dvakrát s wallboxem" : "potvrzené samostatné spotřeby"}</small></div>
       <div><span>Přetok do sítě</span><strong>{formatKw(knownExport)}</strong><small>potvrzené měření exportu</small></div>
       <div><span>Baterie</span><strong>{formatKw(battery)}</strong><small>{batteryKnown ? "směr je započten podle nastavení" : "nastav směr v Technologie domu"}</small></div>
     </div>
-    <p className="energy-flow__note">Souhrn pracuje jen s potvrzenými měřeními. Po nastavení znaménkové konvence baterie umí FRAKON bezpečně rozlišit nabíjení a vybíjení; stále ale netvrdí, že částečná sada měření představuje úplnou spotřebu celého domu.</p>
+    <p className="energy-flow__note">FRAKON vypočítá celkovou spotřebu domu pouze tehdy, když topologie měření jednoznačně dovoluje správnou bilanci. Při neúplném nebo nejasném nastavení zobrazí jen potvrzené toky a důvod, proč celkový výpočet zatím nepoužil.</p>
   </section>;
 }
 
