@@ -23,11 +23,11 @@ from .load_execution_stop_lifecycle import (
     STOP_STATE_VERIFIED,
     ExecutionStopLifecycleRecord,
     StopLifecycleError,
-    satisfy_stop_without_dispatch,
     verify_stop_state,
 )
 from .load_execution_stop_lifecycle_runtime import stop_lifecycle_repository
 from .load_execution_stop_recovery import assert_stop_recovery_ready
+from .load_execution_stop_transition_guard import satisfy_due_stop_without_dispatch
 
 _LOCKS_KEY = "load_execution_stop_resolution_locks_by_entry"
 
@@ -107,7 +107,7 @@ async def async_complete_stop_noop(
         unchanged = await repository.async_get_by_start_lifecycle_id(start_lifecycle_id)
         if unchanged != record:
             raise StopResolutionError("stop lifecycle changed during no-op resolution")
-        updated = satisfy_stop_without_dispatch(
+        updated = satisfy_due_stop_without_dispatch(
             record,
             current_state=live_state,
             now=max(int(current.timestamp()), record.updated_at),
