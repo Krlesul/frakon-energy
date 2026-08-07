@@ -32,7 +32,7 @@ from .load_profiles import LoadProfile
 COMMAND_PREVIEW_APPROVAL = f"{DOMAIN}/load_execution/approval_preview"
 COMMAND_ISSUE_APPROVAL = f"{DOMAIN}/load_execution/approval_issue"
 _REGISTERED_KEY = "load_execution_approval_preview_websocket_registered"
-_AUTHORITY_KEY = "load_execution_approval_authority"
+_AUTHORITY_KEY = "load_execution_approval_authorities_by_entry"
 _DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -97,14 +97,24 @@ def _candidate_from_evaluation(
     return profile, plan, policy
 
 
-def _approval_authority(hass: HomeAssistant) -> ApprovalAuthority:
-    """Return one process-local authority; restart invalidates outstanding approvals."""
+def _approval_authority(hass: HomeAssistant, entry_id: str) -> ApprovalAuthority:
+    """Return one process-local authority per config entry.
+
+    Restart invalidates all outstanding approvals, while separate config entries
+    cannot verify each other's approval IDs even when their candidate data match.
+    """
+    if not entry_id:
+        raise ValueError("entry_id is required for approval authority scope")
     domain_data = hass.data.setdefault(DOMAIN, {})
-    authority = domain_data.get(_AUTHORITY_KEY)
+    authorities = domain_data.get(_AUTHORITY_KEY)
+    if not isinstance(authorities, dict):
+        authorities = {}
+        domain_data[_AUTHORITY_KEY] = authorities
+    authority = authorities.get(entry_id)
     if isinstance(authority, ApprovalAuthority):
         return authority
     authority = ApprovalAuthority.ephemeral()
-    domain_data[_AUTHORITY_KEY] = authority
+    authorities[entry_id] = authority
     return authority
 
 
@@ -198,10 +208,10 @@ async def async_issue_execution_approval(
         )
 
     entity_available = evaluation.get("entity_available")
-    if entity_available not in (True, False, None):
+    if entity_available is not None and not isinstance(entity_available, bool):
         raise ValueError("execution evaluation returned an invalid entity availability state")
 
-    approval = _approval_authority(hass).issue(
+    approval = _approval_authority(hass, entry_id).issue(
         profile,
         plan,
         policy,
@@ -221,6 +231,7 @@ async def async_issue_execution_approval(
         "issued_at": approval.issued_at,
         "expires_at": approval.expires_at,
         "ttl_seconds": approval.expires_at - approval.issued_at,
+        "entry_id": entry_id,
         "profile": profile.as_dict(),
         "policy": policy.as_dict(),
         "plan": plan.as_dict(),
