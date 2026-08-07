@@ -227,21 +227,28 @@ def _validate_existing_attempt_artifact(
         )
 
 
+def _snapshot_scope_matches_attempt(
+    snapshot: ExecutionActionSnapshot,
+    attempt: ExecutionAttempt,
+) -> bool:
+    snapshot.validated()
+    attempt.validated()
+    return (
+        snapshot.attempt_id == attempt.attempt_id
+        and snapshot.entry_id == attempt.entry_id
+        and snapshot.profile_id == attempt.profile_id
+        and snapshot.entity_id == attempt.entity_id
+        and snapshot.approval_id == attempt.approval_id
+        and snapshot.approval_fingerprint == attempt.approval_fingerprint
+        and snapshot.approval_snapshot_digest == attempt.snapshot_digest
+    )
+
+
 def _validate_snapshot_matches_attempt(
     snapshot: ExecutionActionSnapshot,
     attempt: ExecutionAttempt,
 ) -> None:
-    snapshot.validated()
-    attempt.validated()
-    if (
-        snapshot.attempt_id != attempt.attempt_id
-        or snapshot.entry_id != attempt.entry_id
-        or snapshot.profile_id != attempt.profile_id
-        or snapshot.entity_id != attempt.entity_id
-        or snapshot.approval_id != attempt.approval_id
-        or snapshot.approval_fingerprint != attempt.approval_fingerprint
-        or snapshot.approval_snapshot_digest != attempt.snapshot_digest
-    ):
+    if not _snapshot_scope_matches_attempt(snapshot, attempt) or snapshot.created_at != attempt.created_at:
         raise ActionSnapshotConflictError(
             "persisted action snapshot does not match the execution attempt"
         )
@@ -333,23 +340,45 @@ async def async_consume_execution_approval(
         except UnsupportedActionIntentError as err:
             raise ApprovalConsumeError(f"safe action mapping unavailable: {err}") from err
 
-        created_at = int(current.timestamp())
+        current_timestamp = int(current.timestamp())
         attempt = ExecutionAttempt.from_consumed_approval(
             entry_id=entry_id,
             profile_id=profile.profile_id,
             entity_id=profile.entity_id,
             approval=approval,
-            created_at=created_at,
+            created_at=current_timestamp,
         )
-        action_snapshot = ExecutionActionSnapshot.from_attempt_and_intent(
-            attempt=attempt,
-            intent=action_intent,
-            created_at=created_at,
-        )
+        snapshot_repository = action_snapshot_repository(hass, entry_id)
+        orphan_snapshot = await snapshot_repository.async_get_by_attempt_id(attempt.attempt_id)
+        if orphan_snapshot is not None:
+            if not _snapshot_scope_matches_attempt(orphan_snapshot, attempt):
+                raise ActionSnapshotConflictError(
+                    "orphan action snapshot scope does not match the current approval attempt"
+                )
+            if orphan_snapshot.created_at > current_timestamp:
+                raise ActionSnapshotConflictError(
+                    "orphan action snapshot timestamp is in the future"
+                )
+            attempt = ExecutionAttempt.from_consumed_approval(
+                entry_id=entry_id,
+                profile_id=profile.profile_id,
+                entity_id=profile.entity_id,
+                approval=approval,
+                created_at=orphan_snapshot.created_at,
+            )
+            action_snapshot = ExecutionActionSnapshot.from_attempt_and_intent(
+                attempt=attempt,
+                intent=action_intent,
+                created_at=orphan_snapshot.created_at,
+            )
+        else:
+            action_snapshot = ExecutionActionSnapshot.from_attempt_and_intent(
+                attempt=attempt,
+                intent=action_intent,
+                created_at=current_timestamp,
+            )
 
-        snapshot_record = await action_snapshot_repository(hass, entry_id).async_record(
-            action_snapshot
-        )
+        snapshot_record = await snapshot_repository.async_record(action_snapshot)
         attempt_record = await attempt_repository.async_record(attempt)
 
         consumed = authority.consume(
