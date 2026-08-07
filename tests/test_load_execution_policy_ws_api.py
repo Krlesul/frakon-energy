@@ -10,6 +10,7 @@ from custom_components.frakon_energy.load_execution_policy import (
     DECISION_BLOCKED,
     REASON_ENTITY_UNAVAILABLE,
     REASON_POLICY_DISABLED,
+    REASON_PROFILE_DISABLED,
     LoadExecutionPolicy,
 )
 from custom_components.frakon_energy.load_execution_policy_options import upsert_policy
@@ -60,6 +61,13 @@ def _plan(profile: LoadProfile) -> dict[str, object]:
     }
 
 
+def _patch_preview(monkeypatch: pytest.MonkeyPatch, profile: LoadProfile, value: dict[str, object] | None) -> None:
+    async def fake_preview(*args: object, **kwargs: object) -> dict[str, object] | None:
+        return value
+
+    monkeypatch.setattr(load_execution_policy_ws_api, "async_preview_load_plan", fake_preview)
+
+
 @pytest.mark.asyncio
 async def test_evaluate_returns_approval_required_for_available_bound_entity(monkeypatch: pytest.MonkeyPatch) -> None:
     profile = LoadProfile("ev", "Enyaq", PROFILE_KIND_EV, 120, 11.0, True, "switch.ev_charging")
@@ -67,11 +75,8 @@ async def test_evaluate_returns_approval_required_for_available_bound_entity(mon
     options = upsert_policy(options, LoadExecutionPolicy("ev", EXECUTION_MODE_APPROVAL_REQUIRED, 11.0, 120))
     entry = SimpleNamespace(entry_id="entry", domain="frakon_energy", options=options)
     hass = FakeHass(entry, {"switch.ev_charging": SimpleNamespace(state="off")})
+    _patch_preview(monkeypatch, profile, _plan(profile))
 
-    async def fake_preview(*args: object, **kwargs: object) -> tuple[LoadProfile, dict[str, object]]:
-        return profile, _plan(profile)
-
-    monkeypatch.setattr(load_execution_policy_ws_api, "async_preview_profile_plan", fake_preview)
     result = await load_execution_policy_ws_api.async_evaluate_profile_policy(hass, entry_id="entry", profile_id="ev")
 
     assert result["available"] is True
@@ -90,11 +95,8 @@ async def test_evaluate_blocks_unavailable_entity(monkeypatch: pytest.MonkeyPatc
     options = upsert_policy(options, LoadExecutionPolicy("ev", EXECUTION_MODE_APPROVAL_REQUIRED, 11.0, 120))
     entry = SimpleNamespace(entry_id="entry", domain="frakon_energy", options=options)
     hass = FakeHass(entry, {"switch.ev_charging": SimpleNamespace(state="unavailable")})
+    _patch_preview(monkeypatch, profile, _plan(profile))
 
-    async def fake_preview(*args: object, **kwargs: object) -> tuple[LoadProfile, dict[str, object]]:
-        return profile, _plan(profile)
-
-    monkeypatch.setattr(load_execution_policy_ws_api, "async_preview_profile_plan", fake_preview)
     result = await load_execution_policy_ws_api.async_evaluate_profile_policy(hass, entry_id="entry", profile_id="ev")
 
     assert result["decision"]["status"] == DECISION_BLOCKED
@@ -108,11 +110,8 @@ async def test_evaluate_missing_policy_is_disabled(monkeypatch: pytest.MonkeyPat
     options = upsert_profile({}, profile)
     entry = SimpleNamespace(entry_id="entry", domain="frakon_energy", options=options)
     hass = FakeHass(entry, {"switch.ev_charging": SimpleNamespace(state="off")})
+    _patch_preview(monkeypatch, profile, _plan(profile))
 
-    async def fake_preview(*args: object, **kwargs: object) -> tuple[LoadProfile, dict[str, object]]:
-        return profile, _plan(profile)
-
-    monkeypatch.setattr(load_execution_policy_ws_api, "async_preview_profile_plan", fake_preview)
     result = await load_execution_policy_ws_api.async_evaluate_profile_policy(hass, entry_id="entry", profile_id="ev")
 
     assert result["policy"]["mode"] == EXECUTION_MODE_DISABLED
@@ -121,16 +120,28 @@ async def test_evaluate_missing_policy_is_disabled(monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.asyncio
+async def test_evaluate_disabled_profile_returns_blocked_verdict(monkeypatch: pytest.MonkeyPatch) -> None:
+    profile = LoadProfile("ev", "Enyaq", PROFILE_KIND_EV, 120, 11.0, False, "switch.ev_charging")
+    options = upsert_profile({}, profile)
+    options = upsert_policy(options, LoadExecutionPolicy("ev", EXECUTION_MODE_APPROVAL_REQUIRED, 11.0, 120))
+    entry = SimpleNamespace(entry_id="entry", domain="frakon_energy", options=options)
+    hass = FakeHass(entry, {"switch.ev_charging": SimpleNamespace(state="off")})
+    _patch_preview(monkeypatch, profile, _plan(profile))
+
+    result = await load_execution_policy_ws_api.async_evaluate_profile_policy(hass, entry_id="entry", profile_id="ev")
+
+    assert result["decision"]["status"] == DECISION_BLOCKED
+    assert REASON_PROFILE_DISABLED in result["decision"]["reasons"]
+
+
+@pytest.mark.asyncio
 async def test_evaluate_no_plan_stays_read_only_and_returns_no_decision(monkeypatch: pytest.MonkeyPatch) -> None:
     profile = LoadProfile("ev", "Enyaq", PROFILE_KIND_EV, 120, 11.0, True, "switch.ev_charging")
     options = upsert_profile({}, profile)
     entry = SimpleNamespace(entry_id="entry", domain="frakon_energy", options=options)
     hass = FakeHass(entry, {"switch.ev_charging": SimpleNamespace(state="off")})
+    _patch_preview(monkeypatch, profile, None)
 
-    async def fake_preview(*args: object, **kwargs: object) -> tuple[LoadProfile, None]:
-        return profile, None
-
-    monkeypatch.setattr(load_execution_policy_ws_api, "async_preview_profile_plan", fake_preview)
     result = await load_execution_policy_ws_api.async_evaluate_profile_policy(hass, entry_id="entry", profile_id="ev")
 
     assert result["available"] is False
