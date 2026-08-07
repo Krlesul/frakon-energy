@@ -31,6 +31,7 @@ MAX_APPROVAL_TTL_SECONDS = 300
 VERIFY_OK = "ok"
 VERIFY_UNKNOWN_APPROVAL = "unknown_approval"
 VERIFY_REPLAYED = "replayed"
+VERIFY_REVOKED = "revoked"
 VERIFY_EXPIRED = "expired"
 VERIFY_NOT_YET_VALID = "not_yet_valid"
 VERIFY_INVALID_SIGNATURE = "invalid_signature"
@@ -42,6 +43,14 @@ def _aware_timestamp(value: datetime, field: str) -> int:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError(f"{field} must be timezone-aware")
     return int(value.timestamp())
+
+
+def _plan_timestamp(value: str, field: str) -> int:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as err:
+        raise ValueError(f"{field} must be an ISO-8601 datetime") from err
+    return _aware_timestamp(parsed, field)
 
 
 def _canonical_json(value: Any) -> bytes:
@@ -96,11 +105,11 @@ class ApprovalVerification:
 
 
 class ApprovalAuthority:
-    """Issue and consume ephemeral HMAC approvals.
+    """Issue, revoke and consume ephemeral HMAC approvals.
 
-    The secret and replay registry are intentionally process-local. Creating a
-    new authority after restart invalidates all outstanding approvals, which is
-    the fail-closed behavior until durable approval state is designed.
+    The secret and replay/revocation registries are intentionally process-local.
+    Creating a new authority after restart invalidates all outstanding approvals,
+    which is the fail-closed behavior until durable approval state is designed.
     """
 
     def __init__(self, secret: bytes) -> None:
@@ -109,6 +118,7 @@ class ApprovalAuthority:
         self._secret = secret
         self._issued_ids: set[str] = set()
         self._consumed_ids: set[str] = set()
+        self._revoked_ids: set[str] = set()
 
     @classmethod
     def ephemeral(cls) -> "ApprovalAuthority":
@@ -163,10 +173,18 @@ class ApprovalAuthority:
         now: datetime,
         ttl_seconds: int = DEFAULT_APPROVAL_TTL_SECONDS,
     ) -> ExecutionApproval:
-        """Issue an approval only for a candidate currently requiring approval."""
+        """Issue an approval only for a candidate currently requiring approval.
+
+        Approval validity is capped at the plan start. An approval can therefore
+        never authorize a late start after its immutable planned window begins.
+        """
         issued_at = _aware_timestamp(now, "now")
         if ttl_seconds <= 0 or ttl_seconds > MAX_APPROVAL_TTL_SECONDS:
             raise ValueError(f"ttl_seconds must be between 1 and {MAX_APPROVAL_TTL_SECONDS}")
+
+        plan_starts_at = _plan_timestamp(plan.starts_at, "plan.starts_at")
+        if issued_at >= plan_starts_at:
+            raise ValueError("cannot issue approval after the plan has started")
 
         decision = evaluate_execution_policy(
             profile,
@@ -181,7 +199,7 @@ class ApprovalAuthority:
         while approval_id in self._issued_ids:
             approval_id = secrets.token_urlsafe(18)
         snapshot_digest = execution_snapshot_digest(profile, plan, policy)
-        expires_at = issued_at + ttl_seconds
+        expires_at = min(issued_at + ttl_seconds, plan_starts_at)
         signature = self._sign(
             approval_id=approval_id,
             snapshot_digest=snapshot_digest,
@@ -223,6 +241,8 @@ class ApprovalAuthority:
             return self._result(approval, False, VERIFY_INVALID_SIGNATURE)
         if approval.approval_id not in self._issued_ids:
             return self._result(approval, False, VERIFY_UNKNOWN_APPROVAL)
+        if approval.approval_id in self._revoked_ids:
+            return self._result(approval, False, VERIFY_REVOKED)
         if approval.approval_id in self._consumed_ids:
             return self._result(approval, False, VERIFY_REPLAYED, consumed=True)
         if approval.intent != APPROVAL_INTENT_EXECUTE_LOAD_PLAN:
@@ -262,6 +282,15 @@ class ApprovalAuthority:
         if decision.status != DECISION_APPROVAL_REQUIRED or decision.reasons:
             return self._result(approval, False, VERIFY_POLICY_NOT_ELIGIBLE)
         return self._result(approval, True, VERIFY_OK)
+
+    def revoke(self, approval: ExecutionApproval) -> ApprovalVerification:
+        """Revoke a known, not-yet-consumed approval without execution."""
+        if approval.approval_id not in self._issued_ids:
+            return self._result(approval, False, VERIFY_UNKNOWN_APPROVAL)
+        if approval.approval_id in self._consumed_ids:
+            return self._result(approval, False, VERIFY_REPLAYED, consumed=True)
+        self._revoked_ids.add(approval.approval_id)
+        return self._result(approval, False, VERIFY_REVOKED)
 
     def consume(
         self,
