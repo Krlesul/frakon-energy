@@ -1,7 +1,8 @@
-"""Admin-only approval consumption and persistent attempt audit for FRAKON Energy.
+"""Admin-only approval consumption with persistent attempt and action snapshot audit.
 
-This module consumes a signed approval into an idempotent persistent attempt.
-It deliberately contains no Home Assistant service call and no device executor.
+The transaction order is deliberately verify -> persist immutable action snapshot
+-> persist execution attempt -> consume approval. No Home Assistant service call
+or device executor exists in this module.
 """
 
 from __future__ import annotations
@@ -19,6 +20,12 @@ from homeassistant.core import HomeAssistant, callback
 
 from .const import DOMAIN
 from .energy_load_planner import LoadPlan
+from .load_action_intent import UnsupportedActionIntentError, resolve_start_action_intent
+from .load_execution_action_snapshot import (
+    ActionSnapshotConflictError,
+    ExecutionActionSnapshot,
+)
+from .load_execution_action_snapshot_runtime import action_snapshot_repository
 from .load_execution_approval import ExecutionApproval
 from .load_execution_approval_ws_api import _approval_authority
 from .load_execution_attempt import (
@@ -78,11 +85,18 @@ def _transaction_lock(hass: HomeAssistant, entry_id: str) -> asyncio.Lock:
     return lock
 
 
-def _entity_available(hass: HomeAssistant, entity_id: str | None) -> bool | None:
+def _entity_state(hass: HomeAssistant, entity_id: str | None) -> str | None:
     if not entity_id:
         return None
     state = hass.states.get(entity_id)
-    return state is not None and state.state not in {"unknown", "unavailable"}
+    return str(state.state) if state is not None else None
+
+
+def _entity_available(hass: HomeAssistant, entity_id: str | None) -> bool | None:
+    state = _entity_state(hass, entity_id)
+    if state is None:
+        return None if not entity_id else False
+    return state not in {"unknown", "unavailable"}
 
 
 def _approval_from_dict(value: Any) -> ExecutionApproval:
@@ -158,8 +172,7 @@ def _plan_from_snapshot(profile: LoadProfile, value: Any, *, now: datetime) -> L
         raise ApprovalConsumeError("plan duration_minutes must be a positive multiple of 15")
     if not isinstance(interval_count, int) or isinstance(interval_count, bool) or interval_count != duration // 15:
         raise ApprovalConsumeError("plan interval_count does not match duration_minutes")
-    expected_seconds = duration * 60
-    if int((ends - starts).total_seconds()) != expected_seconds:
+    if int((ends - starts).total_seconds()) != duration * 60:
         raise ApprovalConsumeError("plan time window does not match duration_minutes")
 
     power = _finite_number(value.get("power_kw"), "power_kw")
@@ -175,8 +188,7 @@ def _plan_from_snapshot(profile: LoadProfile, value: Any, *, now: datetime) -> L
     expected_energy = power * duration / 60
     if not math.isclose(energy, expected_energy, rel_tol=1e-9, abs_tol=1e-9):
         raise ApprovalConsumeError("plan estimated_energy_kwh is inconsistent")
-    expected_cost = energy * average
-    if not math.isclose(cost, expected_cost, rel_tol=1e-9, abs_tol=1e-9):
+    if not math.isclose(cost, energy * average, rel_tol=1e-9, abs_tol=1e-9):
         raise ApprovalConsumeError("plan estimated_cost_czk is inconsistent")
 
     return LoadPlan(
@@ -195,13 +207,13 @@ def _plan_from_snapshot(profile: LoadProfile, value: Any, *, now: datetime) -> L
     )
 
 
-def _idempotent_existing_result(
+def _validate_existing_attempt_artifact(
     existing: ExecutionAttempt,
     *,
     approval: ExecutionApproval,
     entry_id: str,
     profile_id: str,
-) -> dict[str, Any]:
+) -> None:
     fingerprint = approval_artifact_fingerprint(approval)
     if (
         existing.entry_id != entry_id
@@ -213,12 +225,60 @@ def _idempotent_existing_result(
         raise AttemptConflictError(
             "approval_id already has a persisted attempt with different artifact or scope"
         )
+
+
+def _validate_snapshot_matches_attempt(
+    snapshot: ExecutionActionSnapshot,
+    attempt: ExecutionAttempt,
+) -> None:
+    snapshot.validated()
+    attempt.validated()
+    if (
+        snapshot.attempt_id != attempt.attempt_id
+        or snapshot.entry_id != attempt.entry_id
+        or snapshot.profile_id != attempt.profile_id
+        or snapshot.entity_id != attempt.entity_id
+        or snapshot.approval_id != attempt.approval_id
+        or snapshot.approval_fingerprint != attempt.approval_fingerprint
+        or snapshot.approval_snapshot_digest != attempt.snapshot_digest
+    ):
+        raise ActionSnapshotConflictError(
+            "persisted action snapshot does not match the execution attempt"
+        )
+
+
+async def _idempotent_existing_result(
+    hass: HomeAssistant,
+    existing: ExecutionAttempt,
+    *,
+    approval: ExecutionApproval,
+    entry_id: str,
+    profile_id: str,
+) -> dict[str, Any]:
+    _validate_existing_attempt_artifact(
+        existing,
+        approval=approval,
+        entry_id=entry_id,
+        profile_id=profile_id,
+    )
+    snapshot = await action_snapshot_repository(hass, entry_id).async_get_by_attempt_id(
+        existing.attempt_id
+    )
+    if snapshot is None:
+        raise ApprovalConsumeError(
+            "persisted execution attempt is missing its immutable action snapshot"
+        )
+    _validate_snapshot_matches_attempt(snapshot, existing)
     return {
         "attempt": existing.as_dict(),
+        "action_snapshot": snapshot.as_dict(),
         "created": False,
         "idempotent_replay": True,
+        "action_snapshot_created": False,
+        "action_snapshot_idempotent_replay": True,
         "approval_consumed": True,
         "execution_performed": False,
+        "service_call_performed": False,
         "executor_available": False,
     }
 
@@ -232,17 +292,18 @@ async def async_consume_execution_approval(
     plan_value: Any,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Persist and consume one approval exactly once without executing a device action."""
+    """Persist action snapshot + attempt, then consume approval, without execution."""
     current = now or datetime.now(timezone.utc)
     if current.tzinfo is None or current.utcoffset() is None:
         raise ApprovalConsumeError("now must be timezone-aware")
     approval = _approval_from_dict(approval_value)
 
     async with _transaction_lock(hass, entry_id):
-        repository = _attempt_repository(hass, entry_id)
-        existing = await repository.async_get_by_approval_id(approval.approval_id)
+        attempt_repository = _attempt_repository(hass, entry_id)
+        existing = await attempt_repository.async_get_by_approval_id(approval.approval_id)
         if existing is not None:
-            return _idempotent_existing_result(
+            return await _idempotent_existing_result(
+                hass,
                 existing,
                 approval=approval,
                 entry_id=entry_id,
@@ -267,19 +328,29 @@ async def async_consume_execution_approval(
         if not verification.valid:
             raise ApprovalConsumeError(f"approval verification failed: {verification.reason}")
 
+        try:
+            action_intent = resolve_start_action_intent(profile)
+        except UnsupportedActionIntentError as err:
+            raise ApprovalConsumeError(f"safe action mapping unavailable: {err}") from err
+
+        created_at = int(current.timestamp())
         attempt = ExecutionAttempt.from_consumed_approval(
             entry_id=entry_id,
             profile_id=profile.profile_id,
             entity_id=profile.entity_id,
             approval=approval,
-            created_at=int(current.timestamp()),
+            created_at=created_at,
         )
-        recorded = await repository.async_record(attempt)
-        if not recorded.created:
-            return {
-                **recorded.as_dict(),
-                "approval_consumed": True,
-            }
+        action_snapshot = ExecutionActionSnapshot.from_attempt_and_intent(
+            attempt=attempt,
+            intent=action_intent,
+            created_at=created_at,
+        )
+
+        snapshot_record = await action_snapshot_repository(hass, entry_id).async_record(
+            action_snapshot
+        )
+        attempt_record = await attempt_repository.async_record(attempt)
 
         consumed = authority.consume(
             approval,
@@ -291,11 +362,19 @@ async def async_consume_execution_approval(
         )
         if not consumed.valid or not consumed.consumed:
             raise RuntimeError(
-                f"approval became invalid after attempt persistence: {consumed.reason}"
+                f"approval became invalid after audit persistence: {consumed.reason}"
             )
         return {
-            **recorded.as_dict(),
+            "attempt": attempt_record.attempt.as_dict(),
+            "action_snapshot": snapshot_record.snapshot.as_dict(),
+            "created": attempt_record.created,
+            "idempotent_replay": attempt_record.idempotent_replay,
+            "action_snapshot_created": snapshot_record.created,
+            "action_snapshot_idempotent_replay": snapshot_record.idempotent_replay,
             "approval_consumed": True,
+            "execution_performed": False,
+            "service_call_performed": False,
+            "executor_available": False,
         }
 
 
@@ -310,6 +389,7 @@ async def async_list_execution_attempts(
         "entry_id": entry_id,
         "attempts": [attempt.as_dict() for attempt in attempts],
         "execution_performed": False,
+        "service_call_performed": False,
         "executor_available": False,
     }
 
@@ -347,6 +427,9 @@ def async_register_load_execution_consume_websocket(hass: HomeAssistant) -> None
             )
         except AttemptConflictError as err:
             connection.send_error(msg["id"], "execution_attempt_conflict", str(err))
+            return
+        except ActionSnapshotConflictError as err:
+            connection.send_error(msg["id"], "execution_action_snapshot_conflict", str(err))
             return
         except ApprovalConsumeError as err:
             connection.send_error(msg["id"], "execution_approval_consume_rejected", str(err))
