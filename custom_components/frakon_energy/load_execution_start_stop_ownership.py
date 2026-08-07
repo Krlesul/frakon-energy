@@ -1,9 +1,9 @@
 """Cross-store ownership proof for bounded start recovery.
 
 A recovered/confirmed start must not be marked verified unless its exact durable
-stop lease and stop lifecycle already exist. This prevents a crash between
-persisting start ``dispatching`` and persisting stop ownership from producing a
-verified unbounded run.
+stop lease and active/completed stop lifecycle already exist. This prevents a
+crash between persisting start ``dispatching`` and persisting stop ownership
+from producing a verified unbounded run.
 """
 
 from __future__ import annotations
@@ -16,7 +16,10 @@ from homeassistant.core import HomeAssistant
 from .load_execution_lifecycle import ExecutionLifecycleRecord
 from .load_execution_stop_lease import ExecutionStopLease
 from .load_execution_stop_lease_runtime import stop_lease_repository
-from .load_execution_stop_lifecycle import ExecutionStopLifecycleRecord
+from .load_execution_stop_lifecycle import (
+    STOP_STATE_FAILED,
+    ExecutionStopLifecycleRecord,
+)
 from .load_execution_stop_lifecycle_runtime import stop_lifecycle_repository
 
 
@@ -65,6 +68,8 @@ def _stop_lifecycle_matches(
     try:
         stop.validated()
     except ValueError:
+        return False
+    if stop.state == STOP_STATE_FAILED:
         return False
     return (
         stop.lease_id == lease.lease_id

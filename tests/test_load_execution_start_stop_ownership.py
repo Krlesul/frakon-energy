@@ -20,7 +20,10 @@ from custom_components.frakon_energy.load_execution_policy import (
 )
 from custom_components.frakon_energy.load_execution_readiness import evaluate_execution_readiness
 from custom_components.frakon_energy.load_execution_stop_lease import ExecutionStopLease
-from custom_components.frakon_energy.load_execution_stop_lifecycle import ExecutionStopLifecycleRecord
+from custom_components.frakon_energy.load_execution_stop_lifecycle import (
+    ExecutionStopLifecycleRecord,
+    fail_stop_lifecycle,
+)
 from custom_components.frakon_energy.load_profiles import PROFILE_KIND_EV, LoadProfile
 
 TZ = timezone(timedelta(hours=2))
@@ -161,6 +164,26 @@ async def test_matching_stop_lease_and_lifecycle_prove_bounded_ownership(
 ) -> None:
     start, lease, stop = _records()
     _wire(monkeypatch, lease, stop)
+    proof = await ownership.async_start_stop_ownership_proof(
+        object(),  # type: ignore[arg-type]
+        entry_id="entry-1",
+        start=start,
+    )
+    assert proof.ownership_ready is True
+    assert proof.reason == "stop_ownership_ready"
+
+
+@pytest.mark.asyncio
+async def test_failed_stop_lifecycle_never_proves_bounded_ownership(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    start, lease, stop = _records()
+    failed = fail_stop_lifecycle(
+        stop,
+        reason="stop runtime unavailable before start",
+        now=stop.updated_at + 1,
+    )
+    _wire(monkeypatch, lease, failed)
 
     proof = await ownership.async_start_stop_ownership_proof(
         object(),  # type: ignore[arg-type]
@@ -168,25 +191,21 @@ async def test_matching_stop_lease_and_lifecycle_prove_bounded_ownership(
         start=start,
     )
 
-    assert proof.stop_lease_present is True
     assert proof.stop_lifecycle_present is True
-    assert proof.stop_lease_matches is True
-    assert proof.stop_lifecycle_matches is True
-    assert proof.ownership_ready is True
-    assert proof.reason == "stop_ownership_ready"
+    assert proof.stop_lifecycle_matches is False
+    assert proof.ownership_ready is False
+    assert proof.reason == "stop_lifecycle_binding_mismatch"
 
 
 @pytest.mark.asyncio
 async def test_missing_stop_lease_blocks_ownership(monkeypatch: pytest.MonkeyPatch) -> None:
     start, _, stop = _records()
     _wire(monkeypatch, None, stop)
-
     proof = await ownership.async_start_stop_ownership_proof(
         object(),  # type: ignore[arg-type]
         entry_id="entry-1",
         start=start,
     )
-
     assert proof.ownership_ready is False
     assert proof.reason == "stop_lease_missing"
 
@@ -195,13 +214,11 @@ async def test_missing_stop_lease_blocks_ownership(monkeypatch: pytest.MonkeyPat
 async def test_missing_stop_lifecycle_blocks_ownership(monkeypatch: pytest.MonkeyPatch) -> None:
     start, lease, _ = _records()
     _wire(monkeypatch, lease, None)
-
     proof = await ownership.async_start_stop_ownership_proof(
         object(),  # type: ignore[arg-type]
         entry_id="entry-1",
         start=start,
     )
-
     assert proof.stop_lease_matches is True
     assert proof.stop_lifecycle_present is False
     assert proof.ownership_ready is False
@@ -213,20 +230,13 @@ async def test_tampered_stop_lifecycle_binding_blocks_ownership(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     start, lease, stop = _records()
-    # A different but internally valid stop lifecycle cannot be trivially produced for
-    # the same lease; use a valid lifecycle from another bounded start scope.
-    other_prepared = replace(_prepared(), attempt_id="attempt-2")
-    # Replacing immutable identity directly makes the record invalid, which proof must
-    # treat as a mismatch rather than trusting persisted bytes.
     tampered = replace(stop, profile_id="other-profile")
     _wire(monkeypatch, lease, tampered)
-
     proof = await ownership.async_start_stop_ownership_proof(
         object(),  # type: ignore[arg-type]
         entry_id="entry-1",
         start=start,
     )
-
     assert proof.ownership_ready is False
     assert proof.reason == "stop_lifecycle_binding_mismatch"
 
@@ -237,12 +247,10 @@ async def test_entry_mismatch_fails_before_cross_store_lookup(
 ) -> None:
     start, lease, stop = _records()
     _wire(monkeypatch, lease, stop)
-
     proof = await ownership.async_start_stop_ownership_proof(
         object(),  # type: ignore[arg-type]
         entry_id="other-entry",
         start=start,
     )
-
     assert proof.ownership_ready is False
     assert proof.reason == "entry_id_mismatch"
