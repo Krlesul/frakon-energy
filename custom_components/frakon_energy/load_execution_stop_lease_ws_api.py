@@ -16,6 +16,7 @@ from .load_execution_dispatch_gate_ws_api import async_execution_dispatch_gate
 from .load_execution_lifecycle import STATE_PREPARED
 from .load_execution_lifecycle_recovery import LifecycleRecoveryBlockedError
 from .load_execution_lifecycle_runtime import lifecycle_repository
+from .load_execution_start_scheduler import async_refresh_start_scheduler_if_started
 from .load_execution_stop_lease import (
     ExecutionStopLease,
     StopLeaseConflictError,
@@ -72,7 +73,7 @@ async def async_prepare_stop_lease(
         leases = stop_lease_repository(hass, entry_id)
         existing = await leases.async_get_by_lifecycle_id(lifecycle.lifecycle_id)
         if existing is not None:
-            return {
+            payload = {
                 "stop_lease": existing.as_dict(),
                 "created": False,
                 "idempotent_replay": True,
@@ -82,6 +83,8 @@ async def async_prepare_stop_lease(
                 "execution_performed": False,
                 "executor_available": False,
             }
+            await async_refresh_start_scheduler_if_started(hass, entry_id)
+            return payload
 
         gate_payload = await async_execution_dispatch_gate(
             hass,
@@ -97,7 +100,6 @@ async def async_prepare_stop_lease(
                 f"dispatch gate is not ready for a bounded start: {gate.get('status')}/{gate.get('reason')}"
             )
 
-        # Re-read the durable lifecycle after gate evaluation before binding the lease.
         lifecycle = await lifecycles.async_get_by_attempt_id(attempt_id)
         if lifecycle is None or lifecycle.state != STATE_PREPARED:
             raise StopLeasePrepareError("lifecycle changed while preparing stop lease")
@@ -109,6 +111,7 @@ async def async_prepare_stop_lease(
             created_at=max(int(current.timestamp()), lifecycle.created_at),
         )
         result = await leases.async_record(lease)
+        await async_refresh_start_scheduler_if_started(hass, entry_id)
         return {
             **result.as_dict(),
             "dispatch_gate": gate,

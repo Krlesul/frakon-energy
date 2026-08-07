@@ -29,7 +29,10 @@ from .load_execution_policy_ws_api import async_register_load_execution_policy_w
 from .load_execution_readiness_ws_api import async_register_load_execution_readiness_websocket
 from .load_execution_recovery_resolution_ws_api import async_register_load_execution_recovery_resolution_websocket
 from .load_execution_recovery_verification_ws_api import async_register_load_execution_recovery_verification_websocket
+from .load_execution_safety_status_ws_api import async_register_load_execution_safety_status_websocket
 from .load_execution_start_dispatcher_ws_api import async_register_load_execution_start_dispatcher_websocket
+from .load_execution_start_scheduler import async_start_start_scheduler, async_stop_start_scheduler
+from .load_execution_start_scheduler_ws_api import async_register_load_execution_start_scheduler_websocket
 from .load_execution_stop_dispatcher_ws_api import async_register_load_execution_stop_dispatcher_websocket
 from .load_execution_stop_due_ws_api import async_register_load_execution_stop_due_websocket
 from .load_execution_stop_lease_ws_api import async_register_load_execution_stop_lease_websocket
@@ -86,6 +89,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await async_initialize_lifecycle_recovery(hass, entry_id=entry.entry_id)
     await async_initialize_stop_recovery(hass, entry_id=entry.entry_id)
     await async_start_stop_scheduler(hass, entry.entry_id)
+    await async_start_start_scheduler(hass, entry.entry_id)
     async_register_entity_discovery_websocket(hass, runtime_registry)
     async_register_technology_profile_websocket(hass)
     async_register_spot_price_websocket(hass)
@@ -110,6 +114,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async_register_load_execution_stop_scheduler_websocket(hass)
     async_register_load_execution_stop_dispatcher_websocket(hass)
     async_register_load_execution_start_dispatcher_websocket(hass)
+    async_register_load_execution_start_scheduler_websocket(hass)
+    async_register_load_execution_safety_status_websocket(hass)
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
     await async_register_panel(hass)
@@ -119,6 +125,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unloaded = await hass.config_entries.async_unload_platforms(entry, ["sensor"])
     if unloaded:
+        await async_stop_start_scheduler(hass, entry.entry_id)
         await async_stop_stop_scheduler(hass, entry.entry_id)
         unload_entity_discovery_runtime(entry_id=entry.entry_id, runtime_registry=_runtime_registry(hass))
         hass.data[DOMAIN].pop(entry.entry_id, None)
