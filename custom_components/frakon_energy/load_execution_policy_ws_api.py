@@ -64,11 +64,14 @@ def _payload(entry: ConfigEntry) -> dict[str, Any]:
     }
 
 
-def _entity_available(hass: HomeAssistant, entity_id: str | None) -> bool | None:
+def _entity_status(hass: HomeAssistant, entity_id: str | None) -> tuple[bool | None, str | None]:
     if not entity_id:
-        return None
+        return None, None
     state = hass.states.get(entity_id)
-    return state is not None and state.state not in {"unknown", "unavailable"}
+    if state is None:
+        return False, None
+    state_value = str(state.state)
+    return state_value not in {"unknown", "unavailable"}, state_value
 
 
 def _load_plan_from_preview(profile: LoadProfile, preview: dict[str, Any]) -> LoadPlan:
@@ -112,7 +115,7 @@ async def async_evaluate_profile_execution(
         deadline=deadline,
         now=current,
     )
-    entity_available = _entity_available(hass, profile.entity_id)
+    entity_available, entity_state = _entity_status(hass, profile.entity_id)
 
     if preview is None:
         reasons = [REASON_PLAN_UNAVAILABLE]
@@ -127,6 +130,7 @@ async def async_evaluate_profile_execution(
             "policy": policy.as_dict(),
             "plan": None,
             "entity_available": entity_available,
+            "entity_state": entity_state,
             "execution_performed": False,
             "executor_available": False,
         }
@@ -144,6 +148,7 @@ async def async_evaluate_profile_execution(
             "policy": policy.as_dict(),
             "plan": preview,
             "entity_available": entity_available,
+            "entity_state": entity_state,
             "executor_available": False,
         }
     )
@@ -224,7 +229,15 @@ def async_register_load_execution_policy_websocket(hass: HomeAssistant) -> None:
     ) -> None:
         try:
             entry = _entry(hass, msg["entry_id"])
-            options = delete_execution_policy(entry.options, msg["profile_id"])
+            profile_by_id(entry.options, msg["profile_id"])
+            has_explicit_policy = any(
+                policy.profile_id == msg["profile_id"] for policy in policies_from_options(entry.options)
+            )
+            options = (
+                delete_execution_policy(entry.options, msg["profile_id"])
+                if has_explicit_policy
+                else dict(entry.options)
+            )
             hass.config_entries.async_update_entry(entry, options=options)
         except (ValueError, TypeError) as err:
             connection.send_error(msg["id"], "invalid_load_execution_policy", str(err))
