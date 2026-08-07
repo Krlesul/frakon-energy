@@ -3,6 +3,10 @@ from datetime import datetime
 import pytest
 
 from custom_components.frakon_energy.energy_load_planner import FlexibleLoad, plan_flexible_load
+from custom_components.frakon_energy.spot_load_planner import (
+    FlexibleLoadRequest,
+    plan_flexible_load as plan_spot_load,
+)
 
 
 def _interval(index: int, price: float) -> dict[str, object]:
@@ -24,6 +28,9 @@ def test_plans_cheapest_contiguous_run_and_estimates_cost() -> None:
     assert plan is not None
     assert plan.starts_at == intervals[8]["starts_at"]
     assert plan.ends_at == intervals[15]["ends_at"]
+    assert plan.interval_count == 8
+    assert plan.minimum_czk_kwh == pytest.approx(2.0)
+    assert plan.maximum_czk_kwh == pytest.approx(2.0)
     assert plan.estimated_energy_kwh == pytest.approx(22.0)
     assert plan.estimated_cost_czk == pytest.approx(44.0)
 
@@ -43,3 +50,37 @@ def test_respects_earliest_start_and_deadline() -> None:
 def test_rejects_non_quarter_hour_duration() -> None:
     with pytest.raises(ValueError):
         plan_flexible_load([_interval(0, 1.0)], FlexibleLoad("x", "X", 20, 1.0))
+
+
+def test_rejects_invalid_time_window() -> None:
+    instant = datetime.fromisoformat("2026-08-08T02:00:00+02:00")
+    with pytest.raises(ValueError):
+        plan_flexible_load(
+            [_interval(0, 1.0)],
+            FlexibleLoad("x", "X", 15, 1.0, earliest_start=instant, deadline=instant),
+        )
+
+
+def test_legacy_spot_adapter_uses_same_plan_as_canonical_engine() -> None:
+    intervals = [_interval(i, 7.0) for i in range(20)]
+    prices = [1.5, 2.0, 2.5, 3.0]
+    for offset, price in enumerate(prices, start=8):
+        intervals[offset] = _interval(offset, price)
+
+    canonical = plan_flexible_load(
+        intervals,
+        FlexibleLoad("boiler", "Boiler", duration_minutes=60, power_kw=2.0),
+    )
+    legacy = plan_spot_load(
+        intervals,
+        FlexibleLoadRequest(name="Boiler", duration_minutes=60, power_kw=2.0),
+    )
+
+    assert canonical is not None
+    assert legacy is not None
+    assert legacy["starts_at"] == canonical.starts_at
+    assert legacy["ends_at"] == canonical.ends_at
+    assert legacy["average_czk_kwh"] == pytest.approx(canonical.average_czk_kwh)
+    assert legacy["minimum_czk_kwh"] == pytest.approx(canonical.minimum_czk_kwh)
+    assert legacy["maximum_czk_kwh"] == pytest.approx(canonical.maximum_czk_kwh)
+    assert legacy["estimated_energy_cost_czk"] == pytest.approx(canonical.estimated_cost_czk)
