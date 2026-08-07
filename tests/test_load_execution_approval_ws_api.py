@@ -8,6 +8,9 @@ from custom_components.frakon_energy.load_execution_approval import (
     APPROVAL_INTENT_EXECUTE_LOAD_PLAN,
     APPROVAL_SCHEMA_VERSION,
     MAX_APPROVAL_TTL_SECONDS,
+    VERIFY_OK,
+    VERIFY_UNKNOWN_APPROVAL,
+    ExecutionApproval,
     execution_snapshot_digest,
 )
 from custom_components.frakon_energy.load_execution_policy import (
@@ -17,6 +20,14 @@ from custom_components.frakon_energy.load_execution_policy import (
     LoadExecutionPolicy,
 )
 from custom_components.frakon_energy.load_profiles import PROFILE_KIND_EV, LoadProfile
+
+TZ = timezone(timedelta(hours=2))
+NOW = datetime(2026, 8, 7, 18, 30, tzinfo=TZ)
+
+
+class _FakeHass:
+    def __init__(self) -> None:
+        self.data: dict[str, object] = {}
 
 
 def _profile() -> LoadProfile:
@@ -135,9 +146,8 @@ async def test_preview_passes_time_window_to_policy_evaluation(monkeypatch: pyte
         return _eligible_evaluation()
 
     monkeypatch.setattr(approval_ws, "async_evaluate_profile_execution", fake_evaluate)
-    tz = timezone(timedelta(hours=2))
-    earliest = datetime(2026, 8, 7, 22, 0, tzinfo=tz)
-    deadline = datetime(2026, 8, 8, 6, 0, tzinfo=tz)
+    earliest = datetime(2026, 8, 7, 22, 0, tzinfo=TZ)
+    deadline = datetime(2026, 8, 8, 6, 0, tzinfo=TZ)
 
     await approval_ws.async_preview_execution_approval(
         object(),
@@ -165,3 +175,164 @@ async def test_preview_rejects_ttl_above_hard_limit() -> None:
 def test_preview_datetime_parser_requires_timezone() -> None:
     with pytest.raises(ValueError, match="timezone offset"):
         approval_ws._parse_datetime("2026-08-08T01:00:00", "earliest_start")
+
+
+def test_expected_digest_must_be_lowercase_sha256() -> None:
+    with pytest.raises(ValueError, match="lowercase SHA-256"):
+        approval_ws._validate_expected_digest("ABC")
+
+
+@pytest.mark.asyncio
+async def test_exact_fresh_digest_issues_signed_approval_without_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_evaluate(*args: object, **kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return _eligible_evaluation()
+
+    monkeypatch.setattr(approval_ws, "async_evaluate_profile_execution", fake_evaluate)
+    hass = _FakeHass()
+    digest = execution_snapshot_digest(_profile(), _plan(), _policy())
+
+    result = await approval_ws.async_issue_execution_approval(
+        hass,  # type: ignore[arg-type]
+        entry_id="entry-1",
+        profile_id="ev-home",
+        expected_snapshot_digest=digest,
+        ttl_seconds=120,
+        now=NOW,
+    )
+
+    assert captured["now"] == NOW
+    assert result["approval_issued"] is True
+    assert result["snapshot_digest"] == digest
+    assert result["expected_snapshot_digest"] == digest
+    assert result["approval_id"]
+    assert result["signature"]
+    assert result["ttl_seconds"] == 120
+    assert result["execution_performed"] is False
+    assert result["executor_available"] is False
+    assert result["consumed"] is False
+
+    approval = ExecutionApproval(**result["approval"])  # type: ignore[arg-type]
+    verification = approval_ws._approval_authority(hass).verify(  # type: ignore[arg-type]
+        approval,
+        _profile(),
+        _plan(),
+        _policy(),
+        entity_available=True,
+        now=NOW + timedelta(seconds=1),
+    )
+    assert verification.valid is True
+    assert verification.reason == VERIFY_OK
+    assert verification.execution_performed is False
+
+
+@pytest.mark.asyncio
+async def test_changed_scope_digest_is_rejected_before_issuance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_evaluate(*args: object, **kwargs: object) -> dict[str, object]:
+        return _eligible_evaluation()
+
+    monkeypatch.setattr(approval_ws, "async_evaluate_profile_execution", fake_evaluate)
+    hass = _FakeHass()
+    stale_digest = "0" * 64
+
+    with pytest.raises(approval_ws.ApprovalScopeChangedError, match="scope changed"):
+        await approval_ws.async_issue_execution_approval(
+            hass,  # type: ignore[arg-type]
+            entry_id="entry-1",
+            profile_id="ev-home",
+            expected_snapshot_digest=stale_digest,
+            now=NOW,
+        )
+
+    assert approval_ws._AUTHORITY_KEY not in hass.data.get("frakon_energy", {})  # type: ignore[operator]
+
+
+@pytest.mark.asyncio
+async def test_blocked_candidate_cannot_issue_approval(monkeypatch: pytest.MonkeyPatch) -> None:
+    blocked = _eligible_evaluation()
+    blocked.update({"status": DECISION_BLOCKED, "reasons": ["policy_disabled"]})
+
+    async def fake_evaluate(*args: object, **kwargs: object) -> dict[str, object]:
+        return blocked
+
+    monkeypatch.setattr(approval_ws, "async_evaluate_profile_execution", fake_evaluate)
+    hass = _FakeHass()
+
+    with pytest.raises(ValueError, match="not eligible"):
+        await approval_ws.async_issue_execution_approval(
+            hass,  # type: ignore[arg-type]
+            entry_id="entry-1",
+            profile_id="ev-home",
+            expected_snapshot_digest=execution_snapshot_digest(_profile(), _plan(), _policy()),
+            now=NOW,
+        )
+
+
+@pytest.mark.asyncio
+async def test_issue_enforces_ttl_hard_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_evaluate(*args: object, **kwargs: object) -> dict[str, object]:
+        return _eligible_evaluation()
+
+    monkeypatch.setattr(approval_ws, "async_evaluate_profile_execution", fake_evaluate)
+
+    with pytest.raises(ValueError, match="ttl_seconds"):
+        await approval_ws.async_issue_execution_approval(
+            _FakeHass(),  # type: ignore[arg-type]
+            entry_id="entry-1",
+            profile_id="ev-home",
+            expected_snapshot_digest=execution_snapshot_digest(_profile(), _plan(), _policy()),
+            ttl_seconds=MAX_APPROVAL_TTL_SECONDS + 1,
+            now=NOW,
+        )
+
+
+def test_authority_is_reused_within_process_and_replaced_after_restart() -> None:
+    first_hass = _FakeHass()
+    second_hass = _FakeHass()
+
+    first = approval_ws._approval_authority(first_hass)  # type: ignore[arg-type]
+    again = approval_ws._approval_authority(first_hass)  # type: ignore[arg-type]
+    after_restart = approval_ws._approval_authority(second_hass)  # type: ignore[arg-type]
+
+    assert first is again
+    assert first is not after_restart
+
+
+@pytest.mark.asyncio
+async def test_new_process_authority_rejects_pre_restart_approval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_evaluate(*args: object, **kwargs: object) -> dict[str, object]:
+        return _eligible_evaluation()
+
+    monkeypatch.setattr(approval_ws, "async_evaluate_profile_execution", fake_evaluate)
+    before_restart = _FakeHass()
+    digest = execution_snapshot_digest(_profile(), _plan(), _policy())
+    issued = await approval_ws.async_issue_execution_approval(
+        before_restart,  # type: ignore[arg-type]
+        entry_id="entry-1",
+        profile_id="ev-home",
+        expected_snapshot_digest=digest,
+        now=NOW,
+    )
+    approval = ExecutionApproval(**issued["approval"])  # type: ignore[arg-type]
+
+    after_restart = _FakeHass()
+    verification = approval_ws._approval_authority(after_restart).verify(  # type: ignore[arg-type]
+        approval,
+        _profile(),
+        _plan(),
+        _policy(),
+        entity_available=True,
+        now=NOW + timedelta(seconds=1),
+    )
+
+    assert verification.valid is False
+    assert verification.reason == VERIFY_UNKNOWN_APPROVAL
+    assert verification.execution_performed is False
