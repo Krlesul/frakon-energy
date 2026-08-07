@@ -8,7 +8,7 @@ of a profile, plan, entity binding and execution policy.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 import hashlib
 import hmac
 import json
@@ -178,6 +178,8 @@ class ApprovalAuthority:
             raise ValueError("execution candidate is not eligible for approval")
 
         approval_id = secrets.token_urlsafe(18)
+        while approval_id in self._issued_ids:
+            approval_id = secrets.token_urlsafe(18)
         snapshot_digest = execution_snapshot_digest(profile, plan, policy)
         expires_at = issued_at + ttl_seconds
         signature = self._sign(
@@ -208,16 +210,25 @@ class ApprovalAuthority:
     ) -> ApprovalVerification:
         """Validate an approval without consuming it or performing execution."""
         now_ts = _aware_timestamp(now, "now")
+        if not all(
+            (
+                isinstance(approval.approval_id, str),
+                isinstance(approval.intent, str),
+                isinstance(approval.snapshot_digest, str),
+                isinstance(approval.issued_at, int),
+                isinstance(approval.expires_at, int),
+                isinstance(approval.signature, str),
+            )
+        ):
+            return self._result(approval, False, VERIFY_INVALID_SIGNATURE)
         if approval.approval_id not in self._issued_ids:
             return self._result(approval, False, VERIFY_UNKNOWN_APPROVAL)
         if approval.approval_id in self._consumed_ids:
             return self._result(approval, False, VERIFY_REPLAYED, consumed=True)
         if approval.intent != APPROVAL_INTENT_EXECUTE_LOAD_PLAN:
             return self._result(approval, False, VERIFY_INVALID_SIGNATURE)
-        if now_ts < approval.issued_at:
-            return self._result(approval, False, VERIFY_NOT_YET_VALID)
-        if now_ts >= approval.expires_at:
-            return self._result(approval, False, VERIFY_EXPIRED)
+        if approval.expires_at <= approval.issued_at:
+            return self._result(approval, False, VERIFY_INVALID_SIGNATURE)
 
         expected_signature = self._sign(
             approval_id=approval.approval_id,
@@ -227,17 +238,27 @@ class ApprovalAuthority:
         )
         if not hmac.compare_digest(approval.signature, expected_signature):
             return self._result(approval, False, VERIFY_INVALID_SIGNATURE)
+        if now_ts < approval.issued_at:
+            return self._result(approval, False, VERIFY_NOT_YET_VALID)
+        if now_ts >= approval.expires_at:
+            return self._result(approval, False, VERIFY_EXPIRED)
 
-        current_digest = execution_snapshot_digest(profile, plan, policy)
+        try:
+            current_digest = execution_snapshot_digest(profile, plan, policy)
+        except (TypeError, ValueError):
+            return self._result(approval, False, VERIFY_POLICY_NOT_ELIGIBLE)
         if not hmac.compare_digest(approval.snapshot_digest, current_digest):
             return self._result(approval, False, VERIFY_SNAPSHOT_MISMATCH)
 
-        decision = evaluate_execution_policy(
-            profile,
-            plan,
-            policy,
-            entity_available=entity_available,
-        )
+        try:
+            decision = evaluate_execution_policy(
+                profile,
+                plan,
+                policy,
+                entity_available=entity_available,
+            )
+        except (TypeError, ValueError):
+            return self._result(approval, False, VERIFY_POLICY_NOT_ELIGIBLE)
         if decision.status != DECISION_APPROVAL_REQUIRED or decision.reasons:
             return self._result(approval, False, VERIFY_POLICY_NOT_ELIGIBLE)
         return self._result(approval, True, VERIFY_OK)
