@@ -31,6 +31,7 @@ from custom_components.frakon_energy.load_execution_policy import (
     LoadExecutionPolicy,
 )
 from custom_components.frakon_energy.load_execution_readiness import evaluate_execution_readiness
+from custom_components.frakon_energy.load_execution_start_stop_ownership import StartStopOwnershipProof
 from custom_components.frakon_energy.load_profiles import PROFILE_KIND_EV, LoadProfile
 
 TZ = timezone(timedelta(hours=2))
@@ -173,9 +174,23 @@ async def _repository_with_dispatched() -> tuple[_FakeStore, ExecutionLifecycleR
     return store, repository
 
 
+def _proof(ready: bool) -> StartStopOwnershipProof:
+    return StartStopOwnershipProof(
+        start_lifecycle_id=_prepared().lifecycle_id,
+        stop_lease_present=ready,
+        stop_lifecycle_present=ready,
+        stop_lease_matches=ready,
+        stop_lifecycle_matches=ready,
+        ownership_ready=ready,
+        reason="stop_ownership_ready" if ready else "stop_lifecycle_missing",
+    )
+
+
 def _wire(
     monkeypatch: pytest.MonkeyPatch,
     repository: ExecutionLifecycleRepository,
+    *,
+    ownership_ready: bool = True,
 ) -> None:
     monkeypatch.setattr(
         verification,
@@ -186,6 +201,15 @@ def _wire(
         verification,
         "assert_lifecycle_recovery_ready",
         lambda hass, entry_id: None,
+    )
+
+    async def ownership_proof(hass, *, entry_id, start):
+        return _proof(ownership_ready)
+
+    monkeypatch.setattr(
+        verification,
+        "async_start_stop_ownership_proof",
+        ownership_proof,
     )
 
 
@@ -211,6 +235,7 @@ async def test_unknown_outcome_recovery_verifies_without_confirming_service_call
     assert record.verification_status == VERIFY_CONFIRMED
     assert record.service_call_status == CALL_UNKNOWN
     assert record.as_dict()["service_call_performed"] is None
+    assert result["stop_ownership"]["ownership_ready"] is True
     assert result["verification_performed"] is True
     assert result["state_transition_performed"] is True
     assert result["idempotent_replay"] is False
@@ -219,6 +244,30 @@ async def test_unknown_outcome_recovery_verifies_without_confirming_service_call
     assert result["execution_performed"] is False
     assert result["executor_available"] is False
     assert store.saves == before_saves + 1
+
+
+@pytest.mark.asyncio
+async def test_missing_stop_ownership_blocks_desired_state_verification_without_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, repository = await _repository_with_recovery()
+    _wire(monkeypatch, repository, ownership_ready=False)
+    hass = _FakeHass("on")
+    before = await repository.async_get_by_attempt_id("attempt-1")
+    before_saves = store.saves
+
+    with pytest.raises(verification.RecoveryVerificationError, match="durable_stop_ownership_missing"):
+        await verification.async_verify_recovery_lifecycle(
+            hass,  # type: ignore[arg-type]
+            entry_id="entry-1",
+            attempt_id="attempt-1",
+            now=START + timedelta(seconds=10),
+        )
+
+    after = await repository.async_get_by_attempt_id("attempt-1")
+    assert after == before
+    assert after is not None and after.state == STATE_RECOVERY_REQUIRED
+    assert store.saves == before_saves
 
 
 @pytest.mark.asyncio
