@@ -48,6 +48,17 @@ const TECHNOLOGY_ICONS: Record<string, string> = {
   energy_export: "⇢",
 };
 
+const TECHNOLOGY_COPY: Record<string, string> = {
+  photovoltaics: "Výroba ze slunce a aktuální energetický tok.",
+  home_battery: "Stav úložiště, výkon a dostupná energie.",
+  electric_vehicle: "Baterie vozu, nabíjení a dostupné provozní údaje.",
+  wallbox: "Aktuální nabíjecí výkon a stav domácího nabíjení.",
+  heat_pump: "Provoz, příkon a dostupné hodnoty vytápění.",
+  energy_export: "Přetoky a energie odeslaná do distribuční sítě.",
+  hdo: "Nízký tarif a aktivní časová okna distributora.",
+  dynamic_tariff: "Dynamická cena elektřiny a aktuální tarifní signál.",
+};
+
 function currentHass(): HomeAssistant | undefined {
   return window.__FRAKON_ENERGY_HASS__ ?? window.hass;
 }
@@ -159,6 +170,8 @@ function TechnologyOverview({ hass }: { hass: HomeAssistant }) {
         return entityId ? [{ role, entityId, value }] : [];
       });
       const complete = (technology.configured_roles ?? mapped.length) >= (technology.total_roles ?? roles.length) && roles.length > 0;
+      const primary = mapped.find((item) => item.value) ?? mapped[0] ?? null;
+      const secondary = mapped.filter((item) => item !== primary).slice(0, 3);
       return <article className="technology-overview__card" data-technology={technology.technology} key={technology.technology}>
         <div className="technology-overview__card-head">
           <div className="technology-overview__identity">
@@ -167,11 +180,18 @@ function TechnologyOverview({ hass }: { hass: HomeAssistant }) {
           </div>
           <b>{technology.configured_roles ?? mapped.length}/{technology.total_roles ?? roles.length}</b>
         </div>
-        {mapped.length > 0 ? <div className="technology-overview__values">{mapped.slice(0, 4).map(({ role, entityId, value }) => <div key={`${technology.technology}-${role.role}`}>
+        <p className="technology-overview__copy">{TECHNOLOGY_COPY[technology.technology] ?? "Živé hodnoty technologie z Home Assistantu."}</p>
+        {primary ? <div className="technology-overview__primary">
+          <span>{primary.role.label ?? primary.role.role}</span>
+          <strong>{primary.value ?? "Bez dat"}</strong>
+          <small>{primary.entityId}</small>
+        </div> : null}
+        {secondary.length > 0 ? <div className="technology-overview__values">{secondary.map(({ role, entityId, value }) => <div key={`${technology.technology}-${role.role}`}>
           <span>{role.label ?? role.role}</span>
           <strong>{value ?? "Bez dat"}</strong>
           <small>{entityId}</small>
-        </div>)}</div> : <p>Zatím není potvrzená žádná entita. Nastav ji v části Technologie domu.</p>}
+        </div>)}</div> : null}
+        {mapped.length === 0 ? <p>Zatím není potvrzená žádná entita. Nastav ji v části Technologie domu.</p> : null}
       </article>;
     })}</div>
   </section>;
