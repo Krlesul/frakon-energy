@@ -20,6 +20,8 @@ type ConfigEntry = { entry_id: string; domain?: string };
 type WsConnection = { sendMessagePromise?: <T>(message: Record<string, unknown>) => Promise<T> };
 type FlowDirection = "into-house" | "out-of-house" | "house-load" | "bidirectional";
 type FlowNode = { id: string; label: string; entityId: string | null; value: string | null; numeric: number | null; active: boolean; direction: FlowDirection; directionLabel: string };
+type BalanceQuality = "complete" | "partial" | "needs-setup";
+type WholeHouseResult = { value: number | null; reason: string; quality: BalanceQuality; qualityLabel: string };
 
 const HOST_ID = "frakon-energy-flow-host";
 const PROFILE_CHANGED_EVENT = "frakon-energy-technology-profile-changed";
@@ -116,30 +118,66 @@ function batteryDirection(value: number | null, sign: BatteryPowerSign): { direc
     : { direction: "into-house", label: "vybíjení do domu" };
 }
 
-function nodePower(nodes: FlowNode[], id: string): number | null {
-  const value = nodes.find((node) => node.id === id)?.numeric;
-  return typeof value === "number" && Number.isFinite(value) ? Math.abs(value) : null;
+function node(nodes: FlowNode[], id: string): FlowNode | undefined {
+  return nodes.find((item) => item.id === id);
 }
 
-function deriveWholeHousePower(nodes: FlowNode[], settings: EnergyFlowSettings): { value: number | null; reason: string } {
+function needsSetup(reason: string): WholeHouseResult {
+  return { value: null, reason, quality: "needs-setup", qualityLabel: "Vyžaduje nastavení" };
+}
+
+function partial(reason: string, value: number | null = null): WholeHouseResult {
+  return { value, reason, quality: "partial", qualityLabel: "Částečné měření" };
+}
+
+function deriveWholeHousePower(nodes: FlowNode[], settings: EnergyFlowSettings): WholeHouseResult {
   if (settings.grid_meter_scope !== "whole_house") {
-    return { value: null, reason: "Pro výpočet nastav hlavní elektroměr jako měření celého domu." };
+    return needsSetup("Pro výpočet nastav hlavní elektroměr jako měření celého domu.");
   }
   if (settings.pv_power_scope !== "gross_generation") {
-    return { value: null, reason: "Pro bezpečný výpočet musí být výkon FVE označen jako hrubá AC výroba." };
+    return needsSetup("Pro bezpečný výpočet musí být výkon FVE označen jako hrubá AC výroba.");
   }
-  const pv = nodePower(nodes, "pv");
-  if (pv === null) return { value: null, reason: "Chybí potvrzený aktuální výkon FVE." };
-  const gridImport = nodePower(nodes, "grid-in") ?? 0;
-  const gridExport = nodePower(nodes, "grid-out") ?? 0;
-  const batteryNode = nodes.find((node) => node.id === "battery");
-  if (batteryNode?.numeric !== null && batteryNode?.numeric !== undefined && settings.battery_power_sign === "unknown") {
-    return { value: null, reason: "Je připojena baterie, ale není nastaven význam znaménka jejího výkonu." };
+
+  const pvNode = node(nodes, "pv");
+  if (!pvNode || pvNode.numeric === null) {
+    return partial("Topologie je nastavená, ale chybí živý výkon FVE.");
   }
+
+  const gridImportNode = node(nodes, "grid-in");
+  const gridExportNode = node(nodes, "grid-out");
+  if (!gridImportNode || gridImportNode.numeric === null || !gridExportNode || gridExportNode.numeric === null) {
+    return partial("Topologie je nastavená, ale chybí živý odběr nebo přetok hlavního elektroměru.");
+  }
+
+  const batteryNode = node(nodes, "battery");
+  if (batteryNode) {
+    if (settings.battery_power_sign === "unknown") {
+      return needsSetup("Je připojena baterie, ale není nastaven význam znaménka jejího výkonu.");
+    }
+    if (batteryNode.numeric === null) {
+      return partial("Směr baterie je nastavený, ale její aktuální výkon není dostupný.");
+    }
+  }
+
+  const pv = Math.abs(pvNode.numeric);
+  const gridImport = Math.abs(gridImportNode.numeric);
+  const gridExport = Math.abs(gridExportNode.numeric);
   const batteryCharge = batteryNode?.direction === "house-load" ? Math.abs(batteryNode.numeric ?? 0) : 0;
   const batteryDischarge = batteryNode?.direction === "into-house" ? Math.abs(batteryNode.numeric ?? 0) : 0;
-  const value = pv + gridImport + batteryDischarge - gridExport - batteryCharge;
-  return { value: Math.max(0, value), reason: "Odvozeno z FVE, sítě a známého směru baterie." };
+  const value = Math.max(0, pv + gridImport + batteryDischarge - gridExport - batteryCharge);
+
+  const hasEv = Boolean(node(nodes, "ev"));
+  const hasWallbox = Boolean(node(nodes, "wallbox"));
+  if (hasEv && hasWallbox && settings.ev_wallbox_relation === "unknown") {
+    return partial("Spotřeba domu je vypočtená, ale rozpad spotřebičů čeká na určení vztahu EV a wallboxu.", value);
+  }
+
+  return {
+    value,
+    reason: "Výpočet používá kompletní potvrzenou topologii FVE, sítě a případné baterie.",
+    quality: "complete",
+    qualityLabel: "Kompletní měření",
+  };
 }
 
 function EnergyFlow({ hass }: { hass: HomeAssistant }) {
@@ -191,43 +229,50 @@ function EnergyFlow({ hass }: { hass: HomeAssistant }) {
         directionLabel: batteryFlow.label,
       });
     }
-    return mapped.filter((node) => node.active);
+    return mapped.filter((item) => item.active);
   }, [snapshot, hass.states, flowSettings.battery_power_sign]);
 
   if (error) return <section className="energy-flow energy-flow--error">{error}</section>;
   if (!snapshot || nodes.length < 2) return null;
 
-  const activePower = nodes.filter((node) => node.numeric !== null && Math.abs(node.numeric) > 0.03).length;
+  const activePower = nodes.filter((item) => item.numeric !== null && Math.abs(item.numeric) > 0.03).length;
   const duplicateLoads = flowSettings.ev_wallbox_relation === "same_flow" ? new Set(["ev"]) : new Set<string>();
   const knownSources = sumUnique(nodes, ["into-house"]);
   const knownLoads = sumUnique(nodes, ["house-load"], duplicateLoads);
   const knownExport = sumUnique(nodes, ["out-of-house"]);
-  const battery = nodes.find((node) => node.id === "battery" && node.numeric !== null)?.numeric ?? null;
+  const battery = nodes.find((item) => item.id === "battery" && item.numeric !== null)?.numeric ?? null;
   const batteryKnown = flowSettings.battery_power_sign !== "unknown";
   const wholeHouse = deriveWholeHousePower(nodes, flowSettings);
 
   return <section className="energy-flow">
     <div className="energy-flow__heading">
       <div><span className="eyebrow">Živý energetický tok</span><h2>Kam právě teče energie</h2></div>
-      <small>{activePower > 0 ? `${activePower} aktivní toky` : "Toky jsou právě téměř nulové"}</small>
+      <div className="energy-flow__heading-meta">
+        <span className={`energy-flow__quality energy-flow__quality--${wholeHouse.quality}`}>{wholeHouse.qualityLabel}</span>
+        <small>{activePower > 0 ? `${activePower} aktivní toky` : "Toky jsou právě téměř nulové"}</small>
+      </div>
     </div>
     <div className="energy-flow__map">
-      <div className="energy-flow__hub"><span>Dům</span><strong>{wholeHouse.value !== null ? formatKw(wholeHouse.value) : "FRAKON"}</strong><small>{wholeHouse.value !== null ? "aktuální spotřeba" : "živý stav"}</small></div>
-      {nodes.map((node, index) => {
-        const live = node.numeric !== null && Math.abs(node.numeric) > 0.03;
-        return <article className={`energy-flow__node energy-flow__node--${node.direction}${live ? " energy-flow__node--live" : " energy-flow__node--idle"}`} key={node.id} style={{ "--flow-index": index } as React.CSSProperties}>
-          <span>{node.label}</span><strong>{node.value ?? "Bez dat"}</strong><small className="energy-flow__direction">{node.directionLabel}</small><i aria-hidden="true" />
+      <div className={`energy-flow__hub energy-flow__hub--${wholeHouse.quality}`}><span>Dům</span><strong>{wholeHouse.value !== null ? formatKw(wholeHouse.value) : "FRAKON"}</strong><small>{wholeHouse.value !== null ? "aktuální spotřeba" : wholeHouse.qualityLabel}</small></div>
+      {nodes.map((item, index) => {
+        const live = item.numeric !== null && Math.abs(item.numeric) > 0.03;
+        return <article className={`energy-flow__node energy-flow__node--${item.direction}${live ? " energy-flow__node--live" : " energy-flow__node--idle"}`} key={item.id} style={{ "--flow-index": index } as React.CSSProperties}>
+          <span>{item.label}</span><strong>{item.value ?? "Bez dat"}</strong><small className="energy-flow__direction">{item.directionLabel}</small><i aria-hidden="true" />
         </article>;
       })}
+    </div>
+    <div className="energy-flow__balance-status">
+      <div><span>Kvalita bilance</span><strong>{wholeHouse.qualityLabel}</strong></div>
+      <p>{wholeHouse.reason}</p>
     </div>
     <div className="energy-flow__balance" aria-label="Souhrn dostupných energetických toků">
       <div><span>Spotřeba domu</span><strong>{formatKw(wholeHouse.value)}</strong><small>{wholeHouse.reason}</small></div>
       <div><span>Zdroje do domu</span><strong>{formatKw(knownSources)}</strong><small>FVE + síť + známé vybíjení baterie</small></div>
-      <div><span>Známé spotřeby</span><strong>{formatKw(knownLoads)}</strong><small>{flowSettings.ev_wallbox_relation === "same_flow" ? "EV není započten dvakrát s wallboxem" : "potvrzené samostatné spotřeby"}</small></div>
+      <div><span>Známé spotřeby</span><strong>{formatKw(knownLoads)}</strong><small>{flowSettings.ev_wallbox_relation === "same_flow" ? "EV není započten dvakrát s wallboxem" : flowSettings.ev_wallbox_relation === "unknown" ? "vztah EV a wallboxu zatím není potvrzen" : "potvrzené samostatné spotřeby"}</small></div>
       <div><span>Přetok do sítě</span><strong>{formatKw(knownExport)}</strong><small>potvrzené měření exportu</small></div>
       <div><span>Baterie</span><strong>{formatKw(battery)}</strong><small>{batteryKnown ? "směr je započten podle nastavení" : "nastav směr v Technologie domu"}</small></div>
     </div>
-    <p className="energy-flow__note">FRAKON vypočítá celkovou spotřebu domu pouze tehdy, když topologie měření jednoznačně dovoluje správnou bilanci. Při neúplném nebo nejasném nastavení zobrazí jen potvrzené toky a důvod, proč celkový výpočet zatím nepoužil.</p>
+    <p className="energy-flow__note">FRAKON rozlišuje kompletní bilanci, částečné živé měření a stav vyžadující doplnění nastavení. Celkovou spotřebu domu zobrazí jen tehdy, když dostupná data a topologie dovolují výpočet bez skrytých předpokladů.</p>
   </section>;
 }
 
