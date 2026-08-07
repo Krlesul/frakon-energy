@@ -39,13 +39,27 @@ type DiscoverySnapshot = {
 };
 
 type BatteryPowerSign = "unknown" | "positive_is_charge" | "positive_is_discharge";
-type EnergyFlowSettings = { battery_power_sign: BatteryPowerSign };
+type GridMeterScope = "unknown" | "whole_house" | "inverter_branch";
+type PvPowerScope = "unknown" | "gross_generation" | "inverter_net";
+type EvWallboxRelation = "unknown" | "same_flow" | "separate";
+type EnergyFlowSettings = {
+  battery_power_sign: BatteryPowerSign;
+  grid_meter_scope: GridMeterScope;
+  pv_power_scope: PvPowerScope;
+  ev_wallbox_relation: EvWallboxRelation;
+};
 type ConfigEntry = { entry_id: string; domain?: string; title?: string };
 type WsConnection = {
   sendMessagePromise?: <T>(message: Record<string, unknown>) => Promise<T>;
 };
 
 const PROFILE_CHANGED_EVENT = "frakon-energy-technology-profile-changed";
+const DEFAULT_FLOW_SETTINGS: EnergyFlowSettings = {
+  battery_power_sign: "unknown",
+  grid_meter_scope: "unknown",
+  pv_power_scope: "unknown",
+  ev_wallbox_relation: "unknown",
+};
 
 function announceProfileChanged(): void {
   window.dispatchEvent(new CustomEvent(PROFILE_CHANGED_EVENT));
@@ -82,7 +96,7 @@ function errorMessage(reason: unknown, fallback: string): string {
 export function TechnologySettings({ hass }: { hass?: HomeAssistant }) {
   const [entry, setEntry] = useState<ConfigEntry | null>(null);
   const [snapshot, setSnapshot] = useState<DiscoverySnapshot | null>(null);
-  const [flowSettings, setFlowSettings] = useState<EnergyFlowSettings>({ battery_power_sign: "unknown" });
+  const [flowSettings, setFlowSettings] = useState<EnergyFlowSettings>(DEFAULT_FLOW_SETTINGS);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -109,7 +123,7 @@ export function TechnologySettings({ hass }: { hass?: HomeAssistant }) {
         }),
       ]);
       setSnapshot(result);
-      setFlowSettings(settings);
+      setFlowSettings({ ...DEFAULT_FLOW_SETTINGS, ...settings });
       if (rescan) announceProfileChanged();
     } catch (reason) {
       setError(errorMessage(reason, "Načtení technologií se nezdařilo."));
@@ -191,7 +205,7 @@ export function TechnologySettings({ hass }: { hass?: HomeAssistant }) {
     }
   };
 
-  const setBatteryPowerSign = async (batteryPowerSign: BatteryPowerSign) => {
+  const setFlowSetting = async <K extends keyof EnergyFlowSettings>(key: K, value: EnergyFlowSettings[K]) => {
     if (!hass || !entry) return;
     setBusy(true);
     setError(null);
@@ -199,12 +213,12 @@ export function TechnologySettings({ hass }: { hass?: HomeAssistant }) {
       const settings = await callWs<EnergyFlowSettings>(hass, {
         type: "frakon_energy/energy_flow/set",
         entry_id: entry.entry_id,
-        battery_power_sign: batteryPowerSign,
+        [key]: value,
       });
-      setFlowSettings(settings);
+      setFlowSettings({ ...DEFAULT_FLOW_SETTINGS, ...settings });
       announceProfileChanged();
     } catch (reason) {
-      setError(errorMessage(reason, "Směr výkonu baterie se nepodařilo uložit."));
+      setError(errorMessage(reason, "Nastavení energetického toku se nepodařilo uložit."));
     } finally {
       setBusy(false);
     }
@@ -222,6 +236,42 @@ export function TechnologySettings({ hass }: { hass?: HomeAssistant }) {
     {error ? <div className="settings-error">{error}</div> : null}
     {!hass ? <p className="missing-reason">Čekám na připojení k Home Assistantu.</p> : null}
     {hass && !snapshot && !error ? <p className="missing-reason">Načítám technologie a doporučené entity…</p> : null}
+
+    {snapshot ? <section className="technology-item">
+      <div className="technology-item__title">
+        <div><h3>Topologie energetických měření</h3><small>Určuje, která měření lze bezpečně sčítat a která by se započítala dvakrát.</small></div>
+      </div>
+      <div className="role-list">
+        <div className="role-row">
+          <div className="role-row__label"><b>Elektroměr sítě</b><small>Kde je měřen odběr a přetok vůči distribuční síti.</small></div>
+          <select value={flowSettings.grid_meter_scope} disabled={busy} onChange={(event) => void setFlowSetting("grid_meter_scope", event.target.value as GridMeterScope)}>
+            <option value="unknown">Nevím / určit později</option>
+            <option value="whole_house">Hlavní měření celého domu</option>
+            <option value="inverter_branch">Jen větev FVE / měniče</option>
+          </select>
+          <div className="role-actions" />
+        </div>
+        <div className="role-row">
+          <div className="role-row__label"><b>Výkon FVE</b><small>Pomůže určit, zda jde o výrobu panelů nebo už čistý tok měniče.</small></div>
+          <select value={flowSettings.pv_power_scope} disabled={busy} onChange={(event) => void setFlowSetting("pv_power_scope", event.target.value as PvPowerScope)}>
+            <option value="unknown">Nevím / určit později</option>
+            <option value="gross_generation">Hrubá AC výroba FVE</option>
+            <option value="inverter_net">Čistý výkon měniče po baterii</option>
+          </select>
+          <div className="role-actions" />
+        </div>
+        <div className="role-row">
+          <div className="role-row__label"><b>Elektromobil a wallbox</b><small>Zabraňuje dvojímu započítání stejného nabíjecího výkonu.</small></div>
+          <select value={flowSettings.ev_wallbox_relation} disabled={busy} onChange={(event) => void setFlowSetting("ev_wallbox_relation", event.target.value as EvWallboxRelation)}>
+            <option value="unknown">Nevím / určit později</option>
+            <option value="same_flow">Měří stejný nabíjecí tok</option>
+            <option value="separate">Jsou to oddělená měření</option>
+          </select>
+          <div className="role-actions" />
+        </div>
+      </div>
+    </section> : null}
+
     <div className="technology-list">{technologies.map((technology) => {
       const configured = technology.configured_roles ?? technology.configured ?? 0;
       const required = technology.total_roles ?? technology.required ?? technology.roles?.length ?? 0;
@@ -241,7 +291,7 @@ export function TechnologySettings({ hass }: { hass?: HomeAssistant }) {
         </div>
         {enabled && technology.technology === "home_battery" ? <div className="role-row">
           <div className="role-row__label"><b>Směr výkonu baterie</b><small>Určuje, co znamená kladná hodnota výkonové entity.</small></div>
-          <select value={flowSettings.battery_power_sign} disabled={busy} onChange={(event) => void setBatteryPowerSign(event.target.value as BatteryPowerSign)}>
+          <select value={flowSettings.battery_power_sign} disabled={busy} onChange={(event) => void setFlowSetting("battery_power_sign", event.target.value as BatteryPowerSign)}>
             <option value="unknown">Nevím / určit později</option>
             <option value="positive_is_charge">Kladná hodnota = nabíjení</option>
             <option value="positive_is_discharge">Kladná hodnota = vybíjení</option>
