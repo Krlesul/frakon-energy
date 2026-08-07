@@ -143,6 +143,22 @@ def test_storage_rejects_execution_claims() -> None:
         ExecutionActionSnapshot.from_dict(raw)
 
 
+def test_storage_rejects_tampered_snapshot_identity() -> None:
+    raw = _snapshot().as_dict()
+    raw["snapshot_id"] = "0" * 32
+
+    with pytest.raises(ValueError, match="identity does not match"):
+        ExecutionActionSnapshot.from_dict(raw)
+
+
+def test_storage_rejects_non_hex_approval_digest() -> None:
+    raw = _snapshot().as_dict()
+    raw["approval_fingerprint"] = "z" * 64
+
+    with pytest.raises(ValueError, match="SHA-256 hex digest"):
+        ExecutionActionSnapshot.from_dict(raw)
+
+
 def test_ledger_is_idempotent_for_exact_snapshot() -> None:
     ledger = ExecutionActionSnapshotLedger()
     snapshot = _snapshot()
@@ -166,8 +182,9 @@ def test_ledger_rejects_rebinding_attempt_to_different_action() -> None:
     changed_profile = _profile(entity_id="switch.second_charger")
     changed_attempt = _attempt(entity_id="switch.second_charger")
     changed = _snapshot(attempt=changed_attempt, profile=changed_profile)
-    changed = replace(changed, attempt_id=first.attempt_id)
 
+    assert changed.attempt_id == first.attempt_id
+    assert changed.snapshot_id != first.snapshot_id
     with pytest.raises(ActionSnapshotConflictError, match="different immutable action"):
         ledger.record(changed)
 
