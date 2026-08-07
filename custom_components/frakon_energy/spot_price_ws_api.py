@@ -26,10 +26,12 @@ _REGISTERED_KEY = "spot_price_websocket_registered"
 
 def _fetch_text_factory(hass: HomeAssistant):
     session = async_get_clientsession(hass)
+
     async def fetch_text(url: str) -> str:
         async with session.get(url, timeout=20) as response:
             response.raise_for_status()
             return await response.text()
+
     return fetch_text
 
 
@@ -61,7 +63,12 @@ def _settings(hass: HomeAssistant) -> SpotPriceSettings:
 
 
 def _enrich_day(day: dict[str, Any], settings: SpotPriceSettings, eur_czk: float) -> None:
-    config = SpotPriceCostConfig(eur_czk=eur_czk, supplier_fee_czk_kwh=settings.supplier_fee_czk_kwh, variable_additions_czk_kwh=settings.variable_additions_czk_kwh, vat_percent=settings.vat_percent)
+    config = SpotPriceCostConfig(
+        eur_czk=eur_czk,
+        supplier_fee_czk_kwh=settings.supplier_fee_czk_kwh,
+        variable_additions_czk_kwh=settings.variable_additions_czk_kwh,
+        vat_percent=settings.vat_percent,
+    )
     totals: list[float] = []
     for interval in day.get("intervals", []):
         cost = calculate_spot_cost(float(interval["price_eur_mwh"]), config)
@@ -75,6 +82,53 @@ def _enrich_day(day: dict[str, Any], settings: SpotPriceSettings, eur_czk: float
     day["optimization"] = optimization_payload(day.get("intervals", []))
 
 
+async def async_customer_spot_payload(
+    hass: HomeAssistant,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Return enriched Today/Tomorrow spot data using the effective customer price."""
+    current = now or datetime.now(timezone.utc)
+    result = await _runtime(hass).async_get(now=current)
+    settings = _settings(hass)
+
+    eur_czk = settings.eur_czk
+    fx_source = "manual"
+    fx_error: str | None = None
+    fx_fetched_at: str | None = None
+    fx_fallback_used = False
+    if settings.fx_mode == FX_MODE_AUTO:
+        fx_source = "manual_fallback"
+        fx_fallback_used = True
+        try:
+            fx = await _fx_runtime(hass).async_get(now=current)
+            eur_czk = fx.rate
+            fx_source = fx.source
+            fx_fetched_at = fx.fetched_at.isoformat()
+            fx_fallback_used = False
+        except Exception as err:
+            fx_error = str(err)
+
+    payload = result.snapshot.day_ahead_payload(now=current)
+    _enrich_day(payload["today"], settings, eur_czk)
+    _enrich_day(payload["tomorrow"], settings, eur_czk)
+    payload["customer_price_settings"] = settings.as_dict()
+    payload["exchange_rate"] = {
+        "pair": "EUR/CZK",
+        "rate": eur_czk,
+        "mode": settings.fx_mode,
+        "source": fx_source,
+        "fetched_at": fx_fetched_at,
+        "fallback_used": fx_fallback_used,
+        "error": fx_error,
+    }
+    payload["provider"] = result.provider
+    payload["stale"] = result.stale
+    payload["fallback_used"] = result.fallback_used
+    payload["provider_error"] = result.error
+    return payload
+
+
 @callback
 def async_register_spot_price_websocket(hass: HomeAssistant) -> None:
     domain_data = hass.data.setdefault(DOMAIN, {})
@@ -83,39 +137,16 @@ def async_register_spot_price_websocket(hass: HomeAssistant) -> None:
 
     @websocket_api.websocket_command({vol.Required("type"): COMMAND_GET_SPOT_PRICES})
     @websocket_api.async_response
-    async def websocket_get_spot_prices(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
-        now = datetime.now(timezone.utc)
+    async def websocket_get_spot_prices(
+        hass: HomeAssistant,
+        connection: websocket_api.ActiveConnection,
+        msg: dict[str, Any],
+    ) -> None:
         try:
-            result = await _runtime(hass).async_get(now=now)
-            settings = _settings(hass)
+            payload = await async_customer_spot_payload(hass)
         except Exception as err:
             connection.send_error(msg["id"], "spot_prices_unavailable", str(err))
             return
-        eur_czk = settings.eur_czk
-        fx_source = "manual"
-        fx_error: str | None = None
-        fx_fetched_at: str | None = None
-        fallback_used = False
-        if settings.fx_mode == FX_MODE_AUTO:
-            fx_source = "manual_fallback"
-            fallback_used = True
-            try:
-                fx = await _fx_runtime(hass).async_get(now=now)
-                eur_czk = fx.rate
-                fx_source = fx.source
-                fx_fetched_at = fx.fetched_at.isoformat()
-                fallback_used = False
-            except Exception as err:
-                fx_error = str(err)
-        payload = result.snapshot.day_ahead_payload(now=now)
-        _enrich_day(payload["today"], settings, eur_czk)
-        _enrich_day(payload["tomorrow"], settings, eur_czk)
-        payload["customer_price_settings"] = settings.as_dict()
-        payload["exchange_rate"] = {"pair": "EUR/CZK", "rate": eur_czk, "mode": settings.fx_mode, "source": fx_source, "fetched_at": fx_fetched_at, "fallback_used": fallback_used, "error": fx_error}
-        payload["provider"] = result.provider
-        payload["stale"] = result.stale
-        payload["fallback_used"] = result.fallback_used
-        payload["provider_error"] = result.error
         connection.send_result(msg["id"], payload)
 
     websocket_api.async_register_command(hass, websocket_get_spot_prices)
