@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import re
 from typing import Any, Mapping
 
 OPTION_LOAD_PROFILES = "load_profiles"
@@ -11,6 +12,7 @@ PROFILE_KIND_BOILER = "boiler"
 PROFILE_KIND_BATTERY = "battery"
 PROFILE_KIND_GENERIC = "generic"
 PROFILE_KINDS = (PROFILE_KIND_EV, PROFILE_KIND_BOILER, PROFILE_KIND_BATTERY, PROFILE_KIND_GENERIC)
+_ENTITY_ID_PATTERN = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +25,7 @@ class LoadProfile:
     duration_minutes: int
     power_kw: float
     enabled: bool = True
+    entity_id: str | None = None
 
     def validated(self) -> "LoadProfile":
         if not self.profile_id.strip():
@@ -35,6 +38,8 @@ class LoadProfile:
             raise ValueError("duration_minutes must be a positive multiple of 15")
         if self.power_kw <= 0:
             raise ValueError("power_kw must be positive")
+        if self.entity_id is not None and not _ENTITY_ID_PATTERN.fullmatch(self.entity_id):
+            raise ValueError("entity_id must be a valid Home Assistant entity ID")
         return self
 
     def as_dict(self) -> dict[str, Any]:
@@ -42,6 +47,8 @@ class LoadProfile:
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "LoadProfile":
+        raw_entity_id = value.get("entity_id")
+        entity_id = str(raw_entity_id).strip() if raw_entity_id is not None else ""
         return cls(
             profile_id=str(value.get("profile_id", "")),
             name=str(value.get("name", "")),
@@ -49,6 +56,7 @@ class LoadProfile:
             duration_minutes=int(value.get("duration_minutes", 0)),
             power_kw=float(value.get("power_kw", 0)),
             enabled=bool(value.get("enabled", True)),
+            entity_id=entity_id or None,
         ).validated()
 
 
