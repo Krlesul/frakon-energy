@@ -28,7 +28,6 @@ from .load_execution_stop_lifecycle import (
     STOP_STATE_SATISFIED,
     STOP_STATE_VERIFIED,
     ExecutionStopLifecycleRecord,
-    StopLifecycleError,
     confirm_stop_dispatch,
     require_stop_recovery_after_restart,
     verify_stop_state,
@@ -97,9 +96,15 @@ def _replay_payload(
     }
 
 
-async def _refresh_scheduler(hass: HomeAssistant, entry_id: str) -> None:
-    """Best-effort scheduler refresh; never widens stop authority."""
-    await async_refresh_stop_scheduler_if_started(hass, entry_id)
+async def _maybe_refresh_scheduler(
+    hass: HomeAssistant,
+    entry_id: str,
+    *,
+    enabled: bool,
+) -> None:
+    """Refresh only after the physical transaction reaches a stable outcome."""
+    if enabled:
+        await async_refresh_stop_scheduler_if_started(hass, entry_id)
 
 
 async def _persist_unknown_recovery(
@@ -116,9 +121,8 @@ async def _persist_unknown_recovery(
             now=max(now_ts, record.updated_at),
         )
         await stop_lifecycle_repository(hass, entry_id).async_update(recovered)
-        await _refresh_scheduler(hass, entry_id)
         return None
-    except Exception as err:  # The already persisted dispatching record remains fail-closed.
+    except Exception as err:  # The persisted dispatching record remains fail-closed.
         return err
 
 
@@ -129,6 +133,7 @@ async def async_dispatch_due_stop(
     start_lifecycle_id: str,
     context: Context | None = None,
     now: datetime | None = None,
+    refresh_scheduler: bool = True,
 ) -> dict[str, Any]:
     """Perform at most one immutable physical turn-off for a due stop lifecycle."""
     if not entry_id or not start_lifecycle_id:
@@ -169,7 +174,11 @@ async def async_dispatch_due_stop(
                     now=max(now_ts, record.updated_at),
                 )
                 persisted = await repository.async_update(verified)
-                await _refresh_scheduler(hass, entry_id)
+                await _maybe_refresh_scheduler(
+                    hass,
+                    entry_id,
+                    enabled=refresh_scheduler,
+                )
                 return {
                     "status": "verified_without_redispatch",
                     "stop_lifecycle": persisted.as_dict(),
@@ -186,15 +195,17 @@ async def async_dispatch_due_stop(
             )
 
         if decision.status == STOP_DUE_ALREADY_OFF and decision.can_complete_noop:
-            # Delegate to the independently guarded no-dispatch transaction. It rechecks
-            # live state and the deadline before persistence and performs no service call.
             result = await async_complete_stop_noop(
                 hass,
                 entry_id=entry_id,
                 start_lifecycle_id=start_lifecycle_id,
                 now=current,
             )
-            await _refresh_scheduler(hass, entry_id)
+            await _maybe_refresh_scheduler(
+                hass,
+                entry_id,
+                enabled=refresh_scheduler,
+            )
             return {
                 "status": "already_off_no_dispatch",
                 **result,
@@ -218,7 +229,6 @@ async def async_dispatch_due_stop(
             now=max(now_ts, record.updated_at),
         )
         persisted_dispatching = await repository.async_update(dispatching)
-        await _refresh_scheduler(hass, entry_id)
 
         try:
             await hass.services.async_call(
@@ -236,6 +246,11 @@ async def async_dispatch_due_stop(
                 record=persisted_dispatching,
                 now_ts=now_ts,
             )
+            await _maybe_refresh_scheduler(
+                hass,
+                entry_id,
+                enabled=refresh_scheduler,
+            )
             detail = (
                 f"; recovery persistence also failed: {recovery_err}"
                 if recovery_err is not None
@@ -245,8 +260,6 @@ async def async_dispatch_due_stop(
                 f"physical stop call outcome is unknown: {call_err}{detail}"
             ) from call_err
 
-        # Normal return from a blocking Home Assistant service call is confirmed call
-        # evidence, but it is not yet proof that the entity reached `off`.
         confirmed = confirm_stop_dispatch(
             persisted_dispatching,
             now=max(now_ts, persisted_dispatching.updated_at),
@@ -260,6 +273,11 @@ async def async_dispatch_due_stop(
                 record=persisted_dispatching,
                 now_ts=now_ts,
             )
+            await _maybe_refresh_scheduler(
+                hass,
+                entry_id,
+                enabled=refresh_scheduler,
+            )
             detail = (
                 f"; recovery persistence also failed: {recovery_err}"
                 if recovery_err is not None
@@ -270,7 +288,6 @@ async def async_dispatch_due_stop(
                 f"be persisted: {persist_err}{detail}"
             ) from persist_err
 
-        await _refresh_scheduler(hass, entry_id)
         observed_state = _live_state(hass, persisted_confirmed.entity_id)
         normalized = observed_state.strip().lower() if isinstance(observed_state, str) else None
         if normalized == persisted_confirmed.desired_state:
@@ -282,7 +299,11 @@ async def async_dispatch_due_stop(
             try:
                 persisted_verified = await repository.async_update(verified)
             except Exception as verify_persist_err:
-                await _refresh_scheduler(hass, entry_id)
+                await _maybe_refresh_scheduler(
+                    hass,
+                    entry_id,
+                    enabled=refresh_scheduler,
+                )
                 return {
                     "status": "stop_confirmed_verification_persistence_failed",
                     "stop_lifecycle": persisted_confirmed.as_dict(),
@@ -296,7 +317,11 @@ async def async_dispatch_due_stop(
                     "executor_available": True,
                     "can_retry_unknown": False,
                 }
-            await _refresh_scheduler(hass, entry_id)
+            await _maybe_refresh_scheduler(
+                hass,
+                entry_id,
+                enabled=refresh_scheduler,
+            )
             return {
                 "status": "stop_verified",
                 "stop_lifecycle": persisted_verified.as_dict(),
@@ -310,6 +335,11 @@ async def async_dispatch_due_stop(
                 "can_retry_unknown": False,
             }
 
+        await _maybe_refresh_scheduler(
+            hass,
+            entry_id,
+            enabled=refresh_scheduler,
+        )
         return {
             "status": "stop_dispatched_pending_verification",
             "stop_lifecycle": persisted_confirmed.as_dict(),
