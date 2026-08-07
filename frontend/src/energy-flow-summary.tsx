@@ -6,6 +6,8 @@ import "./energy-flow-summary.css";
 type CandidateRole = { role: string; selected_entity_id?: string | null; confirmed_entity_id?: string | null };
 type TechnologySuggestion = { technology: string; enabled?: boolean; roles?: CandidateRole[] };
 type DiscoverySnapshot = { technologies?: TechnologySuggestion[] };
+type BatteryPowerSign = "unknown" | "positive_is_charge" | "positive_is_discharge";
+type EnergyFlowSettings = { battery_power_sign: BatteryPowerSign };
 type ConfigEntry = { entry_id: string; domain?: string };
 type WsConnection = { sendMessagePromise?: <T>(message: Record<string, unknown>) => Promise<T> };
 type FlowDirection = "into-house" | "out-of-house" | "house-load" | "bidirectional";
@@ -15,6 +17,7 @@ const HOST_ID = "frakon-energy-flow-host";
 const PROFILE_CHANGED_EVENT = "frakon-energy-technology-profile-changed";
 let root: Root | null = null;
 let cachedSnapshot: DiscoverySnapshot | null = null;
+let cachedFlowSettings: EnergyFlowSettings = { battery_power_sign: "unknown" };
 
 function currentHass(): HomeAssistant | undefined { return window.__FRAKON_ENERGY_HASS__ ?? window.hass; }
 
@@ -24,11 +27,19 @@ async function callWs<T>(hass: HomeAssistant, message: Record<string, unknown>):
   return connection.sendMessagePromise<T>(message);
 }
 
-async function loadSnapshot(hass: HomeAssistant): Promise<DiscoverySnapshot> {
+async function findEntry(hass: HomeAssistant): Promise<ConfigEntry | null> {
   const entries = await callWs<ConfigEntry[]>(hass, { type: "config_entries/get" });
-  const entry = entries.find((item) => item.domain === "frakon_energy");
-  if (!entry) return {};
-  return callWs<DiscoverySnapshot>(hass, { type: "frakon_energy/entity_discovery/get", entry_id: entry.entry_id });
+  return entries.find((item) => item.domain === "frakon_energy") ?? null;
+}
+
+async function loadData(hass: HomeAssistant): Promise<{ snapshot: DiscoverySnapshot; settings: EnergyFlowSettings }> {
+  const entry = await findEntry(hass);
+  if (!entry) return { snapshot: {}, settings: { battery_power_sign: "unknown" } };
+  const [snapshot, settings] = await Promise.all([
+    callWs<DiscoverySnapshot>(hass, { type: "frakon_energy/entity_discovery/get", entry_id: entry.entry_id }),
+    callWs<EnergyFlowSettings>(hass, { type: "frakon_energy/energy_flow/get", entry_id: entry.entry_id }),
+  ]);
+  return { snapshot, settings };
 }
 
 function isOverviewVisible(): boolean {
@@ -81,16 +92,29 @@ function sumUnique(nodes: FlowNode[], directions: FlowDirection[]): number | nul
   return count > 0 ? total : null;
 }
 
+function batteryDirection(value: number | null, sign: BatteryPowerSign): { direction: FlowDirection; label: string } {
+  if (value === null || Math.abs(value) <= 0.03 || sign === "unknown") {
+    return { direction: "bidirectional", label: sign === "unknown" ? "směr není nastaven" : "baterie je téměř v klidu" };
+  }
+  const charging = sign === "positive_is_charge" ? value > 0 : value < 0;
+  return charging
+    ? { direction: "house-load", label: "nabíjení baterie" }
+    : { direction: "into-house", label: "vybíjení do domu" };
+}
+
 function EnergyFlow({ hass }: { hass: HomeAssistant }) {
   const [snapshot, setSnapshot] = useState<DiscoverySnapshot | null>(cachedSnapshot);
+  const [flowSettings, setFlowSettings] = useState<EnergyFlowSettings>(cachedFlowSettings);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
-    const refresh = () => loadSnapshot(hass).then((value) => {
+    const refresh = () => loadData(hass).then(({ snapshot: value, settings }) => {
       if (!active) return;
       cachedSnapshot = value;
+      cachedFlowSettings = settings;
       setSnapshot(value);
+      setFlowSettings(settings);
       setError(null);
     }).catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : "Energetický tok se nepodařilo načíst."); });
     if (!cachedSnapshot) void refresh();
@@ -100,20 +124,35 @@ function EnergyFlow({ hass }: { hass: HomeAssistant }) {
 
   const nodes = useMemo<FlowNode[]>(() => {
     if (!snapshot) return [];
+    const batteryEntity = roleEntity(snapshot, "home_battery", "power");
+    const batteryValue = powerValue(hass, batteryEntity);
+    const batteryFlow = batteryDirection(batteryValue.numeric, flowSettings.battery_power_sign);
     const specs = [
       ["pv", "FVE", roleEntity(snapshot, "photovoltaics", "pv_power"), "into-house", "do domu"],
       ["grid-in", "Síť · odběr", roleEntity(snapshot, "smart_meter", "grid_import") ?? roleEntity(snapshot, "photovoltaics", "grid_import"), "into-house", "ze sítě do domu"],
       ["grid-out", "Síť · přetok", roleEntity(snapshot, "smart_meter", "grid_export") ?? roleEntity(snapshot, "energy_export", "grid_export") ?? roleEntity(snapshot, "photovoltaics", "grid_export"), "out-of-house", "z domu do sítě"],
-      ["battery", "Baterie", roleEntity(snapshot, "home_battery", "power"), "bidirectional", "nabíjení / vybíjení"],
       ["wallbox", "Wallbox", roleEntity(snapshot, "wallbox", "power"), "house-load", "spotřeba domu"],
       ["ev", "Elektromobil", roleEntity(snapshot, "electric_vehicle", "power"), "house-load", "spotřeba při nabíjení"],
       ["heatpump", "Tepelné čerpadlo", roleEntity(snapshot, "heat_pump", "power"), "house-load", "spotřeba domu"],
     ] as const;
-    return specs.map(([id, label, entityId, direction, directionLabel]) => {
+    const mapped = specs.map(([id, label, entityId, direction, directionLabel]) => {
       const value = powerValue(hass, entityId);
-      return { id, label, entityId, value: value.text, numeric: value.numeric, active: Boolean(entityId), direction, directionLabel };
-    }).filter((node) => node.active);
-  }, [snapshot, hass.states]);
+      return { id, label, entityId, value: value.text, numeric: value.numeric, active: Boolean(entityId), direction, directionLabel } as FlowNode;
+    });
+    if (batteryEntity) {
+      mapped.splice(3, 0, {
+        id: "battery",
+        label: "Baterie",
+        entityId: batteryEntity,
+        value: batteryValue.text,
+        numeric: batteryValue.numeric,
+        active: true,
+        direction: batteryFlow.direction,
+        directionLabel: batteryFlow.label,
+      });
+    }
+    return mapped.filter((node) => node.active);
+  }, [snapshot, hass.states, flowSettings.battery_power_sign]);
 
   if (error) return <section className="energy-flow energy-flow--error">{error}</section>;
   if (!snapshot || nodes.length < 2) return null;
@@ -122,7 +161,8 @@ function EnergyFlow({ hass }: { hass: HomeAssistant }) {
   const knownSources = sumUnique(nodes, ["into-house"]);
   const knownLoads = sumUnique(nodes, ["house-load"]);
   const knownExport = sumUnique(nodes, ["out-of-house"]);
-  const battery = nodes.find((node) => node.direction === "bidirectional" && node.numeric !== null)?.numeric ?? null;
+  const battery = nodes.find((node) => node.id === "battery" && node.numeric !== null)?.numeric ?? null;
+  const batteryKnown = flowSettings.battery_power_sign !== "unknown";
 
   return <section className="energy-flow">
     <div className="energy-flow__heading">
@@ -139,12 +179,12 @@ function EnergyFlow({ hass }: { hass: HomeAssistant }) {
       })}
     </div>
     <div className="energy-flow__balance" aria-label="Souhrn dostupných energetických toků">
-      <div><span>Zdroje do domu</span><strong>{formatKw(knownSources)}</strong><small>FVE + odběr ze sítě</small></div>
-      <div><span>Známé spotřeby</span><strong>{formatKw(knownLoads)}</strong><small>jen přiřazené spotřebiče</small></div>
+      <div><span>Zdroje do domu</span><strong>{formatKw(knownSources)}</strong><small>FVE + síť + známé vybíjení baterie</small></div>
+      <div><span>Známé spotřeby</span><strong>{formatKw(knownLoads)}</strong><small>spotřebiče + známé nabíjení baterie</small></div>
       <div><span>Přetok do sítě</span><strong>{formatKw(knownExport)}</strong><small>potvrzené měření exportu</small></div>
-      <div><span>Baterie</span><strong>{formatKw(battery)}</strong><small>směr zatím neurčen</small></div>
+      <div><span>Baterie</span><strong>{formatKw(battery)}</strong><small>{batteryKnown ? "směr je započten podle nastavení" : "nastav směr v Technologie domu"}</small></div>
     </div>
-    <p className="energy-flow__note">Souhrn je pouze součet dostupných potvrzených měření, nikoli dopočítaná spotřeba celého domu. Stejný tok může být měřen na více místech, proto FRAKON automaticky nesčítá baterii ani nevytváří falešnou energetickou bilanci.</p>
+    <p className="energy-flow__note">Souhrn pracuje jen s potvrzenými měřeními. Po nastavení znaménkové konvence baterie umí FRAKON bezpečně rozlišit nabíjení a vybíjení; stále ale netvrdí, že částečná sada měření představuje úplnou spotřebu celého domu.</p>
   </section>;
 }
 
