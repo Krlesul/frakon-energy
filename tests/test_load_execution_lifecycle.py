@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -130,15 +131,19 @@ def _snapshot(attempt: ExecutionAttempt | None = None) -> ExecutionActionSnapsho
     )
 
 
-def _prepared(*, created_at: int | None = None) -> ExecutionLifecycleRecord:
-    plan = _plan()
-    attempt = _attempt(plan=plan)
+def _prepared(
+    *,
+    plan: LoadPlan | None = None,
+    created_at: int | None = None,
+) -> ExecutionLifecycleRecord:
+    current_plan = plan or _plan()
+    attempt = _attempt(plan=current_plan)
     snapshot = _snapshot(attempt)
     readiness = evaluate_execution_readiness(
         attempt=attempt,
         snapshot=snapshot,
         profile=_profile(),
-        plan=plan,
+        plan=current_plan,
         policy=_policy(),
         current_state="off",
         now=START,
@@ -146,7 +151,7 @@ def _prepared(*, created_at: int | None = None) -> ExecutionLifecycleRecord:
     return ExecutionLifecycleRecord.prepared(
         attempt=attempt,
         action_snapshot=snapshot,
-        plan=plan,
+        plan=current_plan,
         readiness=readiness,
         created_at=created_at if created_at is not None else int(START.timestamp()),
     )
@@ -308,16 +313,10 @@ def test_invalid_state_skip_is_rejected() -> None:
 
 def test_immutable_binding_change_is_rejected() -> None:
     prepared = _prepared()
-    changed = replace_record_plan_digest_for_test(prepared)
+    changed = replace(prepared, plan_digest="0" * 64)
 
     with pytest.raises(ExecutionLifecycleError):
         changed.validated()
-
-
-def replace_record_plan_digest_for_test(record: ExecutionLifecycleRecord) -> ExecutionLifecycleRecord:
-    from dataclasses import replace
-
-    return replace(record, plan_digest="0" * 64)
 
 
 def test_ledger_prepare_is_idempotent_even_if_retry_timestamp_differs() -> None:
@@ -335,20 +334,16 @@ def test_ledger_prepare_is_idempotent_even_if_retry_timestamp_differs() -> None:
     assert len(ledger.records) == 1
 
 
-def test_ledger_rejects_same_attempt_with_different_lifecycle_identity() -> None:
+def test_ledger_rejects_same_attempt_with_different_valid_lifecycle_identity() -> None:
     ledger = ExecutionLifecycleLedger()
-    first = _prepared()
+    first = _prepared(plan=_plan(average=2.0))
+    changed = _prepared(plan=_plan(average=2.1))
+    assert changed.attempt_id == first.attempt_id
+    assert changed.lifecycle_id != first.lifecycle_id
     ledger.prepare(first)
-    changed = replace_record_lifecycle_identity_for_test(first)
 
-    with pytest.raises(ExecutionLifecycleConflictError):
+    with pytest.raises(ExecutionLifecycleConflictError, match="different immutable binding"):
         ledger.prepare(changed)
-
-
-def replace_record_lifecycle_identity_for_test(record: ExecutionLifecycleRecord) -> ExecutionLifecycleRecord:
-    from dataclasses import replace
-
-    return replace(record, lifecycle_id="0" * 32)
 
 
 def test_storage_round_trip_preserves_prepared_record() -> None:
