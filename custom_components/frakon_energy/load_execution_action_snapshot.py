@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import asdict, dataclass
 import hashlib
+import re
 from typing import Any, Protocol
 
 from homeassistant.core import HomeAssistant
@@ -30,6 +31,8 @@ from .load_profiles import LoadProfile
 
 ACTION_SNAPSHOT_STORAGE_VERSION = 1
 ACTION_SNAPSHOT_SCHEMA_VERSION = 1
+_HEX_32 = re.compile(r"^[0-9a-f]{32}$")
+_HEX_64 = re.compile(r"^[0-9a-f]{64}$")
 
 
 class ActionSnapshotConflictError(ValueError):
@@ -49,16 +52,25 @@ def action_snapshot_storage_key(entry_id: str) -> str:
     return f"{DOMAIN}.load_execution_action_snapshots.{digest}"
 
 
-def _snapshot_identity(attempt: ExecutionAttempt, intent: LoadActionIntent) -> str:
+def _snapshot_id_from_fields(
+    attempt_id: str,
+    approval_fingerprint: str,
+    approval_snapshot_digest: str,
+    action_intent_id: str,
+) -> str:
     payload = "\0".join(
-        (
-            attempt.attempt_id,
-            attempt.approval_fingerprint,
-            attempt.snapshot_digest,
-            intent.intent_id,
-        )
+        (attempt_id, approval_fingerprint, approval_snapshot_digest, action_intent_id)
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
+
+
+def _snapshot_identity(attempt: ExecutionAttempt, intent: LoadActionIntent) -> str:
+    return _snapshot_id_from_fields(
+        attempt.attempt_id,
+        attempt.approval_fingerprint,
+        attempt.snapshot_digest,
+        intent.intent_id,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,15 +97,29 @@ class ExecutionActionSnapshot:
     executor_available: bool = False
 
     def validated(self) -> "ExecutionActionSnapshot":
-        if not self.snapshot_id or not self.attempt_id:
-            raise ValueError("snapshot_id and attempt_id are required")
+        if not _HEX_32.fullmatch(self.snapshot_id):
+            raise ValueError("snapshot_id must be a deterministic 32-character hex digest")
+        if not self.attempt_id:
+            raise ValueError("attempt_id is required")
         if not self.entry_id or not self.profile_id or not self.approval_id:
             raise ValueError("entry/profile/approval identity is required")
-        if len(self.approval_fingerprint) != 64 or len(self.approval_snapshot_digest) != 64:
-            raise ValueError("approval digests must be SHA-256 hex values")
+        if not _HEX_64.fullmatch(self.approval_fingerprint):
+            raise ValueError("approval_fingerprint must be a SHA-256 hex digest")
+        if not _HEX_64.fullmatch(self.approval_snapshot_digest):
+            raise ValueError("approval_snapshot_digest must be a SHA-256 hex digest")
+        if not _HEX_32.fullmatch(self.action_intent_id):
+            raise ValueError("action_intent_id must be a deterministic 32-character hex digest")
+        expected_snapshot_id = _snapshot_id_from_fields(
+            self.attempt_id,
+            self.approval_fingerprint,
+            self.approval_snapshot_digest,
+            self.action_intent_id,
+        )
+        if self.snapshot_id != expected_snapshot_id:
+            raise ValueError("action snapshot identity does not match its immutable binding")
         if self.created_at < 0:
             raise ValueError("created_at must be non-negative")
-        intent = LoadActionIntent(
+        LoadActionIntent(
             intent_id=self.action_intent_id,
             action=self.action,
             profile_id=self.profile_id,
@@ -106,8 +132,6 @@ class ExecutionActionSnapshot:
             service_data={},
             desired_state=self.desired_state,
         ).validated()
-        if intent.intent_id != self.action_intent_id:
-            raise ValueError("action intent identity mismatch")
         if self.service_call_performed:
             raise ValueError("action snapshot cannot represent a performed service call")
         if self.executor_available:
