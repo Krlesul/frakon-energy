@@ -1,11 +1,12 @@
-"""Approval preview and issuance API for FRAKON Energy load execution.
+"""Approval preview, issuance and runtime management API for FRAKON Energy.
 
-Approval issuance is administrator-only and still performs no Home Assistant
-action. It signs one fresh immutable candidate snapshot for a short time window.
+Issuance and runtime approval management are administrator-only. This module
+still exposes no execute/consume command and performs no Home Assistant action.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import hmac
 import re
@@ -22,7 +23,10 @@ from .load_execution_approval import (
     APPROVAL_SCHEMA_VERSION,
     DEFAULT_APPROVAL_TTL_SECONDS,
     MAX_APPROVAL_TTL_SECONDS,
+    VERIFY_POLICY_NOT_ELIGIBLE,
     ApprovalAuthority,
+    ApprovalVerification,
+    ExecutionApproval,
     execution_snapshot_digest,
 )
 from .load_execution_policy import DECISION_APPROVAL_REQUIRED, LoadExecutionPolicy
@@ -31,8 +35,12 @@ from .load_profiles import LoadProfile
 
 COMMAND_PREVIEW_APPROVAL = f"{DOMAIN}/load_execution/approval_preview"
 COMMAND_ISSUE_APPROVAL = f"{DOMAIN}/load_execution/approval_issue"
+COMMAND_LIST_APPROVALS = f"{DOMAIN}/load_execution/approval_list"
+COMMAND_VERIFY_APPROVAL = f"{DOMAIN}/load_execution/approval_verify"
+COMMAND_REVOKE_APPROVAL = f"{DOMAIN}/load_execution/approval_revoke"
 _REGISTERED_KEY = "load_execution_approval_preview_websocket_registered"
 _AUTHORITY_KEY = "load_execution_approval_authorities_by_entry"
+_RECORDS_KEY = "load_execution_approval_records_by_entry"
 _DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -98,11 +106,7 @@ def _candidate_from_evaluation(
 
 
 def _approval_authority(hass: HomeAssistant, entry_id: str) -> ApprovalAuthority:
-    """Return one process-local authority per config entry.
-
-    Restart invalidates all outstanding approvals, while separate config entries
-    cannot verify each other's approval IDs even when their candidate data match.
-    """
+    """Return one process-local authority per config entry."""
     if not entry_id:
         raise ValueError("entry_id is required for approval authority scope")
     domain_data = hass.data.setdefault(DOMAIN, {})
@@ -116,6 +120,85 @@ def _approval_authority(hass: HomeAssistant, entry_id: str) -> ApprovalAuthority
     authority = ApprovalAuthority.ephemeral()
     authorities[entry_id] = authority
     return authority
+
+
+@dataclass(slots=True)
+class RuntimeApprovalRecord:
+    """Server-held metadata for one explicitly issued approval artifact."""
+
+    entry_id: str
+    profile_id: str
+    approved_by: str
+    approval: ExecutionApproval
+    plan_starts_at: str
+    plan_ends_at: str
+    revoked: bool = False
+
+    def as_dict(self, *, now: datetime | None = None) -> dict[str, Any]:
+        current = now or datetime.now(timezone.utc)
+        if self.revoked:
+            status = "revoked"
+        elif int(current.timestamp()) >= self.approval.expires_at:
+            status = "expired"
+        else:
+            status = "approved"
+        return {
+            "entry_id": self.entry_id,
+            "profile_id": self.profile_id,
+            "approved_by": self.approved_by,
+            "status": status,
+            "approval": {
+                "approval_id": self.approval.approval_id,
+                "intent": self.approval.intent,
+                "snapshot_digest": self.approval.snapshot_digest,
+                "issued_at": self.approval.issued_at,
+                "expires_at": self.approval.expires_at,
+            },
+            "plan_starts_at": self.plan_starts_at,
+            "plan_ends_at": self.plan_ends_at,
+            "revoked": self.revoked,
+            "runtime_only": True,
+            "survives_restart": False,
+            "execution_performed": False,
+            "executor_available": False,
+            "can_execute": False,
+        }
+
+
+def _approval_records(hass: HomeAssistant, entry_id: str) -> dict[str, RuntimeApprovalRecord]:
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    by_entry = domain_data.get(_RECORDS_KEY)
+    if not isinstance(by_entry, dict):
+        by_entry = {}
+        domain_data[_RECORDS_KEY] = by_entry
+    records = by_entry.get(entry_id)
+    if not isinstance(records, dict):
+        records = {}
+        by_entry[entry_id] = records
+    return records
+
+
+def _record(hass: HomeAssistant, entry_id: str, approval_id: str) -> RuntimeApprovalRecord:
+    records = _approval_records(hass, entry_id)
+    try:
+        record = records[approval_id]
+    except KeyError as err:
+        raise ValueError(f"approval not found: {approval_id}") from err
+    if not isinstance(record, RuntimeApprovalRecord):
+        raise ValueError("invalid runtime approval record")
+    return record
+
+
+def _list_payload(hass: HomeAssistant, entry_id: str) -> dict[str, Any]:
+    return {
+        "entry_id": entry_id,
+        "approvals": [record.as_dict() for record in _approval_records(hass, entry_id).values()],
+        "runtime_only": True,
+        "survives_restart": False,
+        "execution_performed": False,
+        "executor_available": False,
+        "can_execute": False,
+    }
 
 
 async def async_preview_execution_approval(
@@ -158,6 +241,7 @@ async def async_preview_execution_approval(
         "execution_performed": False,
         "executor_available": False,
         "preview_only": True,
+        "can_execute": False,
     }
 
     candidate = _candidate_from_evaluation(evaluation)
@@ -179,11 +263,14 @@ async def async_issue_execution_approval(
     deadline: datetime | None = None,
     ttl_seconds: int = DEFAULT_APPROVAL_TTL_SECONDS,
     now: datetime | None = None,
+    approved_by: str = "administrator",
 ) -> dict[str, Any]:
     """Issue a short-lived artifact only if a fresh scope matches the preview digest."""
     expected_digest = _validate_expected_digest(expected_snapshot_digest)
     if ttl_seconds <= 0 or ttl_seconds > MAX_APPROVAL_TTL_SECONDS:
         raise ValueError(f"ttl_seconds must be between 1 and {MAX_APPROVAL_TTL_SECONDS}")
+    if not approved_by.strip():
+        raise ValueError("approved_by is required")
     current = now or datetime.now(timezone.utc)
     if current.tzinfo is None or current.utcoffset() is None:
         raise ValueError("now must be timezone-aware")
@@ -211,13 +298,22 @@ async def async_issue_execution_approval(
     if entity_available is not None and not isinstance(entity_available, bool):
         raise ValueError("execution evaluation returned an invalid entity availability state")
 
-    approval = _approval_authority(hass, entry_id).issue(
+    authority = _approval_authority(hass, entry_id)
+    approval = authority.issue(
         profile,
         plan,
         policy,
         entity_available=entity_available,
         now=current,
         ttl_seconds=ttl_seconds,
+    )
+    _approval_records(hass, entry_id)[approval.approval_id] = RuntimeApprovalRecord(
+        entry_id=entry_id,
+        profile_id=profile_id,
+        approved_by=approved_by,
+        approval=approval,
+        plan_starts_at=plan.starts_at,
+        plan_ends_at=plan.ends_at,
     )
     return {
         "approval_issued": True,
@@ -232,6 +328,7 @@ async def async_issue_execution_approval(
         "expires_at": approval.expires_at,
         "ttl_seconds": approval.expires_at - approval.issued_at,
         "entry_id": entry_id,
+        "approved_by": approved_by,
         "profile": profile.as_dict(),
         "policy": policy.as_dict(),
         "plan": plan.as_dict(),
@@ -240,12 +337,89 @@ async def async_issue_execution_approval(
         "execution_performed": False,
         "executor_available": False,
         "consumed": False,
+        "can_execute": False,
+    }
+
+
+async def _fresh_evaluation_for_record(
+    hass: HomeAssistant,
+    record: RuntimeApprovalRecord,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    return await async_evaluate_profile_execution(
+        hass,
+        entry_id=record.entry_id,
+        profile_id=record.profile_id,
+        earliest_start=_parse_datetime(record.plan_starts_at, "plan_starts_at"),
+        deadline=_parse_datetime(record.plan_ends_at, "plan_ends_at"),
+        now=now,
+    )
+
+
+async def async_verify_execution_approval(
+    hass: HomeAssistant,
+    *,
+    entry_id: str,
+    approval_id: str,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Verify a server-held approval against a freshly recalculated exact scope."""
+    current = now or datetime.now(timezone.utc)
+    record = _record(hass, entry_id, approval_id)
+    evaluation = await _fresh_evaluation_for_record(hass, record, now=current)
+    candidate = _candidate_from_evaluation(evaluation)
+    if candidate is None:
+        verification = ApprovalVerification(
+            valid=False,
+            reason=VERIFY_POLICY_NOT_ELIGIBLE,
+            approval_id=record.approval.approval_id,
+            snapshot_digest=record.approval.snapshot_digest,
+            consumed=False,
+            execution_performed=False,
+        )
+    else:
+        profile, plan, policy = candidate
+        verification = _approval_authority(hass, entry_id).verify(
+            record.approval,
+            profile,
+            plan,
+            policy,
+            entity_available=evaluation.get("entity_available"),
+            now=current,
+        )
+    return {
+        "record": record.as_dict(now=current),
+        "verification": verification.as_dict(),
+        "evaluation": evaluation,
+        "execution_performed": False,
+        "executor_available": False,
+        "can_execute": False,
+    }
+
+
+def async_revoke_execution_approval(
+    hass: HomeAssistant,
+    *,
+    entry_id: str,
+    approval_id: str,
+) -> dict[str, Any]:
+    """Revoke a server-held approval without consuming or executing it."""
+    record = _record(hass, entry_id, approval_id)
+    verification = _approval_authority(hass, entry_id).revoke(record.approval)
+    _approval_records(hass, entry_id)[approval_id] = replace(record, revoked=True)
+    return {
+        "record": _approval_records(hass, entry_id)[approval_id].as_dict(),
+        "verification": verification.as_dict(),
+        "execution_performed": False,
+        "executor_available": False,
+        "can_execute": False,
     }
 
 
 @callback
 def async_register_load_execution_approval_preview_websocket(hass: HomeAssistant) -> None:
-    """Register read-only preview and administrator-only issuance commands once."""
+    """Register preview plus administrator-only approval management commands once."""
     domain_data = hass.data.setdefault(DOMAIN, {})
     if domain_data.get(_REGISTERED_KEY):
         return
@@ -258,17 +432,12 @@ def async_register_load_execution_approval_preview_websocket(hass: HomeAssistant
             vol.Optional("earliest_start"): str,
             vol.Optional("deadline"): str,
             vol.Optional("ttl_seconds", default=DEFAULT_APPROVAL_TTL_SECONDS): vol.All(
-                int,
-                vol.Range(min=1, max=MAX_APPROVAL_TTL_SECONDS),
+                int, vol.Range(min=1, max=MAX_APPROVAL_TTL_SECONDS)
             ),
         }
     )
     @websocket_api.async_response
-    async def websocket_preview(
-        hass: HomeAssistant,
-        connection: websocket_api.ActiveConnection,
-        msg: dict[str, Any],
-    ) -> None:
+    async def websocket_preview(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
         try:
             result = await async_preview_execution_approval(
                 hass,
@@ -297,16 +466,13 @@ def async_register_load_execution_approval_preview_websocket(hass: HomeAssistant
             vol.Optional("earliest_start"): str,
             vol.Optional("deadline"): str,
             vol.Optional("ttl_seconds", default=DEFAULT_APPROVAL_TTL_SECONDS): vol.All(
-                int,
-                vol.Range(min=1, max=MAX_APPROVAL_TTL_SECONDS),
+                int, vol.Range(min=1, max=MAX_APPROVAL_TTL_SECONDS)
             ),
         }
     )
-    async def websocket_issue(
-        hass: HomeAssistant,
-        connection: websocket_api.ActiveConnection,
-        msg: dict[str, Any],
-    ) -> None:
+    async def websocket_issue(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+        user = getattr(connection, "user", None)
+        approved_by = str(getattr(user, "id", None) or "administrator")
         try:
             result = await async_issue_execution_approval(
                 hass,
@@ -316,6 +482,7 @@ def async_register_load_execution_approval_preview_websocket(hass: HomeAssistant
                 earliest_start=_parse_datetime(msg.get("earliest_start"), "earliest_start"),
                 deadline=_parse_datetime(msg.get("deadline"), "deadline"),
                 ttl_seconds=msg["ttl_seconds"],
+                approved_by=approved_by,
             )
         except ApprovalScopeChangedError as err:
             connection.send_error(msg["id"], "execution_approval_scope_changed", str(err))
@@ -328,6 +495,46 @@ def async_register_load_execution_approval_preview_websocket(hass: HomeAssistant
             return
         connection.send_result(msg["id"], result)
 
+    @websocket_api.require_admin
+    @websocket_api.async_response
+    @websocket_api.websocket_command(
+        {vol.Required("type"): COMMAND_LIST_APPROVALS, vol.Required("entry_id"): str}
+    )
+    async def websocket_list(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+        connection.send_result(msg["id"], _list_payload(hass, msg["entry_id"]))
+
+    @websocket_api.require_admin
+    @websocket_api.async_response
+    @websocket_api.websocket_command(
+        {vol.Required("type"): COMMAND_VERIFY_APPROVAL, vol.Required("entry_id"): str, vol.Required("approval_id"): str}
+    )
+    async def websocket_verify(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+        try:
+            result = await async_verify_execution_approval(hass, entry_id=msg["entry_id"], approval_id=msg["approval_id"])
+        except ValueError as err:
+            connection.send_error(msg["id"], "invalid_execution_approval", str(err))
+            return
+        except Exception as err:
+            connection.send_error(msg["id"], "execution_approval_verify_unavailable", str(err))
+            return
+        connection.send_result(msg["id"], result)
+
+    @websocket_api.require_admin
+    @websocket_api.async_response
+    @websocket_api.websocket_command(
+        {vol.Required("type"): COMMAND_REVOKE_APPROVAL, vol.Required("entry_id"): str, vol.Required("approval_id"): str}
+    )
+    async def websocket_revoke(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+        try:
+            result = async_revoke_execution_approval(hass, entry_id=msg["entry_id"], approval_id=msg["approval_id"])
+        except ValueError as err:
+            connection.send_error(msg["id"], "invalid_execution_approval", str(err))
+            return
+        connection.send_result(msg["id"], result)
+
     websocket_api.async_register_command(hass, websocket_preview)
     websocket_api.async_register_command(hass, websocket_issue)
+    websocket_api.async_register_command(hass, websocket_list)
+    websocket_api.async_register_command(hass, websocket_verify)
+    websocket_api.async_register_command(hass, websocket_revoke)
     domain_data[_REGISTERED_KEY] = True
