@@ -18,7 +18,7 @@ from .load_execution_policy_options import (
     policy_by_profile_id,
     upsert_policy,
 )
-from .load_plan_ws_api import _parse_datetime, async_preview_profile_plan
+from .load_plan_ws_api import _parse_datetime, async_preview_load_plan
 from .load_profiles import profile_by_id, profiles_from_options
 
 COMMAND_LIST = f"{DOMAIN}/load_execution_policies/list"
@@ -77,10 +77,12 @@ async def async_evaluate_profile_policy(
     entry = _entry(hass, entry_id)
     profile = profile_by_id(entry.options, profile_id)
     policy = policy_by_profile_id(entry.options, profile_id)
-    _profile, plan_payload = await async_preview_profile_plan(
+    plan_payload = await async_preview_load_plan(
         hass,
-        entry_id=entry_id,
-        profile_id=profile_id,
+        load_id=profile.profile_id,
+        name=profile.name,
+        duration_minutes=profile.duration_minutes,
+        power_kw=profile.power_kw,
         earliest_start=earliest_start,
         deadline=deadline,
     )
