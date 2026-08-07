@@ -29,9 +29,11 @@ from custom_components.frakon_energy.load_execution_policy import (
 from custom_components.frakon_energy.load_execution_readiness import evaluate_execution_readiness
 from custom_components.frakon_energy.load_execution_recovery_resolution import (
     REASON_ENTITY_STATE_UNAVAILABLE,
+    REASON_STOP_OWNERSHIP_MISSING,
     RESOLUTION_BLOCKED,
     RESOLUTION_SAFE_TO_VERIFY,
 )
+from custom_components.frakon_energy.load_execution_start_stop_ownership import StartStopOwnershipProof
 from custom_components.frakon_energy.load_profiles import PROFILE_KIND_EV, LoadProfile
 
 TZ = timezone(timedelta(hours=2))
@@ -170,7 +172,23 @@ def _recovery_summary() -> LifecycleRecoverySummary:
     )
 
 
-def _allow_recovery(monkeypatch: pytest.MonkeyPatch) -> None:
+def _proof(ready: bool) -> StartStopOwnershipProof:
+    return StartStopOwnershipProof(
+        start_lifecycle_id=_prepared().lifecycle_id,
+        stop_lease_present=ready,
+        stop_lifecycle_present=ready,
+        stop_lease_matches=ready,
+        stop_lifecycle_matches=ready,
+        ownership_ready=ready,
+        reason="stop_ownership_ready" if ready else "stop_lifecycle_missing",
+    )
+
+
+def _allow_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    ownership_ready: bool = True,
+) -> None:
     monkeypatch.setattr(
         resolution_ws,
         "assert_lifecycle_recovery_ready",
@@ -180,6 +198,15 @@ def _allow_recovery(monkeypatch: pytest.MonkeyPatch) -> None:
         resolution_ws,
         "lifecycle_recovery_summary",
         lambda hass, entry_id: _recovery_summary(),
+    )
+
+    async def ownership_proof(hass, *, entry_id, start):
+        return _proof(ownership_ready)
+
+    monkeypatch.setattr(
+        resolution_ws,
+        "async_start_stop_ownership_proof",
+        ownership_proof,
     )
 
 
@@ -206,6 +233,7 @@ async def test_resolution_endpoint_reads_live_state_without_mutation(
     )
 
     after = await repository.async_get_by_attempt_id("attempt-1")
+    assert result["stop_ownership"]["ownership_ready"] is True
     assert result["resolution"]["status"] == RESOLUTION_SAFE_TO_VERIFY
     assert result["resolution"]["current_state"] == "on"
     assert result["resolution"]["can_mark_verified"] is True
@@ -218,6 +246,32 @@ async def test_resolution_endpoint_reads_live_state_without_mutation(
     assert result["executor_available"] is False
     assert after == before
     assert repository._store.saves == before_saves  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_resolution_endpoint_blocks_desired_state_when_stop_ownership_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hass = _FakeHass("on")
+    repository = await _repository()
+    monkeypatch.setattr(
+        resolution_ws,
+        "lifecycle_repository",
+        lambda hass, entry_id: repository,
+    )
+    _allow_recovery(monkeypatch, ownership_ready=False)
+
+    result = await resolution_ws.async_recovery_resolution_plan(
+        hass,  # type: ignore[arg-type]
+        entry_id="entry-1",
+        attempt_id="attempt-1",
+    )
+
+    assert result["stop_ownership"]["ownership_ready"] is False
+    assert result["resolution"]["status"] == RESOLUTION_BLOCKED
+    assert result["resolution"]["reason"] == REASON_STOP_OWNERSHIP_MISSING
+    assert result["resolution"]["can_mark_verified"] is False
+    assert result["resolution"]["can_redispatch"] is False
 
 
 @pytest.mark.asyncio
