@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import asdict, dataclass
+from datetime import datetime
 import hashlib
 import re
 from typing import Any, Protocol
@@ -44,6 +45,16 @@ class StopLeaseStore(Protocol):
     async def async_save(self, data: dict[str, Any]) -> None: ...
 
 
+def _aware_datetime(value: str, field: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError) as err:
+        raise StopLeaseError(f"{field} must be an ISO-8601 datetime") from err
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise StopLeaseError(f"{field} must include a timezone offset")
+    return parsed
+
+
 def _stop_intent_id(
     *,
     lifecycle_id: str,
@@ -58,8 +69,35 @@ def _stop_intent_id(
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
 
 
-def _lease_id(*, lifecycle_id: str, stop_intent_id: str, plan_digest: str) -> str:
-    payload = "\0".join((lifecycle_id, stop_intent_id, plan_digest))
+def _lease_id(
+    *,
+    stop_intent_id: str,
+    entry_id: str,
+    lifecycle_id: str,
+    attempt_id: str,
+    action_snapshot_id: str,
+    profile_id: str,
+    entity_id: str,
+    approval_snapshot_digest: str,
+    plan_digest: str,
+    starts_at: str,
+    ends_at: str,
+) -> str:
+    payload = "\0".join(
+        (
+            stop_intent_id,
+            entry_id,
+            lifecycle_id,
+            attempt_id,
+            action_snapshot_id,
+            profile_id,
+            entity_id,
+            approval_snapshot_digest,
+            plan_digest,
+            starts_at,
+            ends_at,
+        )
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
 
 
@@ -107,6 +145,10 @@ class ExecutionStopLease:
             raise StopLeaseError("approval_snapshot_digest must be SHA-256 hex")
         if not _HEX_64.fullmatch(self.plan_digest):
             raise StopLeaseError("plan_digest must be SHA-256 hex")
+        starts = _aware_datetime(self.starts_at, "starts_at")
+        ends = _aware_datetime(self.ends_at, "ends_at")
+        if ends <= starts:
+            raise StopLeaseError("ends_at must be after starts_at")
         if self.status != STOP_LEASE_ARMED:
             raise StopLeaseError("new stop lease must remain armed/inert")
         if self.desired_state != "off":
@@ -128,9 +170,17 @@ class ExecutionStopLease:
         if self.stop_intent_id != expected_intent:
             raise StopLeaseError("stop intent identity does not match immutable binding")
         expected_lease = _lease_id(
-            lifecycle_id=self.lifecycle_id,
             stop_intent_id=self.stop_intent_id,
+            entry_id=self.entry_id,
+            lifecycle_id=self.lifecycle_id,
+            attempt_id=self.attempt_id,
+            action_snapshot_id=self.action_snapshot_id,
+            profile_id=self.profile_id,
+            entity_id=self.entity_id,
+            approval_snapshot_digest=self.approval_snapshot_digest,
             plan_digest=self.plan_digest,
+            starts_at=self.starts_at,
+            ends_at=self.ends_at,
         )
         if self.lease_id != expected_lease:
             raise StopLeaseError("stop lease identity does not match immutable binding")
@@ -193,12 +243,21 @@ class ExecutionStopLease:
             service_name=stop_name,
             ends_at=lifecycle.plan.ends_at,
         )
+        lease_id = _lease_id(
+            stop_intent_id=intent_id,
+            entry_id=lifecycle.entry_id,
+            lifecycle_id=lifecycle.lifecycle_id,
+            attempt_id=lifecycle.attempt_id,
+            action_snapshot_id=lifecycle.action_snapshot_id,
+            profile_id=lifecycle.profile_id,
+            entity_id=lifecycle.entity_id,
+            approval_snapshot_digest=lifecycle.approval_snapshot_digest,
+            plan_digest=lifecycle.plan_digest,
+            starts_at=lifecycle.plan.starts_at,
+            ends_at=lifecycle.plan.ends_at,
+        )
         return cls(
-            lease_id=_lease_id(
-                lifecycle_id=lifecycle.lifecycle_id,
-                stop_intent_id=intent_id,
-                plan_digest=lifecycle.plan_digest,
-            ),
+            lease_id=lease_id,
             stop_intent_id=intent_id,
             entry_id=lifecycle.entry_id,
             lifecycle_id=lifecycle.lifecycle_id,
