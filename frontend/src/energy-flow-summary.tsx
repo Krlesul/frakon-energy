@@ -9,7 +9,7 @@ type DiscoverySnapshot = { technologies?: TechnologySuggestion[] };
 type ConfigEntry = { entry_id: string; domain?: string };
 type WsConnection = { sendMessagePromise?: <T>(message: Record<string, unknown>) => Promise<T> };
 type FlowDirection = "into-house" | "out-of-house" | "house-load" | "bidirectional";
-type FlowNode = { id: string; label: string; value: string | null; numeric: number | null; active: boolean; direction: FlowDirection; directionLabel: string };
+type FlowNode = { id: string; label: string; entityId: string | null; value: string | null; numeric: number | null; active: boolean; direction: FlowDirection; directionLabel: string };
 
 const HOST_ID = "frakon-energy-flow-host";
 const PROFILE_CHANGED_EVENT = "frakon-energy-technology-profile-changed";
@@ -62,6 +62,25 @@ function powerValue(hass: HomeAssistant, entityId: string | null): { text: strin
   return { text: `${abs.toLocaleString("cs-CZ", { maximumFractionDigits: abs >= 10 ? 1 : 2 })} kW`, numeric: kw };
 }
 
+function formatKw(value: number | null): string {
+  if (value === null) return "—";
+  const abs = Math.abs(value);
+  return `${abs.toLocaleString("cs-CZ", { maximumFractionDigits: abs >= 10 ? 1 : 2 })} kW`;
+}
+
+function sumUnique(nodes: FlowNode[], directions: FlowDirection[]): number | null {
+  const seen = new Set<string>();
+  let total = 0;
+  let count = 0;
+  for (const node of nodes) {
+    if (!directions.includes(node.direction) || node.numeric === null || !node.entityId || seen.has(node.entityId)) continue;
+    seen.add(node.entityId);
+    total += Math.abs(node.numeric);
+    count += 1;
+  }
+  return count > 0 ? total : null;
+}
+
 function EnergyFlow({ hass }: { hass: HomeAssistant }) {
   const [snapshot, setSnapshot] = useState<DiscoverySnapshot | null>(cachedSnapshot);
   const [error, setError] = useState<string | null>(null);
@@ -92,7 +111,7 @@ function EnergyFlow({ hass }: { hass: HomeAssistant }) {
     ] as const;
     return specs.map(([id, label, entityId, direction, directionLabel]) => {
       const value = powerValue(hass, entityId);
-      return { id, label, value: value.text, numeric: value.numeric, active: Boolean(entityId), direction, directionLabel };
+      return { id, label, entityId, value: value.text, numeric: value.numeric, active: Boolean(entityId), direction, directionLabel };
     }).filter((node) => node.active);
   }, [snapshot, hass.states]);
 
@@ -100,6 +119,11 @@ function EnergyFlow({ hass }: { hass: HomeAssistant }) {
   if (!snapshot || nodes.length < 2) return null;
 
   const activePower = nodes.filter((node) => node.numeric !== null && Math.abs(node.numeric) > 0.03).length;
+  const knownSources = sumUnique(nodes, ["into-house"]);
+  const knownLoads = sumUnique(nodes, ["house-load"]);
+  const knownExport = sumUnique(nodes, ["out-of-house"]);
+  const battery = nodes.find((node) => node.direction === "bidirectional" && node.numeric !== null)?.numeric ?? null;
+
   return <section className="energy-flow">
     <div className="energy-flow__heading">
       <div><span className="eyebrow">Živý energetický tok</span><h2>Kam právě teče energie</h2></div>
@@ -114,7 +138,13 @@ function EnergyFlow({ hass }: { hass: HomeAssistant }) {
         </article>;
       })}
     </div>
-    <p className="energy-flow__note">Směr FVE, odběru, přetoku a známých spotřebičů vychází přímo z přiřazené role entity. U baterie zůstává směr záměrně obousměrný, protože znaménko výkonu se mezi integracemi liší.</p>
+    <div className="energy-flow__balance" aria-label="Souhrn dostupných energetických toků">
+      <div><span>Zdroje do domu</span><strong>{formatKw(knownSources)}</strong><small>FVE + odběr ze sítě</small></div>
+      <div><span>Známé spotřeby</span><strong>{formatKw(knownLoads)}</strong><small>jen přiřazené spotřebiče</small></div>
+      <div><span>Přetok do sítě</span><strong>{formatKw(knownExport)}</strong><small>potvrzené měření exportu</small></div>
+      <div><span>Baterie</span><strong>{formatKw(battery)}</strong><small>směr zatím neurčen</small></div>
+    </div>
+    <p className="energy-flow__note">Souhrn je pouze součet dostupných potvrzených měření, nikoli dopočítaná spotřeba celého domu. Stejný tok může být měřen na více místech, proto FRAKON automaticky nesčítá baterii ani nevytváří falešnou energetickou bilanci.</p>
   </section>;
 }
 
