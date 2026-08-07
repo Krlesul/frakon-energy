@@ -43,6 +43,12 @@ type WsConnection = {
   sendMessagePromise?: <T>(message: Record<string, unknown>) => Promise<T>;
 };
 
+const PROFILE_CHANGED_EVENT = "frakon-energy-technology-profile-changed";
+
+function announceProfileChanged(): void {
+  window.dispatchEvent(new CustomEvent(PROFILE_CHANGED_EVENT));
+}
+
 async function callWs<T>(hass: HomeAssistant, message: Record<string, unknown>): Promise<T> {
   const connection = hass.connection as WsConnection | undefined;
   if (!connection?.sendMessagePromise) {
@@ -94,6 +100,7 @@ export function TechnologySettings({ hass }: { hass?: HomeAssistant }) {
         entry_id: activeEntry.entry_id,
       });
       setSnapshot(result);
+      if (rescan) announceProfileChanged();
     } catch (reason) {
       setError(errorMessage(reason, "Načtení technologií se nezdařilo."));
     } finally {
@@ -120,6 +127,7 @@ export function TechnologySettings({ hass }: { hass?: HomeAssistant }) {
         entity_id: entityId,
       });
       setSnapshot(result);
+      announceProfileChanged();
     } catch (reason) {
       setError(errorMessage(reason, "Uložení mapování se nezdařilo."));
     } finally {
@@ -139,6 +147,7 @@ export function TechnologySettings({ hass }: { hass?: HomeAssistant }) {
         role,
       });
       setSnapshot(result);
+      announceProfileChanged();
     } catch (reason) {
       setError(errorMessage(reason, "Odebrání mapování se nezdařilo."));
     } finally {
@@ -164,6 +173,7 @@ export function TechnologySettings({ hass }: { hass?: HomeAssistant }) {
         ),
       } : current);
       await load(false);
+      announceProfileChanged();
     } catch (reason) {
       setError(errorMessage(reason, "Změnu technologie se nepodařilo uložit."));
     } finally {
