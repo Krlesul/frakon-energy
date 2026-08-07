@@ -6,14 +6,18 @@ from dataclasses import asdict, dataclass
 from typing import Any, Mapping
 
 CONF_SPOT_EUR_CZK = "spot_eur_czk"
+CONF_SPOT_FX_MODE = "spot_fx_mode"
 CONF_SPOT_SUPPLIER_FEE = "spot_supplier_fee_czk_kwh"
 CONF_SPOT_VARIABLE_ADDITIONS = "spot_variable_additions_czk_kwh"
 CONF_SPOT_VAT_PERCENT = "spot_vat_percent"
+FX_MODE_AUTO = "auto"
+FX_MODE_MANUAL = "manual"
 
 
 @dataclass(frozen=True, slots=True)
 class SpotPriceSettings:
     eur_czk: float = 25.0
+    fx_mode: str = FX_MODE_AUTO
     supplier_fee_czk_kwh: float = 0.0
     variable_additions_czk_kwh: float = 0.0
     vat_percent: float = 21.0
@@ -22,12 +26,15 @@ class SpotPriceSettings:
     def from_options(cls, options: Mapping[str, Any]) -> "SpotPriceSettings":
         return cls(
             eur_czk=float(options.get(CONF_SPOT_EUR_CZK, 25.0)),
+            fx_mode=str(options.get(CONF_SPOT_FX_MODE, FX_MODE_AUTO)),
             supplier_fee_czk_kwh=float(options.get(CONF_SPOT_SUPPLIER_FEE, 0.0)),
             variable_additions_czk_kwh=float(options.get(CONF_SPOT_VARIABLE_ADDITIONS, 0.0)),
             vat_percent=float(options.get(CONF_SPOT_VAT_PERCENT, 21.0)),
         ).validated()
 
     def validated(self) -> "SpotPriceSettings":
+        if self.fx_mode not in {FX_MODE_AUTO, FX_MODE_MANUAL}:
+            raise ValueError("FX mode must be auto or manual")
         if not 10.0 <= self.eur_czk <= 50.0:
             raise ValueError("EUR/CZK must be between 10 and 50")
         if not -10.0 <= self.supplier_fee_czk_kwh <= 20.0:
@@ -38,13 +45,14 @@ class SpotPriceSettings:
             raise ValueError("VAT must be between 0 and 100 percent")
         return self
 
-    def option_values(self) -> dict[str, float]:
+    def option_values(self) -> dict[str, float | str]:
         return {
             CONF_SPOT_EUR_CZK: self.eur_czk,
+            CONF_SPOT_FX_MODE: self.fx_mode,
             CONF_SPOT_SUPPLIER_FEE: self.supplier_fee_czk_kwh,
             CONF_SPOT_VARIABLE_ADDITIONS: self.variable_additions_czk_kwh,
             CONF_SPOT_VAT_PERCENT: self.vat_percent,
         }
 
-    def as_dict(self) -> dict[str, float]:
+    def as_dict(self) -> dict[str, float | str]:
         return asdict(self)

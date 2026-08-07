@@ -10,7 +10,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 
 from .const import DOMAIN
-from .spot_price_settings import SpotPriceSettings
+from .spot_price_settings import FX_MODE_AUTO, FX_MODE_MANUAL, SpotPriceSettings
 
 COMMAND_GET = f"{DOMAIN}/spot_price_settings/get"
 COMMAND_SET = f"{DOMAIN}/spot_price_settings/set"
@@ -44,6 +44,7 @@ def async_register_spot_price_settings_websocket(hass: HomeAssistant) -> None:
         vol.Required("type"): COMMAND_SET,
         vol.Required("entry_id"): str,
         vol.Required("eur_czk"): vol.Coerce(float),
+        vol.Optional("fx_mode", default=FX_MODE_AUTO): vol.In([FX_MODE_AUTO, FX_MODE_MANUAL]),
         vol.Required("supplier_fee_czk_kwh"): vol.Coerce(float),
         vol.Required("variable_additions_czk_kwh"): vol.Coerce(float),
         vol.Required("vat_percent"): vol.Coerce(float),
@@ -54,6 +55,7 @@ def async_register_spot_price_settings_websocket(hass: HomeAssistant) -> None:
             entry = _entry(hass, msg["entry_id"])
             settings = SpotPriceSettings(
                 eur_czk=msg["eur_czk"],
+                fx_mode=msg["fx_mode"],
                 supplier_fee_czk_kwh=msg["supplier_fee_czk_kwh"],
                 variable_additions_czk_kwh=msg["variable_additions_czk_kwh"],
                 vat_percent=msg["vat_percent"],

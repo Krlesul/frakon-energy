@@ -15,7 +15,7 @@ from .fx_rate import EurCzkRateProvider
 from .spot_price_cost import SpotPriceCostConfig, calculate_spot_cost
 from .spot_price_ote import OteSpotPriceProvider
 from .spot_price_provider import SpotPriceProviderRuntime
-from .spot_price_settings import SpotPriceSettings
+from .spot_price_settings import FX_MODE_AUTO, SpotPriceSettings
 
 COMMAND_GET_SPOT_PRICES = f"{DOMAIN}/spot_prices/get"
 _RUNTIME_KEY = "spot_price_runtime"
@@ -90,21 +90,26 @@ def async_register_spot_price_websocket(hass: HomeAssistant) -> None:
             connection.send_error(msg["id"], "spot_prices_unavailable", str(err))
             return
         eur_czk = settings.eur_czk
-        fx_source = "manual_fallback"
+        fx_source = "manual"
         fx_error: str | None = None
         fx_fetched_at: str | None = None
-        try:
-            fx = await _fx_runtime(hass).async_get(now=now)
-            eur_czk = fx.rate
-            fx_source = fx.source
-            fx_fetched_at = fx.fetched_at.isoformat()
-        except Exception as err:
-            fx_error = str(err)
+        fallback_used = False
+        if settings.fx_mode == FX_MODE_AUTO:
+            fx_source = "manual_fallback"
+            fallback_used = True
+            try:
+                fx = await _fx_runtime(hass).async_get(now=now)
+                eur_czk = fx.rate
+                fx_source = fx.source
+                fx_fetched_at = fx.fetched_at.isoformat()
+                fallback_used = False
+            except Exception as err:
+                fx_error = str(err)
         payload = result.snapshot.day_ahead_payload(now=now)
         _enrich_day(payload["today"], settings, eur_czk)
         _enrich_day(payload["tomorrow"], settings, eur_czk)
         payload["customer_price_settings"] = settings.as_dict()
-        payload["exchange_rate"] = {"pair": "EUR/CZK", "rate": eur_czk, "source": fx_source, "fetched_at": fx_fetched_at, "fallback_used": fx_source == "manual_fallback", "error": fx_error}
+        payload["exchange_rate"] = {"pair": "EUR/CZK", "rate": eur_czk, "mode": settings.fx_mode, "source": fx_source, "fetched_at": fx_fetched_at, "fallback_used": fallback_used, "error": fx_error}
         payload["provider"] = result.provider
         payload["stale"] = result.stale
         payload["fallback_used"] = result.fallback_used
