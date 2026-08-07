@@ -24,6 +24,10 @@ from .load_execution_lifecycle import (
     ExecutionPlanSnapshot,
     STATE_PREPARED,
 )
+from .load_execution_lifecycle_recovery import (
+    LifecycleRecoveryBlockedError,
+    assert_lifecycle_recovery_ready,
+)
 from .load_execution_lifecycle_runtime import lifecycle_repository
 from .load_execution_readiness import (
     ExecutionReadinessDecision,
@@ -86,6 +90,7 @@ async def async_prepare_execution_lifecycle(
     current = now or datetime.now(timezone.utc)
     if current.tzinfo is None or current.utcoffset() is None:
         raise LifecyclePrepareError("now must be timezone-aware")
+    assert_lifecycle_recovery_ready(hass, entry_id)
 
     repository = lifecycle_repository(hass, entry_id)
     existing = await repository.async_get_by_attempt_id(attempt_id)
@@ -197,6 +202,9 @@ def async_register_load_execution_lifecycle_websocket(hass: HomeAssistant) -> No
             )
         except ExecutionLifecycleConflictError as err:
             connection.send_error(msg["id"], "execution_lifecycle_conflict", str(err))
+            return
+        except LifecycleRecoveryBlockedError as err:
+            connection.send_error(msg["id"], "execution_lifecycle_recovery_blocked", str(err))
             return
         except (LifecyclePrepareError, ExecutionLifecycleError, ValueError) as err:
             connection.send_error(msg["id"], "execution_lifecycle_prepare_rejected", str(err))
