@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from custom_components.frakon_energy import load_execution_stop_dispatcher as dispatcher_mod
 from custom_components.frakon_energy import load_execution_stop_scheduler as scheduler_mod
 from custom_components.frakon_energy.load_execution_stop_lifecycle import (
     STOP_CALL_UNKNOWN,
@@ -14,7 +15,8 @@ from custom_components.frakon_energy.load_execution_stop_lifecycle import (
 )
 from custom_components.frakon_energy.load_execution_stop_scheduler import (
     STATUS_BLOCKED,
-    STATUS_READY_TO_STOP,
+    STATUS_DISPATCHED_PENDING_VERIFICATION,
+    STATUS_RECOVERY_REVIEW,
     STATUS_SATISFIED,
     STATUS_SCHEDULED,
     STATUS_VERIFIED,
@@ -34,10 +36,44 @@ class _States:
         return SimpleNamespace(state=self.value) if self.value is not None else None
 
 
+class _Services:
+    def __init__(self, states: _States) -> None:
+        self.states = states
+        self.calls: list[dict[str, Any]] = []
+        self.error: Exception | None = None
+        self.set_state_after_call: str | None = "off"
+
+    async def async_call(
+        self,
+        domain: str,
+        service: str,
+        service_data: dict[str, Any] | None = None,
+        blocking: bool = False,
+        context: Any = None,
+        target: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        self.calls.append(
+            {
+                "domain": domain,
+                "service": service,
+                "service_data": service_data,
+                "blocking": blocking,
+                "context": context,
+                "target": target,
+            }
+        )
+        if self.error is not None:
+            raise self.error
+        if self.set_state_after_call is not None:
+            self.states.value = self.set_state_after_call
+
+
 class _Hass:
     def __init__(self, state: str | None = "on") -> None:
         self.data: dict[str, Any] = {}
         self.states = _States(state)
+        self.services = _Services(self.states)
         self.tasks: list[asyncio.Task[Any]] = []
 
     def async_create_task(self, coro):
@@ -61,6 +97,13 @@ class _Repo:
             (r for r in self.records if r.start_lifecycle_id == start_lifecycle_id),
             None,
         )
+
+    async def async_update(self, record: ExecutionStopLifecycleRecord):
+        for index, current in enumerate(self.records):
+            if current.start_lifecycle_id == record.start_lifecycle_id:
+                self.records[index] = record
+                return record
+        raise ValueError("stop lifecycle not found")
 
 
 def _owned() -> ExecutionStopLifecycleRecord:
@@ -115,6 +158,25 @@ def _patch_common(
         "stop_recovery_summary",
         lambda hass, entry_id: SimpleNamespace(status=recovery_status),
     )
+    monkeypatch.setattr(
+        dispatcher_mod,
+        "stop_lifecycle_repository",
+        lambda hass, entry_id: repo,
+    )
+    monkeypatch.setattr(
+        dispatcher_mod,
+        "assert_stop_recovery_ready",
+        lambda hass, entry_id: None,
+    )
+
+    async def refresh(hass, entry_id):
+        raise AssertionError("scheduler dispatcher must use refresh_scheduler=False")
+
+    monkeypatch.setattr(
+        dispatcher_mod,
+        "async_refresh_stop_scheduler_if_started",
+        refresh,
+    )
 
 
 @pytest.mark.asyncio
@@ -143,11 +205,11 @@ async def test_scheduler_registers_exact_end_timer_for_waiting_owned_stop(
     assert status.timer_active is True
     assert status.next_wake_at == END.astimezone(timezone.utc).isoformat()
     assert timers[0][1] == END.astimezone(timezone.utc)
-    assert status.dispatch_required is False
+    assert hass.services.calls == []
 
 
 @pytest.mark.asyncio
-async def test_due_on_is_only_surfaced_ready_to_stop_without_dispatch(
+async def test_due_on_autonomously_dispatches_exactly_one_immutable_turn_off(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo = _Repo([_owned()])
@@ -158,27 +220,148 @@ async def test_due_on_is_only_surfaced_ready_to_stop_without_dispatch(
         "async_track_point_in_utc_time",
         lambda hass, action, when: lambda: None,
     )
-    calls = {"noop": 0, "verify": 0}
+    scheduler = ExecutionStopScheduler(hass, "entry-1")  # type: ignore[arg-type]
+    scheduler._started = True
 
-    async def noop(*args, **kwargs):
-        calls["noop"] += 1
+    await scheduler.async_refresh(now=END)
 
-    async def verify(*args, **kwargs):
-        calls["verify"] += 1
+    assert len(hass.services.calls) == 1
+    assert hass.services.calls[0] == {
+        "domain": "switch",
+        "service": "turn_off",
+        "service_data": {},
+        "blocking": True,
+        "context": None,
+        "target": {"entity_id": "switch.enyaq_charging"},
+    }
+    status = scheduler.statuses()[0]
+    assert status.status == STATUS_VERIFIED
+    assert status.dispatch_required is False
+    assert status.service_call_performed is True
+    assert status.execution_performed is True
 
-    monkeypatch.setattr(scheduler_mod, "async_complete_stop_noop", noop)
+
+@pytest.mark.asyncio
+async def test_overdue_owned_stop_is_dispatched_on_scheduler_startup_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _Repo([_owned()])
+    _patch_common(monkeypatch, repo)
+    hass = _Hass("on")
+    monkeypatch.setattr(
+        scheduler_mod,
+        "async_track_point_in_utc_time",
+        lambda hass, action, when: lambda: None,
+    )
+    scheduler = ExecutionStopScheduler(hass, "entry-1")  # type: ignore[arg-type]
+    scheduler._started = True
+
+    await scheduler.async_refresh(now=END + timedelta(minutes=10))
+
+    assert len(hass.services.calls) == 1
+    assert scheduler.statuses()[0].status == STATUS_VERIFIED
+
+
+@pytest.mark.asyncio
+async def test_confirmed_call_with_entity_still_on_never_redispatches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _Repo([_owned()])
+    _patch_common(monkeypatch, repo)
+    hass = _Hass("on")
+    hass.services.set_state_after_call = "on"
+    monkeypatch.setattr(
+        scheduler_mod,
+        "async_track_point_in_utc_time",
+        lambda hass, action, when: lambda: None,
+    )
+    scheduler = ExecutionStopScheduler(hass, "entry-1")  # type: ignore[arg-type]
+    scheduler._started = True
+
+    await scheduler.async_refresh(now=END)
+    assert len(hass.services.calls) == 1
+    assert scheduler.statuses()[0].status == STATUS_DISPATCHED_PENDING_VERIFICATION
+
+    await scheduler.async_refresh(now=END + timedelta(minutes=1))
+    assert len(hass.services.calls) == 1
+    assert scheduler.statuses()[0].status == STATUS_DISPATCHED_PENDING_VERIFICATION
+
+
+@pytest.mark.asyncio
+async def test_unknown_physical_outcome_is_never_auto_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _Repo([_owned()])
+    _patch_common(monkeypatch, repo)
+    hass = _Hass("on")
+    hass.services.error = RuntimeError("transport failed")
+    monkeypatch.setattr(
+        scheduler_mod,
+        "async_track_point_in_utc_time",
+        lambda hass, action, when: lambda: None,
+    )
+    scheduler = ExecutionStopScheduler(hass, "entry-1")  # type: ignore[arg-type]
+    scheduler._started = True
+
+    await scheduler.async_refresh(now=END)
+
+    assert len(hass.services.calls) == 1
+    assert scheduler.statuses()[0].status == STATUS_RECOVERY_REVIEW
+    assert "outcome is unknown" in str(scheduler.statuses()[0].last_error)
+
+    hass.services.error = None
+    await scheduler.async_refresh(now=END + timedelta(minutes=1))
+    assert len(hass.services.calls) == 1
+    assert scheduler.statuses()[0].status == STATUS_RECOVERY_REVIEW
+
+
+@pytest.mark.asyncio
+async def test_unknown_outcome_that_observes_off_is_verified_without_second_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _Repo([_owned()])
+    _patch_common(monkeypatch, repo)
+    hass = _Hass("on")
+    monkeypatch.setattr(
+        scheduler_mod,
+        "async_track_point_in_utc_time",
+        lambda hass, action, when: lambda: None,
+    )
+
+    class _UncertainServices(_Services):
+        async def async_call(self, *args, **kwargs) -> None:
+            await super().async_call(*args, **kwargs)
+            self.states.value = "off"
+            raise RuntimeError("transport confirmation lost")
+
+    hass.services = _UncertainServices(hass.states)
+
+    async def verify(hass, *, entry_id, start_lifecycle_id, now):
+        current = await repo.async_get_by_start_lifecycle_id(start_lifecycle_id)
+        assert current is not None
+        verified = replace(
+            current,
+            state="verified",
+            verification_status="confirmed",
+            verified_at=int(now.timestamp()),
+            updated_at=int(now.timestamp()),
+        ).validated()
+        await repo.async_update(verified)
+        return {
+            "resolution_performed": True,
+            "service_call_performed": None,
+        }
+
     monkeypatch.setattr(scheduler_mod, "async_verify_stop_resolution", verify)
     scheduler = ExecutionStopScheduler(hass, "entry-1")  # type: ignore[arg-type]
     scheduler._started = True
 
     await scheduler.async_refresh(now=END)
 
-    status = scheduler.statuses()[0]
-    assert status.status == STATUS_READY_TO_STOP
-    assert status.dispatch_required is True
-    assert status.service_call_performed is False
-    assert status.execution_performed is False
-    assert calls == {"noop": 0, "verify": 0}
+    assert len(hass.services.calls) == 1
+    assert scheduler.statuses()[0].status == STATUS_VERIFIED
+    assert scheduler.statuses()[0].service_call_performed is None
+    assert scheduler.statuses()[0].execution_performed is False
 
 
 @pytest.mark.asyncio
@@ -210,10 +393,10 @@ async def test_due_off_auto_completes_only_safe_noop(
 
     status = scheduler.statuses()[0]
     assert called == [_owned().start_lifecycle_id]
+    assert hass.services.calls == []
     assert status.status == STATUS_SATISFIED
     assert status.resolution_performed is True
     assert status.service_call_performed is False
-    assert status.dispatch_required is False
 
 
 @pytest.mark.asyncio
@@ -242,14 +425,14 @@ async def test_recovered_unknown_stop_off_auto_verifies_without_claiming_call(
     await scheduler.async_refresh(now=END + timedelta(seconds=5))
 
     status = scheduler.statuses()[0]
+    assert hass.services.calls == []
     assert status.status == STATUS_VERIFIED
-    assert status.resolution_performed is True
     assert status.service_call_performed is None
     assert status.execution_performed is False
 
 
 @pytest.mark.asyncio
-async def test_unhealthy_recovery_blocks_timers_and_processing(
+async def test_unhealthy_recovery_blocks_timers_and_physical_stop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo = _Repo([_owned()])
@@ -264,15 +447,15 @@ async def test_unhealthy_recovery_blocks_timers_and_processing(
     scheduler = ExecutionStopScheduler(hass, "entry-1")  # type: ignore[arg-type]
     scheduler._started = True
 
-    await scheduler.async_refresh(now=START)
+    await scheduler.async_refresh(now=END)
 
     assert timer_calls == []
+    assert hass.services.calls == []
     assert scheduler.statuses()[0].status == STATUS_BLOCKED
-    assert scheduler.statuses()[0].dispatch_required is False
 
 
 @pytest.mark.asyncio
-async def test_timer_fire_processes_safe_noop_but_never_calls_service(
+async def test_timer_fire_dispatches_due_stop_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo = _Repo([_owned()])
@@ -286,35 +469,24 @@ async def test_timer_fire_processes_safe_noop_but_never_calls_service(
         return lambda: None
 
     monkeypatch.setattr(scheduler_mod, "async_track_point_in_utc_time", track)
-
-    async def noop(hass, *, entry_id, start_lifecycle_id, now):
-        return {
-            "resolution_performed": True,
-            "service_call_performed": False,
-        }
-
-    monkeypatch.setattr(scheduler_mod, "async_complete_stop_noop", noop)
     scheduler = ExecutionStopScheduler(hass, "entry-1")  # type: ignore[arg-type]
     await scheduler.async_start()
     await scheduler.async_refresh(now=START)
-    hass.states.value = "off"
 
     captured["action"](END)
     await asyncio.gather(*hass.tasks)
 
-    status = scheduler.statuses()[0]
-    assert status.status == STATUS_SATISFIED
-    assert status.service_call_performed is False
-    assert status.execution_performed is False
+    assert len(hass.services.calls) == 1
+    assert scheduler.statuses()[0].status == STATUS_VERIFIED
 
 
 @pytest.mark.asyncio
-async def test_unload_cancels_timer_and_queued_callback_cannot_process(
+async def test_unload_cancels_timer_and_queued_callback_cannot_dispatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo = _Repo([_owned()])
     _patch_common(monkeypatch, repo)
-    hass = _Hass("off")
+    hass = _Hass("on")
     cancelled: list[bool] = []
     captured: dict[str, Any] = {}
 
@@ -323,13 +495,6 @@ async def test_unload_cancels_timer_and_queued_callback_cannot_process(
         return lambda: cancelled.append(True)
 
     monkeypatch.setattr(scheduler_mod, "async_track_point_in_utc_time", track)
-    calls: list[str] = []
-
-    async def noop(*args, **kwargs):
-        calls.append("noop")
-        return {"resolution_performed": True, "service_call_performed": False}
-
-    monkeypatch.setattr(scheduler_mod, "async_complete_stop_noop", noop)
     scheduler = ExecutionStopScheduler(hass, "entry-1")  # type: ignore[arg-type]
     await scheduler.async_start()
     await scheduler.async_refresh(now=START)
@@ -340,7 +505,7 @@ async def test_unload_cancels_timer_and_queued_callback_cannot_process(
         await asyncio.gather(*hass.tasks)
 
     assert cancelled
-    assert calls == []
+    assert hass.services.calls == []
     assert scheduler.started is False
 
 
@@ -364,4 +529,5 @@ async def test_scheduler_startup_store_failure_is_fail_closed_not_fatal(
     assert scheduler.started is True
     assert scheduler.healthy is False
     assert "stop store unavailable" in str(scheduler.last_error)
+    assert hass.services.calls == []
     assert scheduler.statuses() == ()
