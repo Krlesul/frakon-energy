@@ -16,6 +16,7 @@ from .spot_price_cost import SpotPriceCostConfig, calculate_spot_cost
 from .spot_price_ote import OteSpotPriceProvider
 from .spot_price_provider import SpotPriceProviderRuntime
 from .spot_price_settings import FX_MODE_AUTO, SpotPriceSettings
+from .spot_price_windows import optimization_payload
 
 COMMAND_GET_SPOT_PRICES = f"{DOMAIN}/spot_prices/get"
 _RUNTIME_KEY = "spot_price_runtime"
@@ -71,6 +72,7 @@ def _enrich_day(day: dict[str, Any], settings: SpotPriceSettings, eur_czk: float
     day["minimum_czk_kwh"] = min(totals) if totals else None
     day["maximum_czk_kwh"] = max(totals) if totals else None
     day["average_czk_kwh"] = sum(totals) / len(totals) if totals else None
+    day["optimization"] = optimization_payload(day.get("intervals", []))
 
 
 @callback
