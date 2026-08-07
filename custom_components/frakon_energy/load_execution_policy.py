@@ -7,10 +7,12 @@ classify a candidate plan as blocked or requiring explicit approval.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import Any, Mapping
 
 from .energy_load_planner import LoadPlan
 from .load_profiles import LoadProfile
+
+OPTION_LOAD_EXECUTION_POLICIES = "load_execution_policies"
 
 EXECUTION_MODE_DISABLED = "disabled"
 EXECUTION_MODE_APPROVAL_REQUIRED = "approval_required"
@@ -27,6 +29,7 @@ REASON_ENTITY_BINDING_REQUIRED = "entity_binding_required"
 REASON_ENTITY_UNAVAILABLE = "entity_unavailable"
 REASON_POWER_LIMIT_EXCEEDED = "power_limit_exceeded"
 REASON_DURATION_LIMIT_EXCEEDED = "duration_limit_exceeded"
+REASON_PLAN_UNAVAILABLE = "plan_unavailable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +63,19 @@ class LoadExecutionPolicy:
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "LoadExecutionPolicy":
+        raw_power = value.get("max_power_kw")
+        raw_duration = value.get("max_duration_minutes")
+        return cls(
+            profile_id=str(value.get("profile_id", "")),
+            mode=str(value.get("mode", EXECUTION_MODE_DISABLED)),
+            max_power_kw=float(raw_power) if raw_power is not None else None,
+            max_duration_minutes=int(raw_duration) if raw_duration is not None else None,
+            require_entity_binding=bool(value.get("require_entity_binding", True)),
+            require_entity_available=bool(value.get("require_entity_available", True)),
+        ).validated()
+
 
 @dataclass(frozen=True, slots=True)
 class ExecutionDecision:
@@ -79,6 +95,70 @@ class ExecutionDecision:
         result = asdict(self)
         result["reasons"] = list(self.reasons)
         return result
+
+
+def policies_from_options(options: Mapping[str, Any]) -> tuple[LoadExecutionPolicy, ...]:
+    """Load explicit execution policies from config-entry options."""
+    raw = options.get(OPTION_LOAD_EXECUTION_POLICIES, [])
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ValueError("load_execution_policies must be a list")
+
+    policies: list[LoadExecutionPolicy] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, Mapping):
+            raise ValueError("each load execution policy must be an object")
+        policy = LoadExecutionPolicy.from_dict(item)
+        if policy.profile_id in seen:
+            raise ValueError(f"duplicate execution policy profile_id: {policy.profile_id}")
+        seen.add(policy.profile_id)
+        policies.append(policy)
+    return tuple(policies)
+
+
+def policy_by_profile_id(options: Mapping[str, Any], profile_id: str) -> LoadExecutionPolicy:
+    """Return one explicitly persisted policy or fail closed."""
+    for policy in policies_from_options(options):
+        if policy.profile_id == profile_id:
+            return policy
+    raise ValueError(f"load execution policy not found: {profile_id}")
+
+
+def effective_policy_from_options(options: Mapping[str, Any], profile_id: str) -> LoadExecutionPolicy:
+    """Return persisted policy or an implicit disabled policy."""
+    try:
+        return policy_by_profile_id(options, profile_id)
+    except ValueError:
+        return LoadExecutionPolicy(profile_id=profile_id, mode=EXECUTION_MODE_DISABLED)
+
+
+def upsert_execution_policy(options: Mapping[str, Any], policy: LoadExecutionPolicy) -> dict[str, Any]:
+    """Return config-entry options with one execution policy inserted or replaced."""
+    policy.validated()
+    policies = list(policies_from_options(options))
+    for index, existing in enumerate(policies):
+        if existing.profile_id == policy.profile_id:
+            policies[index] = policy
+            break
+    else:
+        policies.append(policy)
+    updated = dict(options)
+    updated[OPTION_LOAD_EXECUTION_POLICIES] = [item.as_dict() for item in policies]
+    return updated
+
+
+def delete_execution_policy(options: Mapping[str, Any], profile_id: str) -> dict[str, Any]:
+    """Delete an explicit policy; the effective fallback becomes disabled."""
+    policies = list(policies_from_options(options))
+    if not any(item.profile_id == profile_id for item in policies):
+        raise ValueError(f"load execution policy not found: {profile_id}")
+    updated = dict(options)
+    updated[OPTION_LOAD_EXECUTION_POLICIES] = [
+        item.as_dict() for item in policies if item.profile_id != profile_id
+    ]
+    return updated
 
 
 def evaluate_execution_policy(
