@@ -6,6 +6,7 @@ from custom_components.frakon_energy.load_execution_policy import (
     DECISION_BLOCKED,
     EXECUTION_MODE_APPROVAL_REQUIRED,
     EXECUTION_MODE_DISABLED,
+    OPTION_LOAD_EXECUTION_POLICIES,
     REASON_DURATION_LIMIT_EXCEEDED,
     REASON_ENTITY_BINDING_REQUIRED,
     REASON_ENTITY_UNAVAILABLE,
@@ -14,7 +15,12 @@ from custom_components.frakon_energy.load_execution_policy import (
     REASON_POWER_LIMIT_EXCEEDED,
     REASON_PROFILE_DISABLED,
     LoadExecutionPolicy,
+    delete_execution_policy,
+    effective_policy_from_options,
     evaluate_execution_policy,
+    policies_from_options,
+    policy_by_profile_id,
+    upsert_execution_policy,
 )
 from custom_components.frakon_energy.load_profiles import PROFILE_KIND_EV, LoadProfile
 
@@ -155,3 +161,52 @@ def test_automatic_mode_is_not_supported() -> None:
             max_power_kw=11.0,
             max_duration_minutes=120,
         ).validated()
+
+
+def test_policy_persistence_preserves_unrelated_options() -> None:
+    policy = _approval_policy()
+    original = {"spot_fx_mode": "auto", "other_setting": 7}
+
+    updated = upsert_execution_policy(original, policy)
+
+    assert updated["spot_fx_mode"] == "auto"
+    assert updated["other_setting"] == 7
+    assert updated[OPTION_LOAD_EXECUTION_POLICIES] == [policy.as_dict()]
+    assert policies_from_options(updated) == (policy,)
+    assert policy_by_profile_id(updated, "ev-home") == policy
+
+
+def test_policy_upsert_replaces_without_duplicate() -> None:
+    first = LoadExecutionPolicy("ev-home", mode=EXECUTION_MODE_DISABLED)
+    replacement = _approval_policy()
+
+    options = upsert_execution_policy({}, first)
+    options = upsert_execution_policy(options, replacement)
+
+    assert policies_from_options(options) == (replacement,)
+    assert len(options[OPTION_LOAD_EXECUTION_POLICIES]) == 1
+
+
+def test_missing_policy_is_effectively_disabled() -> None:
+    policy = effective_policy_from_options({}, "ev-home")
+
+    assert policy.profile_id == "ev-home"
+    assert policy.mode == EXECUTION_MODE_DISABLED
+    assert policy.max_power_kw is None
+    assert policy.max_duration_minutes is None
+
+
+def test_delete_policy_returns_profile_to_disabled_fallback() -> None:
+    options = upsert_execution_policy({}, _approval_policy())
+
+    updated = delete_execution_policy(options, "ev-home")
+    effective = effective_policy_from_options(updated, "ev-home")
+
+    assert policies_from_options(updated) == ()
+    assert effective.mode == EXECUTION_MODE_DISABLED
+
+
+def test_duplicate_policy_ids_are_rejected() -> None:
+    policy = _approval_policy().as_dict()
+    with pytest.raises(ValueError, match="duplicate execution policy profile_id"):
+        policies_from_options({OPTION_LOAD_EXECUTION_POLICIES: [policy, policy]})
