@@ -29,6 +29,7 @@ REASON_DESIRED_STATE_OBSERVED = "desired_state_observed"
 REASON_DESIRED_STATE_NOT_OBSERVED = "desired_state_not_observed"
 REASON_ENTITY_STATE_UNAVAILABLE = "entity_state_unavailable"
 REASON_INTERRUPTED_DISPATCH_NOT_RECOVERED = "interrupted_dispatch_not_recovered"
+REASON_STOP_OWNERSHIP_MISSING = "durable_stop_ownership_missing"
 REASON_PREPARED_NOT_DISPATCHED = "prepared_not_dispatched"
 REASON_ALREADY_VERIFIED = "already_verified"
 REASON_TERMINAL_WITHOUT_VERIFICATION = "terminal_without_verification"
@@ -99,13 +100,14 @@ def evaluate_recovery_resolution(
     record: ExecutionLifecycleRecord,
     *,
     current_state: str | None,
+    stop_ownership_ready: bool = True,
 ) -> RecoveryResolutionDecision:
     """Plan recovery resolution without changing lifecycle state.
 
     ``safe_to_verify`` means only that a later isolated verification operation
-    may mark the durable desired state as observed. It does not prove that the
-    FRAKON service call caused the observed state, and it never authorizes a
-    redispatch.
+    may mark the durable desired state as observed. For a bounded start, the
+    exact durable stop lease + stop lifecycle must already exist before that
+    verification can be considered safe.
     """
     record.validated()
     normalized = _normalized_state(current_state)
@@ -148,6 +150,15 @@ def evaluate_recovery_resolution(
             record,
             status=RESOLUTION_BLOCKED,
             reason=REASON_INTERRUPTED_DISPATCH_NOT_RECOVERED,
+            current_state=normalized,
+            manual_review_required=True,
+        )
+
+    if not stop_ownership_ready:
+        return _decision(
+            record,
+            status=RESOLUTION_BLOCKED,
+            reason=REASON_STOP_OWNERSHIP_MISSING,
             current_state=normalized,
             manual_review_required=True,
         )
