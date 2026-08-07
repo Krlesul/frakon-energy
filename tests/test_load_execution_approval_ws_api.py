@@ -207,6 +207,7 @@ async def test_exact_fresh_digest_issues_signed_approval_without_execution(
 
     assert captured["now"] == NOW
     assert result["approval_issued"] is True
+    assert result["entry_id"] == "entry-1"
     assert result["snapshot_digest"] == digest
     assert result["expected_snapshot_digest"] == digest
     assert result["approval_id"]
@@ -217,7 +218,7 @@ async def test_exact_fresh_digest_issues_signed_approval_without_execution(
     assert result["consumed"] is False
 
     approval = ExecutionApproval(**result["approval"])  # type: ignore[arg-type]
-    verification = approval_ws._approval_authority(hass).verify(  # type: ignore[arg-type]
+    verification = approval_ws._approval_authority(hass, "entry-1").verify(  # type: ignore[arg-type]
         approval,
         _profile(),
         _plan(),
@@ -239,14 +240,13 @@ async def test_changed_scope_digest_is_rejected_before_issuance(
 
     monkeypatch.setattr(approval_ws, "async_evaluate_profile_execution", fake_evaluate)
     hass = _FakeHass()
-    stale_digest = "0" * 64
 
     with pytest.raises(approval_ws.ApprovalScopeChangedError, match="scope changed"):
         await approval_ws.async_issue_execution_approval(
             hass,  # type: ignore[arg-type]
             entry_id="entry-1",
             profile_id="ev-home",
-            expected_snapshot_digest=stale_digest,
+            expected_snapshot_digest="0" * 64,
             now=NOW,
         )
 
@@ -262,11 +262,10 @@ async def test_blocked_candidate_cannot_issue_approval(monkeypatch: pytest.Monke
         return blocked
 
     monkeypatch.setattr(approval_ws, "async_evaluate_profile_execution", fake_evaluate)
-    hass = _FakeHass()
 
     with pytest.raises(ValueError, match="not eligible"):
         await approval_ws.async_issue_execution_approval(
-            hass,  # type: ignore[arg-type]
+            _FakeHass(),  # type: ignore[arg-type]
             entry_id="entry-1",
             profile_id="ev-home",
             expected_snapshot_digest=execution_snapshot_digest(_profile(), _plan(), _policy()),
@@ -292,13 +291,56 @@ async def test_issue_enforces_ttl_hard_limit(monkeypatch: pytest.MonkeyPatch) ->
         )
 
 
-def test_authority_is_reused_within_process_and_replaced_after_restart() -> None:
+def test_authority_is_reused_per_entry_and_isolated_between_entries() -> None:
+    hass = _FakeHass()
+
+    first = approval_ws._approval_authority(hass, "entry-1")  # type: ignore[arg-type]
+    again = approval_ws._approval_authority(hass, "entry-1")  # type: ignore[arg-type]
+    other_entry = approval_ws._approval_authority(hass, "entry-2")  # type: ignore[arg-type]
+
+    assert first is again
+    assert first is not other_entry
+
+
+@pytest.mark.asyncio
+async def test_approval_from_one_entry_is_unknown_to_other_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_evaluate(*args: object, **kwargs: object) -> dict[str, object]:
+        return _eligible_evaluation()
+
+    monkeypatch.setattr(approval_ws, "async_evaluate_profile_execution", fake_evaluate)
+    hass = _FakeHass()
+    digest = execution_snapshot_digest(_profile(), _plan(), _policy())
+    issued = await approval_ws.async_issue_execution_approval(
+        hass,  # type: ignore[arg-type]
+        entry_id="entry-1",
+        profile_id="ev-home",
+        expected_snapshot_digest=digest,
+        now=NOW,
+    )
+    approval = ExecutionApproval(**issued["approval"])  # type: ignore[arg-type]
+
+    verification = approval_ws._approval_authority(hass, "entry-2").verify(  # type: ignore[arg-type]
+        approval,
+        _profile(),
+        _plan(),
+        _policy(),
+        entity_available=True,
+        now=NOW + timedelta(seconds=1),
+    )
+
+    assert verification.valid is False
+    assert verification.reason == VERIFY_UNKNOWN_APPROVAL
+
+
+def test_new_process_uses_new_entry_authority() -> None:
     first_hass = _FakeHass()
     second_hass = _FakeHass()
 
-    first = approval_ws._approval_authority(first_hass)  # type: ignore[arg-type]
-    again = approval_ws._approval_authority(first_hass)  # type: ignore[arg-type]
-    after_restart = approval_ws._approval_authority(second_hass)  # type: ignore[arg-type]
+    first = approval_ws._approval_authority(first_hass, "entry-1")  # type: ignore[arg-type]
+    again = approval_ws._approval_authority(first_hass, "entry-1")  # type: ignore[arg-type]
+    after_restart = approval_ws._approval_authority(second_hass, "entry-1")  # type: ignore[arg-type]
 
     assert first is again
     assert first is not after_restart
@@ -324,7 +366,7 @@ async def test_new_process_authority_rejects_pre_restart_approval(
     approval = ExecutionApproval(**issued["approval"])  # type: ignore[arg-type]
 
     after_restart = _FakeHass()
-    verification = approval_ws._approval_authority(after_restart).verify(  # type: ignore[arg-type]
+    verification = approval_ws._approval_authority(after_restart, "entry-1").verify(  # type: ignore[arg-type]
         approval,
         _profile(),
         _plan(),
