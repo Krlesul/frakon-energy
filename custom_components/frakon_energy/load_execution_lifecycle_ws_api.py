@@ -100,7 +100,7 @@ async def async_prepare_execution_lifecycle(
             "created": False,
             "idempotent_replay": True,
             "prepared_only": existing.state == STATE_PREPARED,
-            "execution_performed": existing.state in {"dispatched", "verified"},
+            "execution_performed": existing_call is True,
             "service_call_performed": existing_call,
             "executor_available": False,
         }
