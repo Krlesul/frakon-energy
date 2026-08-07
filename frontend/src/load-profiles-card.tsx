@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { callHomeAssistantWs, type HomeAssistant } from "./home-assistant";
+import { LoadExecutionApprovalPanel } from "./load-execution-approval-panel";
 import { LoadExecutionPolicyPanel } from "./load-execution-policy-panel";
 
 type ProfileKind = "ev" | "boiler" | "battery" | "generic";
@@ -205,7 +206,7 @@ export function LoadProfilesCard({ hass, entryId }: { hass?: HomeAssistant; entr
     <div className="load-profile-runtime">
       <label>Nejdříve od<input type="datetime-local" value={earliestStart} onChange={(e) => setEarliestStart(e.target.value)} /></label>
       <label>Hotovo nejpozději<input type="datetime-local" value={deadline} onChange={(e) => setDeadline(e.target.value)} /></label>
-      <small>Časy jsou volitelné a používají se jen pro konkrétní preview a policy vyhodnocení.</small>
+      <small>Časy jsou volitelné a používají se pro preview, policy i Approval Guard.</small>
     </div>
 
     <div className="load-profile-list">
@@ -221,5 +222,6 @@ export function LoadProfilesCard({ hass, entryId }: { hass?: HomeAssistant; entr
     {preview ? <div className="load-profile-preview"><div><span className="eyebrow">Preview · {preview.profile.name}</span><h3>{preview.available && preview.plan ? `${formatTime(preview.plan.starts_at)} → ${formatTime(preview.plan.ends_at)}` : "Není dostupný vhodný interval"}</h3></div>{preview.plan ? <div className="load-profile-preview__metrics"><div><span>Průměrná cena</span><b>{formatPrice(preview.plan.average_czk_kwh)}</b></div><div><span>Rozsah ceny</span><b>{formatPrice(preview.plan.minimum_czk_kwh)} – {formatPrice(preview.plan.maximum_czk_kwh)}</b></div><div><span>Energie</span><b>{preview.plan.estimated_energy_kwh.toLocaleString("cs-CZ", { maximumFractionDigits: 2 })} kWh</b></div><div><span>Odhad ceny</span><b>{preview.plan.estimated_cost_czk.toLocaleString("cs-CZ", { maximumFractionDigits: 2 })} Kč</b></div></div> : null}<p>Read-only plán. FRAKON tímto krokem nic nezapíná ani nevypíná.</p></div> : null}
 
     <LoadExecutionPolicyPanel hass={hass} entryId={entryId} profiles={profiles} earliestStart={earliestStart} deadline={deadline} />
+    <LoadExecutionApprovalPanel hass={hass} entryId={entryId} profiles={profiles} earliestStart={earliestStart} deadline={deadline} />
   </article>;
 }
