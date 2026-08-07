@@ -9,6 +9,9 @@ from custom_components.frakon_energy import load_execution_approval_ws_api as ap
 from custom_components.frakon_energy import load_execution_consume_ws_api as consume_ws
 from custom_components.frakon_energy.const import DOMAIN
 from custom_components.frakon_energy.energy_load_planner import LoadPlan
+from custom_components.frakon_energy.load_execution_action_snapshot import (
+    ExecutionActionSnapshotRepository,
+)
 from custom_components.frakon_energy.load_execution_approval import (
     VERIFY_OK,
     VERIFY_REPLAYED,
@@ -146,21 +149,38 @@ def _authority_and_approval(hass: _FakeHass, plan: LoadPlan | None = None):
     return authority, approval, candidate
 
 
-def _repository(monkeypatch: pytest.MonkeyPatch, *, fail_save: bool = False):
-    store = _FakeStore()
-    store.fail_save = fail_save
-    repository = ExecutionAttemptRepository(store)
-    monkeypatch.setattr(consume_ws, "_attempt_repository", lambda hass, entry_id: repository)
-    return store, repository
+def _repositories(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    attempt_fail_save: bool = False,
+    snapshot_fail_save: bool = False,
+):
+    attempt_store = _FakeStore()
+    attempt_store.fail_save = attempt_fail_save
+    attempt_repository = ExecutionAttemptRepository(attempt_store)
+    snapshot_store = _FakeStore()
+    snapshot_store.fail_save = snapshot_fail_save
+    snapshot_repository = ExecutionActionSnapshotRepository(snapshot_store)
+    monkeypatch.setattr(
+        consume_ws,
+        "_attempt_repository",
+        lambda hass, entry_id: attempt_repository,
+    )
+    monkeypatch.setattr(
+        consume_ws,
+        "action_snapshot_repository",
+        lambda hass, entry_id: snapshot_repository,
+    )
+    return attempt_store, attempt_repository, snapshot_store, snapshot_repository
 
 
 @pytest.mark.asyncio
-async def test_first_consume_persists_attempt_then_consumes_approval(
+async def test_first_consume_persists_snapshot_then_attempt_then_consumes_approval(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     hass = _FakeHass(_options())
     authority, approval, plan = _authority_and_approval(hass)
-    store, repository = _repository(monkeypatch)
+    attempt_store, attempt_repository, snapshot_store, snapshot_repository = _repositories(monkeypatch)
     consumed_at = NOW + timedelta(seconds=1)
 
     result = await consume_ws.async_consume_execution_approval(
@@ -174,11 +194,19 @@ async def test_first_consume_persists_attempt_then_consumes_approval(
 
     assert result["created"] is True
     assert result["idempotent_replay"] is False
+    assert result["action_snapshot_created"] is True
+    assert result["action_snapshot_idempotent_replay"] is False
+    assert result["action_snapshot"]["attempt_id"] == result["attempt"]["attempt_id"]
+    assert result["action_snapshot"]["service_domain"] == "switch"
+    assert result["action_snapshot"]["service_name"] == "turn_on"
     assert result["approval_consumed"] is True
     assert result["execution_performed"] is False
+    assert result["service_call_performed"] is False
     assert result["executor_available"] is False
-    assert store.saves == 1
-    assert len(await repository.async_list()) == 1
+    assert snapshot_store.saves == 1
+    assert attempt_store.saves == 1
+    assert len(await snapshot_repository.async_list()) == 1
+    assert len(await attempt_repository.async_list()) == 1
 
     replay_check = authority.verify(
         approval,
@@ -194,12 +222,12 @@ async def test_first_consume_persists_attempt_then_consumes_approval(
 
 
 @pytest.mark.asyncio
-async def test_identical_retry_returns_existing_attempt_even_after_approval_expiry(
+async def test_identical_retry_returns_existing_attempt_and_snapshot_after_expiry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     hass = _FakeHass(_options())
     _, approval, plan = _authority_and_approval(hass)
-    store, _ = _repository(monkeypatch)
+    attempt_store, _, snapshot_store, _ = _repositories(monkeypatch)
 
     first = await consume_ws.async_consume_execution_approval(
         hass,  # type: ignore[arg-type]
@@ -219,11 +247,16 @@ async def test_identical_retry_returns_existing_attempt_even_after_approval_expi
     )
 
     assert first["attempt"] == retry["attempt"]
+    assert first["action_snapshot"] == retry["action_snapshot"]
     assert retry["created"] is False
     assert retry["idempotent_replay"] is True
+    assert retry["action_snapshot_created"] is False
+    assert retry["action_snapshot_idempotent_replay"] is True
     assert retry["approval_consumed"] is True
     assert retry["execution_performed"] is False
-    assert store.saves == 1
+    assert retry["service_call_performed"] is False
+    assert attempt_store.saves == 1
+    assert snapshot_store.saves == 1
 
 
 @pytest.mark.asyncio
@@ -232,7 +265,7 @@ async def test_same_approval_id_with_changed_signature_is_conflict(
 ) -> None:
     hass = _FakeHass(_options())
     _, approval, plan = _authority_and_approval(hass)
-    _repository(monkeypatch)
+    _repositories(monkeypatch)
     await consume_ws.async_consume_execution_approval(
         hass,  # type: ignore[arg-type]
         entry_id="entry-1",
@@ -255,12 +288,15 @@ async def test_same_approval_id_with_changed_signature_is_conflict(
 
 
 @pytest.mark.asyncio
-async def test_storage_failure_leaves_approval_unconsumed(
+async def test_snapshot_storage_failure_prevents_attempt_and_leaves_approval_unconsumed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     hass = _FakeHass(_options())
     authority, approval, plan = _authority_and_approval(hass)
-    _, repository = _repository(monkeypatch, fail_save=True)
+    _, attempt_repository, _, snapshot_repository = _repositories(
+        monkeypatch,
+        snapshot_fail_save=True,
+    )
     consumed_at = NOW + timedelta(seconds=1)
 
     with pytest.raises(RuntimeError, match="storage unavailable"):
@@ -273,7 +309,8 @@ async def test_storage_failure_leaves_approval_unconsumed(
             now=consumed_at,
         )
 
-    assert await repository.async_list() == ()
+    assert await snapshot_repository.async_list() == ()
+    assert await attempt_repository.async_list() == ()
     verification = authority.verify(
         approval,
         _profile(),
@@ -288,12 +325,68 @@ async def test_storage_failure_leaves_approval_unconsumed(
 
 
 @pytest.mark.asyncio
-async def test_entity_becoming_unavailable_rejects_without_attempt(
+async def test_attempt_storage_failure_leaves_inert_snapshot_and_retry_completes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hass = _FakeHass(_options())
+    authority, approval, plan = _authority_and_approval(hass)
+    attempt_store, attempt_repository, snapshot_store, snapshot_repository = _repositories(
+        monkeypatch,
+        attempt_fail_save=True,
+    )
+    consumed_at = NOW + timedelta(seconds=1)
+
+    with pytest.raises(RuntimeError, match="storage unavailable"):
+        await consume_ws.async_consume_execution_approval(
+            hass,  # type: ignore[arg-type]
+            entry_id="entry-1",
+            profile_id="ev-home",
+            approval_value=approval.as_dict(),
+            plan_value=plan.as_dict(),
+            now=consumed_at,
+        )
+
+    assert len(await snapshot_repository.async_list()) == 1
+    assert await attempt_repository.async_list() == ()
+    assert snapshot_store.saves == 1
+    assert attempt_store.saves == 0
+    verification = authority.verify(
+        approval,
+        _profile(),
+        plan,
+        _policy(),
+        entity_available=True,
+        now=consumed_at,
+    )
+    assert verification.valid is True
+    assert verification.reason == VERIFY_OK
+    assert verification.consumed is False
+
+    attempt_store.fail_save = False
+    retry = await consume_ws.async_consume_execution_approval(
+        hass,  # type: ignore[arg-type]
+        entry_id="entry-1",
+        profile_id="ev-home",
+        approval_value=approval.as_dict(),
+        plan_value=plan.as_dict(),
+        now=NOW + timedelta(seconds=2),
+    )
+
+    assert retry["created"] is True
+    assert retry["action_snapshot_created"] is False
+    assert retry["action_snapshot_idempotent_replay"] is True
+    assert retry["approval_consumed"] is True
+    assert snapshot_store.saves == 1
+    assert attempt_store.saves == 1
+
+
+@pytest.mark.asyncio
+async def test_entity_becoming_unavailable_rejects_without_audit_records(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     hass = _FakeHass(_options(), {"switch.enyaq_charging": "off"})
     _, approval, plan = _authority_and_approval(hass)
-    _, repository = _repository(monkeypatch)
+    _, attempt_repository, _, snapshot_repository = _repositories(monkeypatch)
     hass.states = _FakeStates({"switch.enyaq_charging": "unavailable"})
 
     with pytest.raises(consume_ws.ApprovalConsumeError, match="verification failed"):
@@ -306,16 +399,17 @@ async def test_entity_becoming_unavailable_rejects_without_attempt(
             now=NOW + timedelta(seconds=1),
         )
 
-    assert await repository.async_list() == ()
+    assert await attempt_repository.async_list() == ()
+    assert await snapshot_repository.async_list() == ()
 
 
 @pytest.mark.asyncio
-async def test_policy_change_after_issuance_rejects_without_attempt(
+async def test_policy_change_after_issuance_rejects_without_audit_records(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     hass = _FakeHass(_options())
     _, approval, plan = _authority_and_approval(hass)
-    _, repository = _repository(monkeypatch)
+    _, attempt_repository, _, snapshot_repository = _repositories(monkeypatch)
     entry = hass.config_entries.entry
     entry.options = upsert_execution_policy(
         entry.options,
@@ -332,16 +426,17 @@ async def test_policy_change_after_issuance_rejects_without_attempt(
             now=NOW + timedelta(seconds=1),
         )
 
-    assert await repository.async_list() == ()
+    assert await attempt_repository.async_list() == ()
+    assert await snapshot_repository.async_list() == ()
 
 
 @pytest.mark.asyncio
-async def test_tampered_plan_is_rejected_before_attempt_persistence(
+async def test_tampered_plan_is_rejected_before_audit_persistence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     hass = _FakeHass(_options())
     _, approval, plan = _authority_and_approval(hass)
-    _, repository = _repository(monkeypatch)
+    _, attempt_repository, _, snapshot_repository = _repositories(monkeypatch)
     tampered = plan.as_dict()
     tampered["estimated_cost_czk"] = 999.0
 
@@ -355,11 +450,12 @@ async def test_tampered_plan_is_rejected_before_attempt_persistence(
             now=NOW + timedelta(seconds=1),
         )
 
-    assert await repository.async_list() == ()
+    assert await attempt_repository.async_list() == ()
+    assert await snapshot_repository.async_list() == ()
 
 
 @pytest.mark.asyncio
-async def test_plan_that_already_started_is_rejected_even_if_approval_not_expired(
+async def test_plan_that_already_started_is_rejected_without_audit_records(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     plan = _plan(starts_at=NOW + timedelta(seconds=30), duration_minutes=15)
@@ -381,7 +477,7 @@ async def test_plan_that_already_started_is_rejected_even_if_approval_not_expire
         now=NOW,
         ttl_seconds=120,
     )
-    _, repository = _repository(monkeypatch)
+    _, attempt_repository, _, snapshot_repository = _repositories(monkeypatch)
 
     with pytest.raises(consume_ws.ApprovalConsumeError, match="already started or is stale"):
         await consume_ws.async_consume_execution_approval(
@@ -393,14 +489,15 @@ async def test_plan_that_already_started_is_rejected_even_if_approval_not_expire
             now=NOW + timedelta(seconds=31),
         )
 
-    assert await repository.async_list() == ()
+    assert await attempt_repository.async_list() == ()
+    assert await snapshot_repository.async_list() == ()
 
 
 @pytest.mark.asyncio
 async def test_attempt_list_is_read_only_audit(monkeypatch: pytest.MonkeyPatch) -> None:
     hass = _FakeHass(_options())
     _, approval, plan = _authority_and_approval(hass)
-    _repository(monkeypatch)
+    _repositories(monkeypatch)
     await consume_ws.async_consume_execution_approval(
         hass,  # type: ignore[arg-type]
         entry_id="entry-1",
@@ -417,4 +514,5 @@ async def test_attempt_list_is_read_only_audit(monkeypatch: pytest.MonkeyPatch) 
 
     assert len(result["attempts"]) == 1
     assert result["execution_performed"] is False
+    assert result["service_call_performed"] is False
     assert result["executor_available"] is False
