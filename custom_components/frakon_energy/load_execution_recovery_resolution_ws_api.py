@@ -16,6 +16,7 @@ from .load_execution_lifecycle_recovery import (
 )
 from .load_execution_lifecycle_runtime import lifecycle_repository
 from .load_execution_recovery_resolution import evaluate_recovery_resolution
+from .load_execution_start_stop_ownership import async_start_stop_ownership_proof
 
 COMMAND_RECOVERY_RESOLUTION = f"{DOMAIN}/load_execution_lifecycle/recovery_resolution"
 _REGISTERED_KEY = "load_execution_recovery_resolution_websocket_registered"
@@ -48,14 +49,21 @@ async def async_recovery_resolution_plan(
             f"execution lifecycle not found: {attempt_id}"
         )
 
+    ownership = await async_start_stop_ownership_proof(
+        hass,
+        entry_id=entry_id,
+        start=record,
+    )
     decision = evaluate_recovery_resolution(
         record,
         current_state=_live_state(hass, record.entity_id),
+        stop_ownership_ready=ownership.ownership_ready,
     )
     return {
         "entry_id": entry_id,
         "recovery": lifecycle_recovery_summary(hass, entry_id).as_dict(),
         "lifecycle": record.as_dict(),
+        "stop_ownership": ownership.as_dict(),
         "resolution": decision.as_dict(),
         "read_only": True,
         "resolution_performed": False,
