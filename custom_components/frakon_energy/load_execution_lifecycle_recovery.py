@@ -29,6 +29,10 @@ RECOVERY_FAILED = "failed"
 RECOVERY_NOT_INITIALIZED = "not_initialized"
 
 
+class LifecycleRecoveryBlockedError(RuntimeError):
+    """Raised when lifecycle mutation is blocked by startup recovery state."""
+
+
 @dataclass(frozen=True, slots=True)
 class LifecycleRecoverySummary:
     entry_id: str
@@ -77,7 +81,7 @@ def assert_lifecycle_recovery_ready(hass: HomeAssistant, entry_id: str) -> None:
     summary = lifecycle_recovery_summary(hass, entry_id)
     if summary.status != RECOVERY_OK:
         detail = f": {summary.error}" if summary.error else ""
-        raise RuntimeError(
+        raise LifecycleRecoveryBlockedError(
             f"execution lifecycle recovery is {summary.status}{detail}"
         )
 
@@ -122,7 +126,7 @@ async def async_initialize_lifecycle_recovery(
             dispatched_pending_verification=dispatched,
         )
     except Exception as err:
-        # Keep the integration itself available, but block all lifecycle mutation.
+        # Keep the energy integration itself available, but block lifecycle mutation.
         summary = LifecycleRecoverySummary(
             entry_id=entry_id,
             status=RECOVERY_FAILED,
