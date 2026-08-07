@@ -41,6 +41,11 @@ from .load_execution_start_dispatcher import (
     StartDispatchUnknownOutcomeError,
     async_dispatch_bounded_start,
 )
+from .load_execution_start_expiration import (
+    EXPIRABLE_START_REASONS,
+    is_expiration_terminal,
+    async_expire_prepared_start,
+)
 from .load_execution_stop_recovery import STOP_RECOVERY_OK, stop_recovery_summary
 from .load_execution_stop_scheduler import stop_scheduler
 
@@ -53,6 +58,7 @@ STATUS_STARTED_PENDING_VERIFICATION = "started_pending_verification"
 STATUS_ALREADY_SATISFIED = "already_satisfied"
 STATUS_RECOVERY_REVIEW = "recovery_review"
 STATUS_VERIFIED = "verified"
+STATUS_EXPIRED = "expired"
 STATUS_FAILED = "failed"
 STATUS_BLOCKED = "blocked"
 STATUS_ERROR = "error"
@@ -193,6 +199,28 @@ class ExecutionStartScheduler:
             status = decision.get("status")
             reason = str(decision.get("reason", ""))
             if status == BOUNDED_GATE_BLOCKED:
+                if reason in EXPIRABLE_START_REASONS:
+                    result = await async_expire_prepared_start(
+                        self._hass,
+                        entry_id=self._entry_id,
+                        attempt_id=record.attempt_id,
+                        now=now,
+                    )
+                    self._status_by_attempt[record.attempt_id] = StartSchedulerStatus(
+                        attempt_id=record.attempt_id,
+                        lifecycle_id=record.lifecycle_id,
+                        entity_id=record.entity_id,
+                        status=STATUS_EXPIRED,
+                        last_processed_at=timestamp,
+                        last_error=reason,
+                        physical_dispatch_attempted=False,
+                        service_call_performed=False,
+                        execution_performed=False,
+                        can_redispatch=False,
+                    )
+                    if result.get("service_call_performed") is not False:
+                        raise ValueError("expiration unexpectedly reported a service call")
+                    return
                 runtime_status = (
                     STATUS_WAITING_STOP_LEASE
                     if reason == REASON_STOP_LEASE_REQUIRED
@@ -359,6 +387,8 @@ class ExecutionStartScheduler:
                     continue
                 if record.state == STATE_CANCELLED and record.failure_reason == NOOP_TERMINAL_REASON:
                     status = STATUS_ALREADY_SATISFIED
+                elif is_expiration_terminal(record):
+                    status = STATUS_EXPIRED
                 elif record.state == STATE_FAILED:
                     status = STATUS_FAILED
                 else:
