@@ -24,7 +24,29 @@ type ConfigEntry = { entry_id: string; domain?: string };
 type WsConnection = { sendMessagePromise?: <T>(message: Record<string, unknown>) => Promise<T> };
 
 const HOST_ID = "frakon-technology-overview-host";
+const PROFILE_CHANGED_EVENT = "frakon-energy-technology-profile-changed";
 let root: Root | null = null;
+let cachedSnapshot: DiscoverySnapshot | null = null;
+
+const TECHNOLOGY_ICONS: Record<string, string> = {
+  photovoltaics: "☀",
+  home_battery: "▰",
+  electric_vehicle: "◆",
+  wallbox: "⚡",
+  heat_pump: "↻",
+  electric_boiler: "♨",
+  hot_water_tank: "◉",
+  electric_heating: "♨",
+  gas_heating: "♨",
+  solid_fuel_heating: "♨",
+  chp: "⚙",
+  generator: "⏻",
+  smart_meter: "⌁",
+  submeters: "⌁",
+  dynamic_tariff: "↕",
+  hdo: "◷",
+  energy_export: "⇢",
+};
 
 function currentHass(): HomeAssistant | undefined {
   return window.__FRAKON_ENERGY_HASS__ ?? window.hass;
@@ -52,10 +74,20 @@ function applyModuleVisibility(snapshot: DiscoverySnapshot): void {
       .filter((item) => Boolean(item.enabled))
       .map((item) => item.technology),
   );
-  const tariffVisible = enabled.has("hdo") || enabled.has("dynamic_tariff");
   const rootElement = document.documentElement;
-  rootElement.classList.toggle("frakon-no-tariff", !tariffVisible);
-  rootElement.classList.toggle("frakon-has-tariff", tariffVisible);
+  const flags: Record<string, boolean> = {
+    tariff: enabled.has("hdo") || enabled.has("dynamic_tariff"),
+    photovoltaics: enabled.has("photovoltaics"),
+    battery: enabled.has("home_battery"),
+    ev: enabled.has("electric_vehicle"),
+    wallbox: enabled.has("wallbox"),
+    heatpump: enabled.has("heat_pump"),
+    export: enabled.has("energy_export"),
+  };
+  Object.entries(flags).forEach(([name, active]) => {
+    rootElement.classList.toggle(`frakon-has-${name}`, active);
+    rootElement.classList.toggle(`frakon-no-${name}`, !active);
+  });
   rootElement.dataset.frakonTechnologies = [...enabled].sort().join(",");
 }
 
@@ -79,25 +111,32 @@ function entityValue(hass: HomeAssistant, entityId?: string | null): string | nu
 }
 
 function TechnologyOverview({ hass }: { hass: HomeAssistant }) {
-  const [snapshot, setSnapshot] = useState<DiscoverySnapshot | null>(null);
+  const [snapshot, setSnapshot] = useState<DiscoverySnapshot | null>(cachedSnapshot);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
-    const load = () => loadSnapshot(hass)
+    const refreshProfile = () => loadSnapshot(hass)
       .then((value) => {
-        if (active) {
-          applyModuleVisibility(value);
-          setSnapshot(value);
-          setError(null);
-        }
+        if (!active) return;
+        cachedSnapshot = value;
+        applyModuleVisibility(value);
+        setSnapshot(value);
+        setError(null);
       })
-      .catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : "Technologie se nepodařilo načíst."); });
-    void load();
-    const onHass = () => void load();
-    window.addEventListener("frakon-energy-hass-updated", onHass);
-    return () => { active = false; window.removeEventListener("frakon-energy-hass-updated", onHass); };
-  }, [hass]);
+      .catch((reason) => {
+        if (active) setError(reason instanceof Error ? reason.message : "Technologie se nepodařilo načíst.");
+      });
+
+    if (cachedSnapshot) applyModuleVisibility(cachedSnapshot);
+    else void refreshProfile();
+
+    window.addEventListener(PROFILE_CHANGED_EVENT, refreshProfile);
+    return () => {
+      active = false;
+      window.removeEventListener(PROFILE_CHANGED_EVENT, refreshProfile);
+    };
+  }, [hass.connection]);
 
   const technologies = useMemo(
     () => (snapshot?.technologies ?? []).filter((item) => Boolean(item.enabled)),
@@ -110,7 +149,7 @@ function TechnologyOverview({ hass }: { hass: HomeAssistant }) {
   return <section className="technology-overview">
     <div className="technology-overview__heading">
       <div><span className="eyebrow">Technologie domu</span><h2>Aktivní energetické technologie</h2></div>
-      <small>Zobrazuje se pouze to, co je zapnuté v Nastavení.</small>
+      <small>Živé hodnoty z již existujících entit Home Assistantu.</small>
     </div>
     <div className="technology-overview__grid">{technologies.map((technology) => {
       const roles = technology.roles ?? [];
@@ -119,9 +158,13 @@ function TechnologyOverview({ hass }: { hass: HomeAssistant }) {
         const value = entityValue(hass, entityId);
         return entityId ? [{ role, entityId, value }] : [];
       });
-      return <article className="technology-overview__card" key={technology.technology}>
+      const complete = (technology.configured_roles ?? mapped.length) >= (technology.total_roles ?? roles.length) && roles.length > 0;
+      return <article className="technology-overview__card" data-technology={technology.technology} key={technology.technology}>
         <div className="technology-overview__card-head">
-          <div><span className="technology-overview__state">Aktivní</span><h3>{technology.label ?? technology.technology}</h3></div>
+          <div className="technology-overview__identity">
+            <span className="technology-overview__icon" aria-hidden="true">{TECHNOLOGY_ICONS[technology.technology] ?? "•"}</span>
+            <div><span className={`technology-overview__state${complete ? " technology-overview__state--ready" : ""}`}>{complete ? "Připraveno" : "Aktivní"}</span><h3>{technology.label ?? technology.technology}</h3></div>
+          </div>
           <b>{technology.configured_roles ?? mapped.length}/{technology.total_roles ?? roles.length}</b>
         </div>
         {mapped.length > 0 ? <div className="technology-overview__values">{mapped.slice(0, 4).map(({ role, entityId, value }) => <div key={`${technology.technology}-${role.role}`}>
