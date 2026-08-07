@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Iterable
+from zoneinfo import ZoneInfo
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +59,45 @@ class SpotPriceSnapshot:
             fetched_at=fetched_at,
             intervals=ordered,
         )
+
+    def intervals_for_local_date(self, local_date: date) -> tuple[SpotPriceInterval, ...]:
+        """Return intervals whose start belongs to a market-local calendar day."""
+        market_tz = ZoneInfo(self.timezone)
+        return tuple(
+            item
+            for item in self.intervals
+            if item.starts_at.astimezone(market_tz).date() == local_date
+        )
+
+    def day_ahead_payload(self, *, now: datetime) -> dict[str, Any]:
+        """Expose explicit today/tomorrow buckets for the dashboard."""
+        market_tz = ZoneInfo(self.timezone)
+        local_now = now.astimezone(market_tz)
+        today = local_now.date()
+        tomorrow = date.fromordinal(today.toordinal() + 1)
+
+        def bucket(local_date: date) -> dict[str, Any]:
+            intervals = self.intervals_for_local_date(local_date)
+            prices = [item.price_eur_mwh for item in intervals]
+            return {
+                "date": local_date.isoformat(),
+                "available": bool(intervals),
+                "interval_count": len(intervals),
+                "intervals": [item.as_dict() for item in intervals],
+                "minimum_eur_mwh": min(prices) if prices else None,
+                "maximum_eur_mwh": max(prices) if prices else None,
+                "average_eur_mwh": sum(prices) / len(prices) if prices else None,
+                "has_negative_price": any(price < 0 for price in prices),
+            }
+
+        return {
+            "market": self.market,
+            "currency": self.currency,
+            "timezone": self.timezone,
+            "fetched_at": self.fetched_at.isoformat(),
+            "today": bucket(today),
+            "tomorrow": bucket(tomorrow),
+        }
 
     def as_dict(self) -> dict[str, Any]:
         prices = [item.price_eur_mwh for item in self.intervals]
