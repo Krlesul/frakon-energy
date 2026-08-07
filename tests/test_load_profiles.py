@@ -65,3 +65,68 @@ def test_profile_validation_rejects_bad_kind_and_duration() -> None:
 def test_delete_missing_profile_fails_closed() -> None:
     with pytest.raises(ValueError, match="not found"):
         delete_profile({}, "missing")
+
+
+def test_entity_binding_round_trips_as_metadata() -> None:
+    profile = LoadProfile(
+        "ev-home",
+        "Enyaq",
+        PROFILE_KIND_EV,
+        120,
+        11.0,
+        entity_id="switch.enyaq_charging",
+    )
+
+    options = upsert_profile({}, profile)
+
+    assert profile_by_id(options, "ev-home") == profile
+    assert options[OPTION_LOAD_PROFILES][0]["entity_id"] == "switch.enyaq_charging"
+
+
+def test_old_profile_without_entity_binding_remains_compatible() -> None:
+    options = {
+        OPTION_LOAD_PROFILES: [
+            {
+                "profile_id": "boiler",
+                "name": "Bojler",
+                "kind": PROFILE_KIND_BOILER,
+                "duration_minutes": 60,
+                "power_kw": 2.0,
+                "enabled": True,
+            }
+        ]
+    }
+
+    profile = profiles_from_options(options)[0]
+
+    assert profile.entity_id is None
+    assert profile.profile_id == "boiler"
+
+
+def test_empty_entity_binding_normalizes_to_none() -> None:
+    options = {
+        OPTION_LOAD_PROFILES: [
+            {
+                "profile_id": "ev",
+                "name": "EV",
+                "kind": PROFILE_KIND_EV,
+                "duration_minutes": 60,
+                "power_kw": 11.0,
+                "entity_id": "   ",
+            }
+        ]
+    }
+
+    assert profiles_from_options(options)[0].entity_id is None
+
+
+def test_profile_validation_rejects_invalid_entity_id() -> None:
+    with pytest.raises(ValueError, match="valid Home Assistant entity ID"):
+        LoadProfile(
+            "ev",
+            "EV",
+            PROFILE_KIND_EV,
+            60,
+            11.0,
+            entity_id="Not a valid entity",
+        ).validated()
