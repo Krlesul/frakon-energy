@@ -75,6 +75,43 @@ ROLE_RULES: dict[HouseTechnology, tuple[EntityRole, ...]] = {
         EntityRole.POWER,
         EntityRole.ENERGY_TOTAL,
     ),
+    HouseTechnology.HEAT_PUMP: (
+        EntityRole.POWER,
+        EntityRole.ENERGY_TOTAL,
+    ),
+    HouseTechnology.ELECTRIC_BOILER: (
+        EntityRole.POWER,
+        EntityRole.ENERGY_TOTAL,
+    ),
+    HouseTechnology.HOT_WATER_TANK: (
+        EntityRole.POWER,
+        EntityRole.ENERGY_TOTAL,
+    ),
+    HouseTechnology.ELECTRIC_HEATING: (
+        EntityRole.POWER,
+        EntityRole.ENERGY_TOTAL,
+    ),
+    HouseTechnology.CHP: (
+        EntityRole.POWER,
+        EntityRole.ENERGY_TOTAL,
+    ),
+    HouseTechnology.GENERATOR: (
+        EntityRole.POWER,
+        EntityRole.ENERGY_TOTAL,
+    ),
+    HouseTechnology.SMART_METER: (
+        EntityRole.GRID_IMPORT,
+        EntityRole.GRID_EXPORT,
+        EntityRole.ENERGY_TOTAL,
+    ),
+    HouseTechnology.SUBMETERS: (
+        EntityRole.POWER,
+        EntityRole.ENERGY_TOTAL,
+    ),
+    HouseTechnology.ENERGY_EXPORT: (
+        EntityRole.GRID_EXPORT,
+        EntityRole.ENERGY_TOTAL,
+    ),
 }
 
 
@@ -100,7 +137,7 @@ def _score(entity: EntityDescriptor, role: EntityRole) -> tuple[int, tuple[str, 
         if entity.unit in ("W", "kW"):
             score += 25
             reasons.append("power unit")
-        keywords = ("pv", "solar", "výroba") if role == EntityRole.PV_POWER else ("power", "výkon", "charging")
+        keywords = ("pv", "solar", "výroba") if role == EntityRole.PV_POWER else ("power", "výkon", "charging", "příkon", "prikon")
         if any(word in text for word in keywords):
             score += 20
             reasons.append("matching name")
@@ -145,7 +182,7 @@ def _score(entity: EntityDescriptor, role: EntityRole) -> tuple[int, tuple[str, 
         if entity.device_class in ("power", "energy"):
             score += 35
             reasons.append("energy flow device class")
-        words = ("import", "odběr", "grid_in") if role == EntityRole.GRID_IMPORT else ("export", "přetok", "grid_out")
+        words = ("import", "odběr", "odber", "grid_in") if role == EntityRole.GRID_IMPORT else ("export", "přetok", "pretok", "grid_out")
         if any(word in text for word in words):
             score += 65
             reasons.append("grid direction name")
