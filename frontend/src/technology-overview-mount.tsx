@@ -22,11 +22,14 @@ type TechnologySuggestion = {
 type DiscoverySnapshot = { technologies?: TechnologySuggestion[] };
 type ConfigEntry = { entry_id: string; domain?: string };
 type WsConnection = { sendMessagePromise?: <T>(message: Record<string, unknown>) => Promise<T> };
+type TrendPoint = { updated: string; value: number };
 
 const HOST_ID = "frakon-technology-overview-host";
 const PROFILE_CHANGED_EVENT = "frakon-energy-technology-profile-changed";
+const TREND_POINTS = 30;
 let root: Root | null = null;
 let cachedSnapshot: DiscoverySnapshot | null = null;
+const trendCache = new Map<string, TrendPoint[]>();
 
 const TECHNOLOGY_ICONS: Record<string, string> = {
   photovoltaics: "☀",
@@ -57,6 +60,15 @@ const TECHNOLOGY_COPY: Record<string, string> = {
   energy_export: "Přetoky a energie odeslaná do distribuční sítě.",
   hdo: "Nízký tarif a aktivní časová okna distributora.",
   dynamic_tariff: "Dynamická cena elektřiny a aktuální tarifní signál.",
+};
+
+const PRIMARY_ROLE_ORDER: Record<string, string[]> = {
+  photovoltaics: ["pv_power", "energy_total", "grid_export", "grid_import"],
+  home_battery: ["battery_level", "power", "energy_total"],
+  electric_vehicle: ["battery_level", "power", "range", "charging_state", "charge_limit"],
+  wallbox: ["power", "charging_state", "energy_total"],
+  heat_pump: ["power", "energy_total"],
+  energy_export: ["grid_export", "energy_total", "power"],
 };
 
 function currentHass(): HomeAssistant | undefined {
@@ -121,6 +133,54 @@ function entityValue(hass: HomeAssistant, entityId?: string | null): string | nu
   return unit ? `${entity.state} ${unit}` : entity.state;
 }
 
+function captureTrend(hass: HomeAssistant, entityId?: string | null): number[] {
+  if (!entityId) return [];
+  const entity = hass.states[entityId];
+  if (!entity) return [];
+  const value = Number(entity.state.replace(",", "."));
+  if (!Number.isFinite(value)) return [];
+  const updated = String((entity as unknown as { last_updated?: string; last_changed?: string }).last_updated
+    ?? (entity as unknown as { last_changed?: string }).last_changed
+    ?? entity.state);
+  const current = trendCache.get(entityId) ?? [];
+  if (current[current.length - 1]?.updated !== updated) {
+    current.push({ updated, value });
+    if (current.length > TREND_POINTS) current.splice(0, current.length - TREND_POINTS);
+    trendCache.set(entityId, current);
+  }
+  return current.map((point) => point.value);
+}
+
+function sparklinePath(values: number[], width = 160, height = 36): string | null {
+  if (values.length < 2) return null;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+  return values.map((value, index) => {
+    const x = (index / (values.length - 1)) * width;
+    const y = height - ((value - min) / range) * height;
+    return `${index === 0 ? "M" : "L"}${x.toFixed(1)} ${y.toFixed(1)}`;
+  }).join(" ");
+}
+
+function trendLabel(values: number[]): string | null {
+  if (values.length < 2) return null;
+  const first = values[0];
+  const last = values[values.length - 1];
+  const tolerance = Math.max(Math.abs(first), Math.abs(last), 1) * 0.01;
+  if (Math.abs(last - first) <= tolerance) return "Stabilní";
+  return last > first ? "Roste" : "Klesá";
+}
+
+function pickPrimary<T extends { role: CandidateRole; value: string | null }>(technology: string, mapped: T[]): T | null {
+  const preferred = PRIMARY_ROLE_ORDER[technology] ?? [];
+  for (const role of preferred) {
+    const match = mapped.find((item) => item.role.role === role && item.value);
+    if (match) return match;
+  }
+  return mapped.find((item) => item.value) ?? mapped[0] ?? null;
+}
+
 function TechnologyOverview({ hass }: { hass: HomeAssistant }) {
   const [snapshot, setSnapshot] = useState<DiscoverySnapshot | null>(cachedSnapshot);
   const [error, setError] = useState<string | null>(null);
@@ -170,8 +230,11 @@ function TechnologyOverview({ hass }: { hass: HomeAssistant }) {
         return entityId ? [{ role, entityId, value }] : [];
       });
       const complete = (technology.configured_roles ?? mapped.length) >= (technology.total_roles ?? roles.length) && roles.length > 0;
-      const primary = mapped.find((item) => item.value) ?? mapped[0] ?? null;
+      const primary = pickPrimary(technology.technology, mapped);
       const secondary = mapped.filter((item) => item !== primary).slice(0, 3);
+      const trendValues = captureTrend(hass, primary?.entityId ?? null);
+      const path = sparklinePath(trendValues);
+      const direction = trendLabel(trendValues);
       return <article className="technology-overview__card" data-technology={technology.technology} key={technology.technology}>
         <div className="technology-overview__card-head">
           <div className="technology-overview__identity">
@@ -182,8 +245,9 @@ function TechnologyOverview({ hass }: { hass: HomeAssistant }) {
         </div>
         <p className="technology-overview__copy">{TECHNOLOGY_COPY[technology.technology] ?? "Živé hodnoty technologie z Home Assistantu."}</p>
         {primary ? <div className="technology-overview__primary">
-          <span>{primary.role.label ?? primary.role.role}</span>
+          <div className="technology-overview__primary-head"><span>{primary.role.label ?? primary.role.role}</span>{direction ? <em>{direction}</em> : null}</div>
           <strong>{primary.value ?? "Bez dat"}</strong>
+          {path ? <svg className="technology-overview__sparkline" viewBox="0 0 160 36" preserveAspectRatio="none" role="img" aria-label={`Krátkodobý trend: ${direction ?? "beze změny"}`}><path d={path} /></svg> : <div className="technology-overview__sparkline-empty">Trend se začne kreslit z živých změn.</div>}
           <small>{primary.entityId}</small>
         </div> : null}
         {secondary.length > 0 ? <div className="technology-overview__values">{secondary.map(({ role, entityId, value }) => <div key={`${technology.technology}-${role.role}`}>
