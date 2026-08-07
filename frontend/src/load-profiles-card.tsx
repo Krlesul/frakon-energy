@@ -9,7 +9,9 @@ type LoadProfile = {
   duration_minutes: number;
   power_kw: number;
   enabled: boolean;
+  entity_id?: string | null;
 };
+type FormState = Omit<LoadProfile, "entity_id"> & { entity_id: string };
 type ProfilesResponse = {
   entry_id: string;
   profiles: LoadProfile[];
@@ -36,8 +38,6 @@ type PreviewResponse = {
   read_only: boolean;
 };
 
-type FormState = LoadProfile;
-
 const EMPTY_FORM: FormState = {
   profile_id: "",
   name: "",
@@ -45,6 +45,7 @@ const EMPTY_FORM: FormState = {
   duration_minutes: 60,
   power_kw: 2,
   enabled: true,
+  entity_id: "",
 };
 
 const KIND_LABELS: Record<ProfileKind, string> = {
@@ -53,6 +54,7 @@ const KIND_LABELS: Record<ProfileKind, string> = {
   battery: "Baterie",
   generic: "Obecná zátěž",
 };
+const BINDABLE_DOMAINS = new Set(["switch", "input_boolean", "climate", "water_heater", "number", "select", "button"]);
 
 function toIso(value: string): string | undefined {
   if (!value) return undefined;
@@ -79,6 +81,13 @@ export function LoadProfilesCard({ hass, entryId }: { hass?: HomeAssistant; entr
   const [previewingId, setPreviewingId] = useState<string | null>(null);
 
   const editing = useMemo(() => profiles.some((item) => item.profile_id === form.profile_id), [profiles, form.profile_id]);
+  const entityCandidates = useMemo(() => Object.values(hass?.states ?? {})
+    .filter((entity) => BINDABLE_DOMAINS.has(entity.entity_id.split(".", 1)[0]))
+    .sort((a, b) => {
+      const aName = String(a.attributes.friendly_name ?? a.entity_id);
+      const bName = String(b.attributes.friendly_name ?? b.entity_id);
+      return aName.localeCompare(bName, "cs");
+    }), [hass]);
 
   useEffect(() => {
     if (!entryId || !hass) {
@@ -95,7 +104,7 @@ export function LoadProfilesCard({ hass, entryId }: { hass?: HomeAssistant; entr
 
   const resetForm = () => setForm(EMPTY_FORM);
   const edit = (profile: LoadProfile) => {
-    setForm(profile);
+    setForm({ ...profile, entity_id: profile.entity_id ?? "" });
     setPreview(null);
   };
 
@@ -111,11 +120,18 @@ export function LoadProfilesCard({ hass, entryId }: { hass?: HomeAssistant; entr
     }
     setStatus("Ukládám profil…");
     try {
-      const response = await callHomeAssistantWs<ProfilesResponse>(hass, {
+      const message: Record<string, unknown> = {
         type: "frakon_energy/load_profiles/upsert",
         entry_id: entryId,
-        ...form,
-      });
+        profile_id: form.profile_id,
+        name: form.name,
+        kind: form.kind,
+        duration_minutes: form.duration_minutes,
+        power_kw: form.power_kw,
+        enabled: form.enabled,
+      };
+      if (form.entity_id.trim()) message.entity_id = form.entity_id.trim();
+      const response = await callHomeAssistantWs<ProfilesResponse>(hass, message);
       setProfiles(response.profiles);
       setStatus("Profil uložen");
       resetForm();
@@ -178,8 +194,11 @@ export function LoadProfilesCard({ hass, entryId }: { hass?: HomeAssistant; entr
       <label>Typ<select value={form.kind} onChange={(e) => setForm((current) => ({ ...current, kind: e.target.value as ProfileKind }))}>{(Object.keys(KIND_LABELS) as ProfileKind[]).map((kind) => <option key={kind} value={kind}>{KIND_LABELS[kind]}</option>)}</select></label>
       <label>Výkon · kW<input type="number" min="0.001" step="0.1" value={form.power_kw} onChange={(e) => setForm((current) => ({ ...current, power_kw: Number(e.target.value) }))} /></label>
       <label>Délka · min<input type="number" min="15" step="15" value={form.duration_minutes} onChange={(e) => setForm((current) => ({ ...current, duration_minutes: Number(e.target.value) }))} /></label>
+      <label>Home Assistant entita · volitelné<input list="frakon-load-profile-entities" value={form.entity_id} placeholder="např. switch.ev_charging" onChange={(e) => setForm((current) => ({ ...current, entity_id: e.target.value }))} /><small>Jen vazba pro budoucí řízení. Teď se entita nikdy nespíná.</small></label>
       <label className="load-profile-toggle"><input type="checkbox" checked={form.enabled} onChange={(e) => setForm((current) => ({ ...current, enabled: e.target.checked }))} />Profil aktivní</label>
     </div>
+    <datalist id="frakon-load-profile-entities">{entityCandidates.map((entity) => <option key={entity.entity_id} value={entity.entity_id}>{String(entity.attributes.friendly_name ?? entity.entity_id)}</option>)}</datalist>
+    <div className="load-profile-binding-note"><b>Entity binding je zatím pouze metadata.</b><span>FRAKON může zobrazit aktuální stav svázané entity, ale nemá zde žádnou cestu k jejímu zapnutí nebo vypnutí.</span></div>
     <div className="load-profile-actions"><button className="primary-action" disabled={!entryId || !hass} onClick={save}>{editing ? "Uložit změny" : "Přidat profil"}</button>{editing ? <button className="secondary-action" onClick={resetForm}>Zrušit úpravu</button> : null}<span>{status}</span></div>
 
     <div className="load-profile-runtime">
@@ -189,10 +208,13 @@ export function LoadProfilesCard({ hass, entryId }: { hass?: HomeAssistant; entr
     </div>
 
     <div className="load-profile-list">
-      {profiles.length === 0 ? <div className="load-profile-empty">Přidej první profil, například EV 11 kW na 120 minut nebo bojler 2 kW na 90 minut.</div> : profiles.map((profile) => <section className={`load-profile-item ${profile.enabled ? "" : "is-disabled"}`} key={profile.profile_id}>
-        <div className="load-profile-item__main"><div><span>{KIND_LABELS[profile.kind]}</span><strong>{profile.name}</strong><small>{profile.profile_id}</small></div><div className="load-profile-spec"><b>{profile.power_kw.toLocaleString("cs-CZ")} kW</b><span>{profile.duration_minutes} min</span></div></div>
-        <div className="load-profile-item__actions"><button onClick={() => runPreview(profile)} disabled={!profile.enabled || previewingId === profile.profile_id}>{previewingId === profile.profile_id ? "Počítám…" : "Spočítat preview"}</button><button onClick={() => edit(profile)}>Upravit</button><button className="danger-action" onClick={() => remove(profile.profile_id)}>Smazat</button></div>
-      </section>)}
+      {profiles.length === 0 ? <div className="load-profile-empty">Přidej první profil, například EV 11 kW na 120 minut nebo bojler 2 kW na 90 minut.</div> : profiles.map((profile) => {
+        const boundEntity = profile.entity_id ? hass?.states[profile.entity_id] : undefined;
+        return <section className={`load-profile-item ${profile.enabled ? "" : "is-disabled"}`} key={profile.profile_id}>
+          <div className="load-profile-item__main"><div><span>{KIND_LABELS[profile.kind]}</span><strong>{profile.name}</strong><small>{profile.profile_id}</small>{profile.entity_id ? <div className="load-profile-binding"><span>HA entita</span><b>{profile.entity_id}</b><small>{boundEntity ? `Aktuální stav: ${boundEntity.state}` : "Entita teď není dostupná v Home Assistantu"}</small></div> : <div className="load-profile-binding load-profile-binding--empty"><span>Bez vazby na HA entitu</span></div>}</div><div className="load-profile-spec"><b>{profile.power_kw.toLocaleString("cs-CZ")} kW</b><span>{profile.duration_minutes} min</span></div></div>
+          <div className="load-profile-item__actions"><button onClick={() => runPreview(profile)} disabled={!profile.enabled || previewingId === profile.profile_id}>{previewingId === profile.profile_id ? "Počítám…" : "Spočítat preview"}</button><button onClick={() => edit(profile)}>Upravit</button><button className="danger-action" onClick={() => remove(profile.profile_id)}>Smazat</button></div>
+        </section>;
+      })}
     </div>
 
     {preview ? <div className="load-profile-preview"><div><span className="eyebrow">Preview · {preview.profile.name}</span><h3>{preview.available && preview.plan ? `${formatTime(preview.plan.starts_at)} → ${formatTime(preview.plan.ends_at)}` : "Není dostupný vhodný interval"}</h3></div>{preview.plan ? <div className="load-profile-preview__metrics"><div><span>Průměrná cena</span><b>{formatPrice(preview.plan.average_czk_kwh)}</b></div><div><span>Rozsah ceny</span><b>{formatPrice(preview.plan.minimum_czk_kwh)} – {formatPrice(preview.plan.maximum_czk_kwh)}</b></div><div><span>Energie</span><b>{preview.plan.estimated_energy_kwh.toLocaleString("cs-CZ", { maximumFractionDigits: 2 })} kWh</b></div><div><span>Odhad ceny</span><b>{preview.plan.estimated_cost_czk.toLocaleString("cs-CZ", { maximumFractionDigits: 2 })} Kč</b></div></div> : null}<p>Read-only plán. FRAKON tímto krokem nic nezapíná ani nevypíná.</p></div> : null}
