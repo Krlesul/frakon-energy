@@ -67,17 +67,17 @@ def _binding_matches(
     readiness: ExecutionReadinessDecision,
 ) -> bool:
     return (
-        lifecycle.attempt_id == attempt.attempt_id
+        lifecycle.entry_id == attempt.entry_id == snapshot.entry_id
+        and lifecycle.attempt_id == attempt.attempt_id
         and lifecycle.action_snapshot_id == snapshot.snapshot_id
         and lifecycle.profile_id == attempt.profile_id == snapshot.profile_id
         and lifecycle.entity_id == attempt.entity_id == snapshot.entity_id
         and lifecycle.approval_snapshot_digest == attempt.snapshot_digest
+        and lifecycle.plan.load_id == lifecycle.profile_id
         and lifecycle.service_domain == snapshot.service_domain
         and lifecycle.service_name == snapshot.service_name
         and lifecycle.desired_state == snapshot.desired_state
-        and lifecycle.plan_starts_at if False else True
-    ) and (
-        readiness.attempt_id == attempt.attempt_id
+        and readiness.attempt_id == attempt.attempt_id
         and readiness.action_snapshot_id == snapshot.snapshot_id
         and readiness.profile_id == lifecycle.profile_id
         and readiness.entity_id == lifecycle.entity_id
