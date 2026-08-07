@@ -75,6 +75,7 @@ def async_register_load_profiles_websocket(hass: HomeAssistant) -> None:
             vol.Required("duration_minutes"): vol.All(int, vol.Range(min=1)),
             vol.Required("power_kw"): vol.All(vol.Coerce(float), vol.Range(min=0.001)),
             vol.Optional("enabled", default=True): bool,
+            vol.Optional("entity_id"): str,
         }
     )
     @websocket_api.async_response
@@ -92,6 +93,7 @@ def async_register_load_profiles_websocket(hass: HomeAssistant) -> None:
                 duration_minutes=msg["duration_minutes"],
                 power_kw=msg["power_kw"],
                 enabled=msg["enabled"],
+                entity_id=(msg.get("entity_id") or "").strip() or None,
             ).validated()
             options = upsert_profile(entry.options, profile)
             hass.config_entries.async_update_entry(entry, options=options)
