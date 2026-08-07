@@ -12,10 +12,12 @@ from custom_components.frakon_energy.load_execution_action_snapshot import Execu
 from custom_components.frakon_energy.load_execution_approval import execution_snapshot_digest
 from custom_components.frakon_energy.load_execution_attempt import ExecutionAttempt
 from custom_components.frakon_energy.load_execution_lifecycle import (
+    STATE_DISPATCHED,
     STATE_RECOVERY_REQUIRED,
     ExecutionLifecycleRecord,
     ExecutionLifecycleRepository,
     begin_dispatch,
+    confirm_dispatch,
 )
 from custom_components.frakon_energy.load_execution_policy import (
     EXECUTION_MODE_APPROVAL_REQUIRED,
@@ -146,6 +148,16 @@ async def _recovered_repository() -> ExecutionLifecycleRepository:
     return repository
 
 
+async def _dispatched_repository() -> ExecutionLifecycleRepository:
+    repository = ExecutionLifecycleRepository(_FakeStore())
+    prepared = (await repository.async_prepare(_prepared())).record
+    dispatching = begin_dispatch(prepared, now=prepared.updated_at + 1)
+    await repository.async_update(dispatching)
+    dispatched = confirm_dispatch(dispatching, now=prepared.updated_at + 2)
+    await repository.async_update(dispatched)
+    return repository
+
+
 @pytest.mark.asyncio
 async def test_recovery_diagnostics_observe_desired_state_without_transition(
     monkeypatch: pytest.MonkeyPatch,
@@ -224,3 +236,77 @@ async def test_recovery_diagnostics_flag_manual_review_when_desired_state_missin
     assert result["lifecycles"][0]["diagnostic"] == "manual_recovery_review_required"
     assert result["manual_review_required"] is True
     assert result["state_transition_performed"] is False
+
+
+@pytest.mark.asyncio
+async def test_failed_startup_recovery_requires_manual_review_without_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hass = _FakeHass(None)
+    repository = ExecutionLifecycleRepository(_FakeStore())
+    monkeypatch.setattr(
+        recovery_ws,
+        "lifecycle_repository",
+        lambda hass, entry_id: repository,
+    )
+    monkeypatch.setattr(
+        recovery_ws,
+        "lifecycle_recovery_summary",
+        lambda hass, entry_id: recovery.LifecycleRecoverySummary(
+            entry_id=entry_id,
+            status=recovery.RECOVERY_FAILED,
+            scanned=0,
+            transitioned_to_recovery=0,
+            recovery_required=0,
+            dispatched_pending_verification=0,
+            error="storage unavailable",
+        ),
+    )
+
+    result = await recovery_ws.async_lifecycle_recovery_diagnostics(
+        hass,  # type: ignore[arg-type]
+        entry_id="entry-1",
+    )
+
+    assert result["recovery"]["status"] == recovery.RECOVERY_FAILED
+    assert result["lifecycles"] == []
+    assert result["manual_review_required"] is True
+    assert result["execution_performed"] is False
+    assert result["executor_available"] is False
+
+
+@pytest.mark.asyncio
+async def test_dispatched_without_desired_state_requires_manual_review(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hass = _FakeHass("off")
+    repository = await _dispatched_repository()
+    current = (await repository.async_list())[0]
+    assert current.state == STATE_DISPATCHED
+    monkeypatch.setattr(
+        recovery_ws,
+        "lifecycle_repository",
+        lambda hass, entry_id: repository,
+    )
+    monkeypatch.setattr(
+        recovery_ws,
+        "lifecycle_recovery_summary",
+        lambda hass, entry_id: recovery.LifecycleRecoverySummary(
+            entry_id=entry_id,
+            status=recovery.RECOVERY_OK,
+            scanned=1,
+            transitioned_to_recovery=0,
+            recovery_required=0,
+            dispatched_pending_verification=1,
+        ),
+    )
+
+    result = await recovery_ws.async_lifecycle_recovery_diagnostics(
+        hass,  # type: ignore[arg-type]
+        entry_id="entry-1",
+    )
+
+    assert result["lifecycles"][0]["diagnostic"] == "dispatch_confirmed_but_desired_state_not_observed"
+    assert result["manual_review_required"] is True
+    assert result["state_transition_performed"] is False
+    assert result["execution_performed"] is False
