@@ -8,16 +8,15 @@ type TechnologySuggestion = { technology: string; enabled?: boolean; roles?: Can
 type DiscoverySnapshot = { technologies?: TechnologySuggestion[] };
 type ConfigEntry = { entry_id: string; domain?: string };
 type WsConnection = { sendMessagePromise?: <T>(message: Record<string, unknown>) => Promise<T> };
-type FlowNode = { id: string; label: string; value: string | null; numeric: number | null; active: boolean };
+type FlowDirection = "into-house" | "out-of-house" | "house-load" | "bidirectional";
+type FlowNode = { id: string; label: string; value: string | null; numeric: number | null; active: boolean; direction: FlowDirection; directionLabel: string };
 
 const HOST_ID = "frakon-energy-flow-host";
 const PROFILE_CHANGED_EVENT = "frakon-energy-technology-profile-changed";
 let root: Root | null = null;
 let cachedSnapshot: DiscoverySnapshot | null = null;
 
-function currentHass(): HomeAssistant | undefined {
-  return window.__FRAKON_ENERGY_HASS__ ?? window.hass;
-}
+function currentHass(): HomeAssistant | undefined { return window.__FRAKON_ENERGY_HASS__ ?? window.hass; }
 
 async function callWs<T>(hass: HomeAssistant, message: Record<string, unknown>): Promise<T> {
   const connection = hass.connection as WsConnection | undefined;
@@ -39,9 +38,7 @@ function isOverviewVisible(): boolean {
 
 function overviewAnchor(): HTMLElement | null {
   if (!isOverviewVisible()) return null;
-  return document.getElementById("frakon-technology-overview-host")
-    ?? document.querySelector<HTMLElement>(".hdo-plan-card")
-    ?? document.querySelector<HTMLElement>(".metrics-grid");
+  return document.getElementById("frakon-technology-overview-host") ?? document.querySelector<HTMLElement>(".hdo-plan-card") ?? document.querySelector<HTMLElement>(".metrics-grid");
 }
 
 function roleEntity(snapshot: DiscoverySnapshot, technology: string, role: string): string | null {
@@ -76,9 +73,7 @@ function EnergyFlow({ hass }: { hass: HomeAssistant }) {
       cachedSnapshot = value;
       setSnapshot(value);
       setError(null);
-    }).catch((reason) => {
-      if (active) setError(reason instanceof Error ? reason.message : "Energetický tok se nepodařilo načíst.");
-    });
+    }).catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : "Energetický tok se nepodařilo načíst."); });
     if (!cachedSnapshot) void refresh();
     window.addEventListener(PROFILE_CHANGED_EVENT, refresh);
     return () => { active = false; window.removeEventListener(PROFILE_CHANGED_EVENT, refresh); };
@@ -87,17 +82,17 @@ function EnergyFlow({ hass }: { hass: HomeAssistant }) {
   const nodes = useMemo<FlowNode[]>(() => {
     if (!snapshot) return [];
     const specs = [
-      ["pv", "FVE", roleEntity(snapshot, "photovoltaics", "pv_power")],
-      ["grid-in", "Síť · odběr", roleEntity(snapshot, "smart_meter", "grid_import") ?? roleEntity(snapshot, "photovoltaics", "grid_import")],
-      ["grid-out", "Síť · přetok", roleEntity(snapshot, "smart_meter", "grid_export") ?? roleEntity(snapshot, "energy_export", "grid_export") ?? roleEntity(snapshot, "photovoltaics", "grid_export")],
-      ["battery", "Baterie", roleEntity(snapshot, "home_battery", "power")],
-      ["wallbox", "Wallbox", roleEntity(snapshot, "wallbox", "power")],
-      ["ev", "Elektromobil", roleEntity(snapshot, "electric_vehicle", "power")],
-      ["heatpump", "Tepelné čerpadlo", roleEntity(snapshot, "heat_pump", "power")],
+      ["pv", "FVE", roleEntity(snapshot, "photovoltaics", "pv_power"), "into-house", "do domu"],
+      ["grid-in", "Síť · odběr", roleEntity(snapshot, "smart_meter", "grid_import") ?? roleEntity(snapshot, "photovoltaics", "grid_import"), "into-house", "ze sítě do domu"],
+      ["grid-out", "Síť · přetok", roleEntity(snapshot, "smart_meter", "grid_export") ?? roleEntity(snapshot, "energy_export", "grid_export") ?? roleEntity(snapshot, "photovoltaics", "grid_export"), "out-of-house", "z domu do sítě"],
+      ["battery", "Baterie", roleEntity(snapshot, "home_battery", "power"), "bidirectional", "nabíjení / vybíjení"],
+      ["wallbox", "Wallbox", roleEntity(snapshot, "wallbox", "power"), "house-load", "spotřeba domu"],
+      ["ev", "Elektromobil", roleEntity(snapshot, "electric_vehicle", "power"), "house-load", "spotřeba při nabíjení"],
+      ["heatpump", "Tepelné čerpadlo", roleEntity(snapshot, "heat_pump", "power"), "house-load", "spotřeba domu"],
     ] as const;
-    return specs.map(([id, label, entityId]) => {
+    return specs.map(([id, label, entityId, direction, directionLabel]) => {
       const value = powerValue(hass, entityId);
-      return { id, label, value: value.text, numeric: value.numeric, active: Boolean(entityId) };
+      return { id, label, value: value.text, numeric: value.numeric, active: Boolean(entityId), direction, directionLabel };
     }).filter((node) => node.active);
   }, [snapshot, hass.states]);
 
@@ -113,14 +108,13 @@ function EnergyFlow({ hass }: { hass: HomeAssistant }) {
     <div className="energy-flow__map">
       <div className="energy-flow__hub"><span>Dům</span><strong>FRAKON</strong><small>živý stav</small></div>
       {nodes.map((node, index) => {
-        const direction = node.numeric === null || Math.abs(node.numeric) <= 0.03 ? "idle" : node.numeric > 0 ? "positive" : "negative";
-        return <article className={`energy-flow__node energy-flow__node--${direction}`} key={node.id} style={{ "--flow-index": index } as React.CSSProperties}>
-          <span>{node.label}</span><strong>{node.value ?? "Bez dat"}</strong>
-          <i aria-hidden="true" />
+        const live = node.numeric !== null && Math.abs(node.numeric) > 0.03;
+        return <article className={`energy-flow__node energy-flow__node--${node.direction}${live ? " energy-flow__node--live" : " energy-flow__node--idle"}`} key={node.id} style={{ "--flow-index": index } as React.CSSProperties}>
+          <span>{node.label}</span><strong>{node.value ?? "Bez dat"}</strong><small className="energy-flow__direction">{node.directionLabel}</small><i aria-hidden="true" />
         </article>;
       })}
     </div>
-    <p className="energy-flow__note">Směr znaménka u baterie a některých měničů závisí na konkrétní integraci. FRAKON proto zatím zobrazuje naměřené toky bez riskantního dopočtu spotřeby domu.</p>
+    <p className="energy-flow__note">Směr FVE, odběru, přetoku a známých spotřebičů vychází přímo z přiřazené role entity. U baterie zůstává směr záměrně obousměrný, protože znaménko výkonu se mezi integracemi liší.</p>
   </section>;
 }
 
