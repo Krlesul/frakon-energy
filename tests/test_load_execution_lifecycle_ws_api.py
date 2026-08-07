@@ -140,6 +140,11 @@ def _repository(monkeypatch: pytest.MonkeyPatch, *, fail_save: bool = False):
         "lifecycle_repository",
         lambda hass, entry_id: repository,
     )
+    monkeypatch.setattr(
+        lifecycle_ws,
+        "assert_lifecycle_recovery_ready",
+        lambda hass, entry_id: None,
+    )
     return store, repository
 
 

@@ -19,6 +19,8 @@ from .hdo_coordinator import CezHdoCoordinator
 from .load_execution_action_snapshot_ws_api import async_register_load_execution_action_snapshot_websocket
 from .load_execution_approval_ws_api import async_register_load_execution_approval_preview_websocket
 from .load_execution_consume_ws_api import async_register_load_execution_consume_websocket
+from .load_execution_lifecycle_recovery import async_initialize_lifecycle_recovery
+from .load_execution_lifecycle_recovery_ws_api import async_register_load_execution_lifecycle_recovery_websocket
 from .load_execution_lifecycle_ws_api import async_register_load_execution_lifecycle_websocket
 from .load_execution_policy_ws_api import async_register_load_execution_policy_websocket
 from .load_execution_readiness_ws_api import async_register_load_execution_readiness_websocket
@@ -68,6 +70,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     runtime_registry = _runtime_registry(hass)
     setup_entity_discovery_runtime(entry_id=entry.entry_id, runtime_registry=runtime_registry, profile_provider=lambda: technology_profile_from_options(entry.options), registry_provider=lambda: _entity_registry_snapshot(hass), options_provider=lambda: entry.options, options_updater=lambda options: _update_entry_options(hass, entry, options))
+    await async_initialize_lifecycle_recovery(hass, entry_id=entry.entry_id)
     async_register_entity_discovery_websocket(hass, runtime_registry)
     async_register_technology_profile_websocket(hass)
     async_register_spot_price_websocket(hass)
@@ -80,6 +83,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async_register_load_execution_action_snapshot_websocket(hass)
     async_register_load_execution_readiness_websocket(hass)
     async_register_load_execution_lifecycle_websocket(hass)
+    async_register_load_execution_lifecycle_recovery_websocket(hass)
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
     await async_register_panel(hass)

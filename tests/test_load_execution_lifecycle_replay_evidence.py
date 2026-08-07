@@ -141,6 +141,11 @@ async def test_verified_recovery_replay_does_not_claim_confirmed_execution(
         "lifecycle_repository",
         lambda hass, entry_id: repository,
     )
+    monkeypatch.setattr(
+        lifecycle_ws,
+        "assert_lifecycle_recovery_ready",
+        lambda hass, entry_id: None,
+    )
 
     result = await lifecycle_ws.async_prepare_execution_lifecycle(
         SimpleNamespace(),  # type: ignore[arg-type]
