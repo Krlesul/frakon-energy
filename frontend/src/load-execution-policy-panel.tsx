@@ -27,6 +27,13 @@ type PoliciesResponse = {
   default_mode: "disabled";
   executor_available: boolean;
 };
+type EvaluationPlan = {
+  starts_at: string;
+  ends_at: string;
+  power_kw: number;
+  duration_minutes: number;
+  estimated_cost_czk: number;
+};
 type EvaluationResponse = {
   status: "blocked" | "approval_required";
   profile_id: string;
@@ -35,7 +42,28 @@ type EvaluationResponse = {
   entity_available: boolean | null;
   execution_performed: boolean;
   executor_available: boolean;
-  plan: { starts_at: string; ends_at: string; power_kw: number; duration_minutes: number; estimated_cost_czk: number } | null;
+  plan: EvaluationPlan | null;
+};
+type ApprovalPreviewResponse = {
+  eligible: boolean;
+  status: "blocked" | "approval_required";
+  reasons: string[];
+  intent: string;
+  schema_version: number;
+  snapshot_digest: string | null;
+  profile: PolicyProfile | null;
+  policy: ExecutionPolicy | null;
+  plan: EvaluationPlan | null;
+  entity_id: string | null;
+  entity_available: boolean | null;
+  ttl_seconds: number;
+  max_ttl_seconds: number;
+  approval_issued: boolean;
+  approval_id: null;
+  signature: null;
+  execution_performed: boolean;
+  executor_available: boolean;
+  preview_only: boolean;
 };
 type PolicyForm = {
   mode: PolicyMode;
@@ -72,7 +100,9 @@ export function LoadExecutionPolicyPanel({ hass, entryId, profiles, earliestStar
   const [form, setForm] = useState<PolicyForm>({ mode: "disabled", max_power_kw: "", max_duration_minutes: "" });
   const [status, setStatus] = useState("Načítám policy…");
   const [evaluation, setEvaluation] = useState<EvaluationResponse | null>(null);
+  const [approvalPreview, setApprovalPreview] = useState<ApprovalPreviewResponse | null>(null);
   const [evaluating, setEvaluating] = useState(false);
+  const [previewingApproval, setPreviewingApproval] = useState(false);
   const [executorAvailable, setExecutorAvailable] = useState(false);
 
   const selectedProfile = useMemo(() => profiles.find((profile) => profile.profile_id === selectedProfileId) ?? null, [profiles, selectedProfileId]);
@@ -108,6 +138,7 @@ export function LoadExecutionPolicyPanel({ hass, entryId, profiles, earliestStar
       max_duration_minutes: String(explicitPolicy?.max_duration_minutes ?? selectedProfile.duration_minutes),
     });
     setEvaluation(null);
+    setApprovalPreview(null);
   }, [selectedProfile, explicitPolicy]);
 
   const savePolicy = async () => {
@@ -137,15 +168,16 @@ export function LoadExecutionPolicyPanel({ hass, entryId, profiles, earliestStar
       setExecutorAvailable(response.executor_available);
       setStatus(form.mode === "disabled" ? "Policy uložena jako Disabled" : "Policy uložena · stále vyžaduje samostatné schválení");
       setEvaluation(null);
+      setApprovalPreview(null);
     } catch (error) {
       setStatus(`Chyba: ${String(error)}`);
     }
   };
 
-  const evaluate = async () => {
-    if (!entryId || !hass || !selectedProfile) return;
+  const buildTimeWindowMessage = (type: string): Record<string, unknown> | null => {
+    if (!entryId || !selectedProfile) return null;
     const message: Record<string, unknown> = {
-      type: "frakon_energy/load_execution/evaluate_profile",
+      type,
       entry_id: entryId,
       profile_id: selectedProfile.profile_id,
     };
@@ -153,7 +185,15 @@ export function LoadExecutionPolicyPanel({ hass, entryId, profiles, earliestStar
     const latest = toIso(deadline);
     if (earliest) message.earliest_start = earliest;
     if (latest) message.deadline = latest;
+    return message;
+  };
+
+  const evaluate = async () => {
+    if (!hass) return;
+    const message = buildTimeWindowMessage("frakon_energy/load_execution/evaluate_profile");
+    if (!message) return;
     setEvaluating(true);
+    setApprovalPreview(null);
     setStatus("Vyhodnocuji policy nad aktuálním spotovým plánem…");
     try {
       const response = await callHomeAssistantWs<EvaluationResponse>(hass, message);
@@ -164,6 +204,25 @@ export function LoadExecutionPolicyPanel({ hass, entryId, profiles, earliestStar
       setStatus(`Chyba: ${String(error)}`);
     } finally {
       setEvaluating(false);
+    }
+  };
+
+  const previewApprovalScope = async () => {
+    if (!hass) return;
+    const message = buildTimeWindowMessage("frakon_energy/load_execution/approval_preview");
+    if (!message) return;
+    message.ttl_seconds = 120;
+    setPreviewingApproval(true);
+    setStatus("Počítám přesný rozsah budoucího schválení…");
+    try {
+      const response = await callHomeAssistantWs<ApprovalPreviewResponse>(hass, message);
+      setApprovalPreview(response);
+      setStatus(response.eligible ? "Rozsah schválení je způsobilý k budoucímu explicitnímu approval flow." : "Rozsah schválení nelze vytvořit, protože policy kandidáta blokuje.");
+    } catch (error) {
+      setApprovalPreview(null);
+      setStatus(`Chyba: ${String(error)}`);
+    } finally {
+      setPreviewingApproval(false);
     }
   };
 
@@ -181,8 +240,10 @@ export function LoadExecutionPolicyPanel({ hass, entryId, profiles, earliestStar
     </div>
 
     {selectedProfile ? <div className="load-policy-binding"><span>Vazba</span><b>{selectedProfile.entity_id ?? "žádná HA entita"}</b><small>Policy v UI vždy vyžaduje existující i dostupnou entitu.</small></div> : null}
-    <div className="load-policy-actions"><button className="primary-action" onClick={savePolicy} disabled={!entryId || !hass}>Uložit policy</button><button className="secondary-action" onClick={evaluate} disabled={!entryId || !hass || evaluating}>{evaluating ? "Vyhodnocuji…" : "Vyhodnotit aktuální plán"}</button><span>{status}</span></div>
+    <div className="load-policy-actions"><button className="primary-action" onClick={savePolicy} disabled={!entryId || !hass}>Uložit policy</button><button className="secondary-action" onClick={evaluate} disabled={!entryId || !hass || evaluating}>{evaluating ? "Vyhodnocuji…" : "Vyhodnotit aktuální plán"}</button><button className="secondary-action" onClick={previewApprovalScope} disabled={!entryId || !hass || previewingApproval}>{previewingApproval ? "Počítám scope…" : "Zobrazit rozsah schválení"}</button><span>{status}</span></div>
 
     {evaluation ? <div className={`load-policy-result load-policy-result--${evaluation.status}`}><div><span>Verdikt</span><strong>{evaluation.status === "approval_required" ? "Approval required" : "Blocked"}</strong></div>{evaluation.plan ? <div className="load-policy-result__plan"><span>{formatTime(evaluation.plan.starts_at)} → {formatTime(evaluation.plan.ends_at)}</span><b>{evaluation.plan.power_kw.toLocaleString("cs-CZ")} kW · {evaluation.plan.duration_minutes} min · ~{evaluation.plan.estimated_cost_czk.toLocaleString("cs-CZ", { maximumFractionDigits: 2 })} Kč</b></div> : null}<div className="load-policy-reasons">{evaluation.reasons.length === 0 ? <span>Všechny kontrolované podmínky policy jsou splněné. Samostatné schválení stále neexistuje.</span> : evaluation.reasons.map((reason) => <span key={reason}>{REASON_LABELS[reason] ?? reason}</span>)}</div><small>execution_performed={String(evaluation.execution_performed)} · executor_available={String(evaluation.executor_available)} · entity_available={String(evaluation.entity_available)}</small></div> : null}
+
+    {approvalPreview ? <div className={`load-approval-scope ${approvalPreview.eligible ? "load-approval-scope--eligible" : "load-approval-scope--blocked"}`}><div className="load-approval-scope__header"><div><span className="eyebrow">Approval scope · preview only</span><h4>{approvalPreview.eligible ? "Přesný snapshot budoucího schválení" : "Kandidát není způsobilý ke schválení"}</h4></div><span className="load-approval-scope__badge">{approvalPreview.eligible ? "scope ready" : "blocked"}</span></div>{approvalPreview.plan ? <div className="load-approval-scope__plan"><span>{formatTime(approvalPreview.plan.starts_at)} → {formatTime(approvalPreview.plan.ends_at)}</span><b>{approvalPreview.entity_id ?? "bez entity"} · {approvalPreview.plan.power_kw.toLocaleString("cs-CZ")} kW · {approvalPreview.plan.duration_minutes} min</b></div> : null}{approvalPreview.snapshot_digest ? <div className="load-approval-scope__digest"><span>SHA-256 snapshot digest</span><code>{approvalPreview.snapshot_digest}</code></div> : <div className="load-policy-reasons">{approvalPreview.reasons.map((reason) => <span key={reason}>{REASON_LABELS[reason] ?? reason}</span>)}</div>}<div className="load-approval-scope__meta"><div><span>Intent</span><b>{approvalPreview.intent}</b></div><div><span>Schema</span><b>v{approvalPreview.schema_version}</b></div><div><span>TTL preview</span><b>{approvalPreview.ttl_seconds} s / max {approvalPreview.max_ttl_seconds} s</b></div><div><span>Artifact</span><b>nevydán</b></div></div><p>Tento digest je pouze náhled scope. Případné budoucí explicitní schválení musí znovu přepočítat aktuální plán, policy i entitu a teprve potom vytvořit nový podepsaný artifact.</p><small>approval_issued={String(approvalPreview.approval_issued)} · approval_id={String(approvalPreview.approval_id)} · signature={String(approvalPreview.signature)} · execution_performed={String(approvalPreview.execution_performed)} · executor_available={String(approvalPreview.executor_available)} · preview_only={String(approvalPreview.preview_only)}</small></div> : null}
   </section>;
 }
