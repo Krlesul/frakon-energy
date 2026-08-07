@@ -14,7 +14,7 @@ from .load_execution_dispatch_gate import (
     DispatchGateDecision,
 )
 from .load_execution_lifecycle import ExecutionLifecycleRecord
-from .load_execution_stop_lease import ExecutionStopLease, STOP_LEASE_ARMED, StopLeaseError
+from .load_execution_stop_lease import ExecutionStopLease, STOP_LEASE_ARMED
 
 BOUNDED_GATE_READY = "ready_to_start"
 BOUNDED_GATE_ALREADY_SATISFIED = "already_satisfied"
@@ -22,6 +22,7 @@ BOUNDED_GATE_BLOCKED = "blocked"
 
 REASON_READY = "bounded_start_has_armed_stop_obligation"
 REASON_ALREADY_SATISFIED = "desired_state_already_observed"
+REASON_DISPATCH_GATE_MISMATCH = "dispatch_gate_binding_mismatch"
 REASON_STOP_LEASE_REQUIRED = "matching_stop_lease_required"
 REASON_STOP_LEASE_MISMATCH = "stop_lease_binding_mismatch"
 
@@ -48,6 +49,7 @@ class BoundedDispatchDecision:
     stop_service_name: str | None
     stop_at: str
     dispatch_gate_status: str
+    dispatch_gate_matches: bool
     stop_lease_matches: bool
     can_start: bool
     can_redispatch: bool = False
@@ -60,6 +62,31 @@ class BoundedDispatchDecision:
         return asdict(self)
 
 
+def _dispatch_gate_matches(
+    lifecycle: ExecutionLifecycleRecord,
+    gate: DispatchGateDecision,
+) -> bool:
+    return (
+        gate.lifecycle_id == lifecycle.lifecycle_id
+        and gate.lifecycle_state == lifecycle.state
+        and gate.attempt_id == lifecycle.attempt_id
+        and gate.action_snapshot_id == lifecycle.action_snapshot_id
+        and gate.profile_id == lifecycle.profile_id
+        and gate.entity_id == lifecycle.entity_id
+        and gate.service_domain == lifecycle.service_domain
+        and gate.service_name == lifecycle.service_name
+        and gate.desired_state == lifecycle.desired_state
+        and gate.plan_starts_at == lifecycle.plan.starts_at
+        and gate.plan_ends_at == lifecycle.plan.ends_at
+        and gate.lifecycle_binding_matches
+        and not gate.can_redispatch
+        and not gate.state_transition_performed
+        and not gate.service_call_performed
+        and not gate.execution_performed
+        and not gate.executor_available
+    )
+
+
 def _lease_matches(
     lifecycle: ExecutionLifecycleRecord,
     lease: ExecutionStopLease,
@@ -67,7 +94,7 @@ def _lease_matches(
     try:
         lifecycle.validated()
         lease.validated()
-    except (ValueError, StopLeaseError):
+    except ValueError:
         return False
     expected_stop = _EXPECTED_STOP_MAPPING.get(
         (lifecycle.service_domain, lifecycle.service_name)
@@ -96,8 +123,9 @@ def evaluate_bounded_dispatch_gate(
     dispatch_gate: DispatchGateDecision,
     stop_lease: ExecutionStopLease | None,
 ) -> BoundedDispatchDecision:
-    """Require an exact armed stop obligation before allowing a future start."""
+    """Require exact dispatch evidence and a stop obligation before future start."""
     lifecycle.validated()
+    dispatch_gate_matches = _dispatch_gate_matches(lifecycle, dispatch_gate)
     lease_matches = stop_lease is not None and _lease_matches(lifecycle, stop_lease)
     base = dict(
         lifecycle_id=lifecycle.lifecycle_id,
@@ -111,8 +139,17 @@ def evaluate_bounded_dispatch_gate(
         stop_service_name=stop_lease.service_name if stop_lease is not None else None,
         stop_at=lifecycle.plan.ends_at,
         dispatch_gate_status=dispatch_gate.status,
+        dispatch_gate_matches=dispatch_gate_matches,
         stop_lease_matches=lease_matches,
     )
+
+    if not dispatch_gate_matches:
+        return BoundedDispatchDecision(
+            status=BOUNDED_GATE_BLOCKED,
+            reason=REASON_DISPATCH_GATE_MISMATCH,
+            can_start=False,
+            **base,
+        )
 
     if dispatch_gate.status == DISPATCH_GATE_ALREADY_SATISFIED:
         return BoundedDispatchDecision(
