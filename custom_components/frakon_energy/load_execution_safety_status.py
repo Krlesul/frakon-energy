@@ -16,6 +16,7 @@ from .load_execution_lifecycle import (
 )
 from .load_execution_lifecycle_recovery import RECOVERY_OK, lifecycle_recovery_summary
 from .load_execution_lifecycle_runtime import lifecycle_repository
+from .load_execution_start_scheduler import start_scheduler
 from .load_execution_start_stop_ownership import async_start_stop_ownership_proof
 from .load_execution_stop_lifecycle_runtime import stop_lifecycle_repository
 from .load_execution_stop_recovery import STOP_RECOVERY_OK, stop_recovery_summary
@@ -97,16 +98,17 @@ async def async_execution_safety_status(
     *,
     entry_id: str,
 ) -> dict[str, Any]:
-    """Aggregate durable execution and stop-runtime safety without mutation."""
+    """Aggregate durable execution and runtime safety without mutation."""
     if not entry_id:
         raise ValueError("entry_id is required")
 
     start_recovery = lifecycle_recovery_summary(hass, entry_id)
     stop_recovery = stop_recovery_summary(hass, entry_id)
-    scheduler = stop_scheduler(hass, entry_id)
-    scheduler_statuses = scheduler.statuses()
+    stop_runtime = stop_scheduler(hass, entry_id)
+    start_runtime = start_scheduler(hass, entry_id)
+    stop_scheduler_statuses = stop_runtime.statuses()
     scheduler_status_by_start = {
-        status.start_lifecycle_id: status.status for status in scheduler_statuses
+        status.start_lifecycle_id: status.status for status in stop_scheduler_statuses
     }
     records = await lifecycle_repository(hass, entry_id).async_list()
     items = [
@@ -121,26 +123,39 @@ async def async_execution_safety_status(
     unsafe = [item.lifecycle_id for item in items if item.safety_status == "unsafe"]
     stop_runtime_ready = (
         stop_recovery.status == STOP_RECOVERY_OK
-        and scheduler.started
-        and scheduler.healthy
+        and stop_runtime.started
+        and stop_runtime.healthy
     )
-    start_runtime_ready = start_recovery.status == RECOVERY_OK
+    start_recovery_ready = start_recovery.status == RECOVERY_OK
+    autonomous_start_runtime_ready = (
+        start_recovery_ready
+        and stop_runtime_ready
+        and start_runtime.started
+        and start_runtime.healthy
+    )
     return {
         "entry_id": entry_id,
         "start_recovery": start_recovery.as_dict(),
         "stop_recovery": stop_recovery.as_dict(),
         "stop_scheduler": {
-            "started": scheduler.started,
-            "healthy": scheduler.healthy,
-            "last_error": scheduler.last_error,
-            "statuses": [status.as_dict() for status in scheduler_statuses],
+            "started": stop_runtime.started,
+            "healthy": stop_runtime.healthy,
+            "last_error": stop_runtime.last_error,
+            "statuses": [status.as_dict() for status in stop_scheduler_statuses],
         },
-        "start_runtime_ready": start_runtime_ready,
+        "start_scheduler": {
+            "started": start_runtime.started,
+            "healthy": start_runtime.healthy,
+            "last_error": start_runtime.last_error,
+            "statuses": [status.as_dict() for status in start_runtime.statuses()],
+        },
+        "start_runtime_ready": start_recovery_ready,
         "stop_runtime_ready": stop_runtime_ready,
+        "autonomous_start_runtime_ready": autonomous_start_runtime_ready,
         "explicit_start_executor_available": True,
         "explicit_stop_executor_available": True,
         "autonomous_stop_enabled": stop_runtime_ready,
-        "autonomous_start_enabled": False,
+        "autonomous_start_enabled": autonomous_start_runtime_ready,
         "unsafe_start_lifecycles": unsafe,
         "items": [item.as_dict() for item in items],
         "read_only": True,
