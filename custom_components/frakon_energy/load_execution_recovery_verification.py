@@ -1,8 +1,8 @@
 """Guarded audit-only recovery verification for FRAKON Energy.
 
 This module can persist only a lifecycle verification transition after re-reading
-the durable record and the live Home Assistant entity state. It never performs
-or retries a Home Assistant service call.
+the durable record, exact stop ownership and live Home Assistant entity state.
+It never performs or retries a Home Assistant service call.
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from .load_execution_recovery_resolution import (
     RESOLUTION_SAFE_TO_VERIFY,
     evaluate_recovery_resolution,
 )
+from .load_execution_start_stop_ownership import async_start_stop_ownership_proof
 
 _LOCKS_KEY = "load_execution_recovery_verification_locks_by_entry"
 
@@ -104,9 +105,15 @@ async def async_verify_recovery_lifecycle(
                 current_state=live_state,
             )
 
+        ownership = await async_start_stop_ownership_proof(
+            hass,
+            entry_id=entry_id,
+            start=record,
+        )
         decision = evaluate_recovery_resolution(
             record,
             current_state=live_state,
+            stop_ownership_ready=ownership.ownership_ready,
         )
         if decision.status != RESOLUTION_SAFE_TO_VERIFY or not decision.can_mark_verified:
             raise RecoveryVerificationError(
@@ -127,6 +134,7 @@ async def async_verify_recovery_lifecycle(
         call_evidence = updated.as_dict()["service_call_performed"]
         return {
             "lifecycle": updated.as_dict(),
+            "stop_ownership": ownership.as_dict(),
             "resolution": decision.as_dict(),
             "current_state": decision.current_state,
             "desired_state_observed_now": True,
