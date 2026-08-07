@@ -38,6 +38,8 @@ type DiscoverySnapshot = {
   usable_entities?: number;
 };
 
+type BatteryPowerSign = "unknown" | "positive_is_charge" | "positive_is_discharge";
+type EnergyFlowSettings = { battery_power_sign: BatteryPowerSign };
 type ConfigEntry = { entry_id: string; domain?: string; title?: string };
 type WsConnection = {
   sendMessagePromise?: <T>(message: Record<string, unknown>) => Promise<T>;
@@ -80,6 +82,7 @@ function errorMessage(reason: unknown, fallback: string): string {
 export function TechnologySettings({ hass }: { hass?: HomeAssistant }) {
   const [entry, setEntry] = useState<ConfigEntry | null>(null);
   const [snapshot, setSnapshot] = useState<DiscoverySnapshot | null>(null);
+  const [flowSettings, setFlowSettings] = useState<EnergyFlowSettings>({ battery_power_sign: "unknown" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -93,13 +96,20 @@ export function TechnologySettings({ hass }: { hass?: HomeAssistant }) {
         throw new Error("Nebyla nalezena položka integrace FRAKON Energy.");
       }
       setEntry(activeEntry);
-      const result = await callWs<DiscoverySnapshot>(hass, {
-        type: rescan
-          ? "frakon_energy/entity_discovery/rescan"
-          : "frakon_energy/entity_discovery/get",
-        entry_id: activeEntry.entry_id,
-      });
+      const [result, settings] = await Promise.all([
+        callWs<DiscoverySnapshot>(hass, {
+          type: rescan
+            ? "frakon_energy/entity_discovery/rescan"
+            : "frakon_energy/entity_discovery/get",
+          entry_id: activeEntry.entry_id,
+        }),
+        callWs<EnergyFlowSettings>(hass, {
+          type: "frakon_energy/energy_flow/get",
+          entry_id: activeEntry.entry_id,
+        }),
+      ]);
       setSnapshot(result);
+      setFlowSettings(settings);
       if (rescan) announceProfileChanged();
     } catch (reason) {
       setError(errorMessage(reason, "Načtení technologií se nezdařilo."));
@@ -181,6 +191,25 @@ export function TechnologySettings({ hass }: { hass?: HomeAssistant }) {
     }
   };
 
+  const setBatteryPowerSign = async (batteryPowerSign: BatteryPowerSign) => {
+    if (!hass || !entry) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const settings = await callWs<EnergyFlowSettings>(hass, {
+        type: "frakon_energy/energy_flow/set",
+        entry_id: entry.entry_id,
+        battery_power_sign: batteryPowerSign,
+      });
+      setFlowSettings(settings);
+      announceProfileChanged();
+    } catch (reason) {
+      setError(errorMessage(reason, "Směr výkonu baterie se nepodařilo uložit."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return <article className="chart-card technology-settings">
     <div className="technology-settings__header">
       <div><span className="eyebrow">Technologie domu</span><h2>Existující zařízení a entity</h2></div>
@@ -210,6 +239,15 @@ export function TechnologySettings({ hass }: { hass?: HomeAssistant }) {
             <span>{enabled ? "Zapnuto" : "Vypnuto"}</span>
           </label>
         </div>
+        {enabled && technology.technology === "home_battery" ? <div className="role-row">
+          <div className="role-row__label"><b>Směr výkonu baterie</b><small>Určuje, co znamená kladná hodnota výkonové entity.</small></div>
+          <select value={flowSettings.battery_power_sign} disabled={busy} onChange={(event) => void setBatteryPowerSign(event.target.value as BatteryPowerSign)}>
+            <option value="unknown">Nevím / určit později</option>
+            <option value="positive_is_charge">Kladná hodnota = nabíjení</option>
+            <option value="positive_is_discharge">Kladná hodnota = vybíjení</option>
+          </select>
+          <div className="role-actions" />
+        </div> : null}
         {enabled ? <div className="role-list">{(technology.roles ?? []).map((role) => {
           const recommended = role.recommended ?? role.candidates?.[0] ?? null;
           const confirmed = role.selected_entity_id ?? role.confirmed_entity_id ?? null;
