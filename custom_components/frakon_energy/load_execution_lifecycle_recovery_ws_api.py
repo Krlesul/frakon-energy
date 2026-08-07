@@ -10,6 +10,7 @@ from homeassistant.core import HomeAssistant, callback
 
 from .const import DOMAIN
 from .load_execution_lifecycle_recovery import (
+    RECOVERY_OK,
     lifecycle_recovery_summary,
     recovery_diagnostic_for_record,
 )
@@ -17,6 +18,10 @@ from .load_execution_lifecycle_runtime import lifecycle_repository
 
 COMMAND_RECOVERY_DIAGNOSTICS = f"{DOMAIN}/load_execution_lifecycle/recovery"
 _REGISTERED_KEY = "load_execution_lifecycle_recovery_websocket_registered"
+_REVIEW_DIAGNOSTICS = {
+    "manual_recovery_review_required",
+    "dispatch_confirmed_but_desired_state_not_observed",
+}
 
 
 async def async_lifecycle_recovery_diagnostics(
@@ -36,14 +41,14 @@ async def async_lifecycle_recovery_diagnostics(
         diagnostics.append(
             recovery_diagnostic_for_record(record, current_state=current_state)
         )
+    manual_review_required = summary.status != RECOVERY_OK or any(
+        item["diagnostic"] in _REVIEW_DIAGNOSTICS for item in diagnostics
+    )
     return {
         "entry_id": entry_id,
         "recovery": summary.as_dict(),
         "lifecycles": diagnostics,
-        "manual_review_required": any(
-            item["diagnostic"] == "manual_recovery_review_required"
-            for item in diagnostics
-        ),
+        "manual_review_required": manual_review_required,
         "read_only": True,
         "state_transition_performed": False,
         "execution_performed": False,
