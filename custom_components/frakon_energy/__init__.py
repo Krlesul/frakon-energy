@@ -20,6 +20,7 @@ from .load_execution_action_snapshot_ws_api import async_register_load_execution
 from .load_execution_approval_ws_api import async_register_load_execution_approval_preview_websocket
 from .load_execution_consume_ws_api import async_register_load_execution_consume_websocket
 from .load_execution_policy_ws_api import async_register_load_execution_policy_websocket
+from .load_execution_readiness_ws_api import async_register_load_execution_readiness_websocket
 from .load_plan_ws_api import async_register_load_plan_websocket
 from .load_profiles_ws_api import async_register_load_profiles_websocket
 from .panel import async_register_panel
@@ -76,6 +77,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async_register_load_execution_approval_preview_websocket(hass)
     async_register_load_execution_consume_websocket(hass)
     async_register_load_execution_action_snapshot_websocket(hass)
+    async_register_load_execution_readiness_websocket(hass)
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
     await async_register_panel(hass)
