@@ -46,6 +46,19 @@ async function loadSnapshot(hass: HomeAssistant): Promise<DiscoverySnapshot> {
   });
 }
 
+function applyModuleVisibility(snapshot: DiscoverySnapshot): void {
+  const enabled = new Set(
+    (snapshot.technologies ?? [])
+      .filter((item) => Boolean(item.enabled))
+      .map((item) => item.technology),
+  );
+  const tariffVisible = enabled.has("hdo") || enabled.has("dynamic_tariff");
+  const rootElement = document.documentElement;
+  rootElement.classList.toggle("frakon-no-tariff", !tariffVisible);
+  rootElement.classList.toggle("frakon-has-tariff", tariffVisible);
+  rootElement.dataset.frakonTechnologies = [...enabled].sort().join(",");
+}
+
 function isOverviewVisible(): boolean {
   const label = document.querySelector<HTMLElement>(".view-header > span");
   return label?.textContent?.trim() === "Přehled";
@@ -72,7 +85,13 @@ function TechnologyOverview({ hass }: { hass: HomeAssistant }) {
   useEffect(() => {
     let active = true;
     const load = () => loadSnapshot(hass)
-      .then((value) => { if (active) { setSnapshot(value); setError(null); } })
+      .then((value) => {
+        if (active) {
+          applyModuleVisibility(value);
+          setSnapshot(value);
+          setError(null);
+        }
+      })
       .catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : "Technologie se nepodařilo načíst."); });
     void load();
     const onHass = () => void load();
