@@ -10,6 +10,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 
 from .const import DOMAIN
+from .load_phase_readiness import build_load_phase_readiness
 from .load_profile_phase_projection import build_load_profile_phase_projection
 from .load_profiles import (
     PHASE_TOPOLOGIES,
@@ -25,6 +26,7 @@ COMMAND_LIST = f"{DOMAIN}/load_profiles/list"
 COMMAND_UPSERT = f"{DOMAIN}/load_profiles/upsert"
 COMMAND_DELETE = f"{DOMAIN}/load_profiles/delete"
 COMMAND_PHASE_PREVIEW = f"{DOMAIN}/load_profiles/phase_preview"
+COMMAND_PHASE_READINESS = f"{DOMAIN}/load_profiles/phase_readiness"
 _REGISTERED_KEY = "load_profiles_websocket_registered"
 
 
@@ -53,7 +55,6 @@ async def async_phase_preview(
     entry_id: str,
     profile_id: str,
 ) -> dict[str, Any]:
-    """Return a read-only phase-capacity projection for one persisted profile."""
     entry = _entry(hass, entry_id)
     return build_load_profile_phase_projection(
         hass,
@@ -63,127 +64,106 @@ async def async_phase_preview(
     ).as_dict()
 
 
+async def async_phase_readiness(
+    hass: HomeAssistant,
+    *,
+    entry_id: str,
+    profile_id: str,
+) -> dict[str, Any]:
+    entry = _entry(hass, entry_id)
+    return build_load_phase_readiness(
+        hass,
+        entry_id=entry.entry_id,
+        options=entry.options,
+        profile_id=profile_id,
+    ).as_dict()
+
+
 @callback
 def async_register_load_profiles_websocket(hass: HomeAssistant) -> None:
-    """Register persistent load-profile CRUD commands once."""
     domain_data = hass.data.setdefault(DOMAIN, {})
     if domain_data.get(_REGISTERED_KEY):
         return
 
-    @websocket_api.websocket_command(
-        {vol.Required("type"): COMMAND_LIST, vol.Required("entry_id"): str}
-    )
+    @websocket_api.websocket_command({vol.Required("type"): COMMAND_LIST, vol.Required("entry_id"): str})
     @websocket_api.async_response
-    async def websocket_list(
-        hass: HomeAssistant,
-        connection: websocket_api.ActiveConnection,
-        msg: dict[str, Any],
-    ) -> None:
+    async def websocket_list(hass, connection, msg) -> None:
         try:
-            entry = _entry(hass, msg["entry_id"])
-            result = _payload(entry)
+            result = _payload(_entry(hass, msg["entry_id"]))
         except (ValueError, TypeError) as err:
-            connection.send_error(msg["id"], "invalid_load_profiles", str(err))
-            return
+            connection.send_error(msg["id"], "invalid_load_profiles", str(err)); return
         connection.send_result(msg["id"], result)
 
-    @websocket_api.websocket_command(
-        {
-            vol.Required("type"): COMMAND_UPSERT,
-            vol.Required("entry_id"): str,
-            vol.Required("profile_id"): str,
-            vol.Required("name"): str,
-            vol.Required("kind"): vol.In(PROFILE_KINDS),
-            vol.Required("duration_minutes"): vol.All(int, vol.Range(min=1)),
-            vol.Required("power_kw"): vol.All(vol.Coerce(float), vol.Range(min=0.001)),
-            vol.Optional("enabled", default=True): bool,
-            vol.Optional("entity_id"): str,
-            vol.Optional("phase_topology", default=PHASE_TOPOLOGY_UNKNOWN): vol.In(PHASE_TOPOLOGIES),
-            vol.Optional("phase_current_l1_a"): vol.Any(None, vol.Coerce(float)),
-            vol.Optional("phase_current_l2_a"): vol.Any(None, vol.Coerce(float)),
-            vol.Optional("phase_current_l3_a"): vol.Any(None, vol.Coerce(float)),
-        }
-    )
+    @websocket_api.websocket_command({
+        vol.Required("type"): COMMAND_UPSERT,
+        vol.Required("entry_id"): str,
+        vol.Required("profile_id"): str,
+        vol.Required("name"): str,
+        vol.Required("kind"): vol.In(PROFILE_KINDS),
+        vol.Required("duration_minutes"): vol.All(int, vol.Range(min=1)),
+        vol.Required("power_kw"): vol.All(vol.Coerce(float), vol.Range(min=0.001)),
+        vol.Optional("enabled", default=True): bool,
+        vol.Optional("entity_id"): str,
+        vol.Optional("phase_topology", default=PHASE_TOPOLOGY_UNKNOWN): vol.In(PHASE_TOPOLOGIES),
+        vol.Optional("phase_current_l1_a"): vol.Any(None, vol.Coerce(float)),
+        vol.Optional("phase_current_l2_a"): vol.Any(None, vol.Coerce(float)),
+        vol.Optional("phase_current_l3_a"): vol.Any(None, vol.Coerce(float)),
+    })
     @websocket_api.async_response
-    async def websocket_upsert(
-        hass: HomeAssistant,
-        connection: websocket_api.ActiveConnection,
-        msg: dict[str, Any],
-    ) -> None:
+    async def websocket_upsert(hass, connection, msg) -> None:
         try:
             entry = _entry(hass, msg["entry_id"])
             profile = LoadProfile(
-                profile_id=msg["profile_id"],
-                name=msg["name"],
-                kind=msg["kind"],
-                duration_minutes=msg["duration_minutes"],
-                power_kw=msg["power_kw"],
-                enabled=msg["enabled"],
-                entity_id=(msg.get("entity_id") or "").strip() or None,
+                profile_id=msg["profile_id"], name=msg["name"], kind=msg["kind"],
+                duration_minutes=msg["duration_minutes"], power_kw=msg["power_kw"],
+                enabled=msg["enabled"], entity_id=(msg.get("entity_id") or "").strip() or None,
                 phase_topology=msg["phase_topology"],
                 phase_current_l1_a=msg.get("phase_current_l1_a"),
                 phase_current_l2_a=msg.get("phase_current_l2_a"),
                 phase_current_l3_a=msg.get("phase_current_l3_a"),
             ).validated()
-            options = upsert_profile(entry.options, profile)
-            hass.config_entries.async_update_entry(entry, options=options)
+            hass.config_entries.async_update_entry(entry, options=upsert_profile(entry.options, profile))
         except (ValueError, TypeError) as err:
-            connection.send_error(msg["id"], "invalid_load_profile", str(err))
-            return
+            connection.send_error(msg["id"], "invalid_load_profile", str(err)); return
         connection.send_result(msg["id"], _payload(entry))
 
-    @websocket_api.websocket_command(
-        {
-            vol.Required("type"): COMMAND_DELETE,
-            vol.Required("entry_id"): str,
-            vol.Required("profile_id"): str,
-        }
-    )
+    @websocket_api.websocket_command({vol.Required("type"): COMMAND_DELETE, vol.Required("entry_id"): str, vol.Required("profile_id"): str})
     @websocket_api.async_response
-    async def websocket_delete(
-        hass: HomeAssistant,
-        connection: websocket_api.ActiveConnection,
-        msg: dict[str, Any],
-    ) -> None:
+    async def websocket_delete(hass, connection, msg) -> None:
         try:
             entry = _entry(hass, msg["entry_id"])
-            options = delete_profile(entry.options, msg["profile_id"])
-            hass.config_entries.async_update_entry(entry, options=options)
+            hass.config_entries.async_update_entry(entry, options=delete_profile(entry.options, msg["profile_id"]))
         except (ValueError, TypeError) as err:
-            connection.send_error(msg["id"], "invalid_load_profile", str(err))
-            return
+            connection.send_error(msg["id"], "invalid_load_profile", str(err)); return
         connection.send_result(msg["id"], _payload(entry))
 
-    @websocket_api.websocket_command(
-        {
-            vol.Required("type"): COMMAND_PHASE_PREVIEW,
-            vol.Required("entry_id"): str,
-            vol.Required("profile_id"): str,
-        }
-    )
+    @websocket_api.websocket_command({vol.Required("type"): COMMAND_PHASE_PREVIEW, vol.Required("entry_id"): str, vol.Required("profile_id"): str})
     @websocket_api.async_response
-    async def websocket_phase_preview(
-        hass: HomeAssistant,
-        connection: websocket_api.ActiveConnection,
-        msg: dict[str, Any],
-    ) -> None:
+    async def websocket_phase_preview(hass, connection, msg) -> None:
         connection.require_admin()
         try:
-            result = await async_phase_preview(
-                hass,
-                entry_id=msg["entry_id"],
-                profile_id=msg["profile_id"],
-            )
+            result = await async_phase_preview(hass, entry_id=msg["entry_id"], profile_id=msg["profile_id"])
         except (ValueError, TypeError) as err:
-            connection.send_error(msg["id"], "invalid_load_profile_phase_preview", str(err))
-            return
+            connection.send_error(msg["id"], "invalid_load_profile_phase_preview", str(err)); return
         except Exception as err:
-            connection.send_error(msg["id"], "load_profile_phase_preview_unavailable", str(err))
-            return
+            connection.send_error(msg["id"], "load_profile_phase_preview_unavailable", str(err)); return
+        connection.send_result(msg["id"], result)
+
+    @websocket_api.websocket_command({vol.Required("type"): COMMAND_PHASE_READINESS, vol.Required("entry_id"): str, vol.Required("profile_id"): str})
+    @websocket_api.async_response
+    async def websocket_phase_readiness(hass, connection, msg) -> None:
+        connection.require_admin()
+        try:
+            result = await async_phase_readiness(hass, entry_id=msg["entry_id"], profile_id=msg["profile_id"])
+        except (ValueError, TypeError) as err:
+            connection.send_error(msg["id"], "invalid_load_profile_phase_readiness", str(err)); return
+        except Exception as err:
+            connection.send_error(msg["id"], "load_profile_phase_readiness_unavailable", str(err)); return
         connection.send_result(msg["id"], result)
 
     websocket_api.async_register_command(hass, websocket_list)
     websocket_api.async_register_command(hass, websocket_upsert)
     websocket_api.async_register_command(hass, websocket_delete)
     websocket_api.async_register_command(hass, websocket_phase_preview)
+    websocket_api.async_register_command(hass, websocket_phase_readiness)
     domain_data[_REGISTERED_KEY] = True
