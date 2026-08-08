@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { callHomeAssistantWs, type HomeAssistant } from "./home-assistant";
+import { LoadExecutionFieldAcceptancePanel } from "./load-execution-field-acceptance-panel";
 import { LoadExecutionPendingRunPanel } from "./load-execution-pending-run-panel";
 import { LoadExecutionPolicyPanel } from "./load-execution-policy-panel";
 import { LoadExecutionRuntimePanel } from "./load-execution-runtime-panel";
@@ -224,6 +225,7 @@ export function LoadProfilesCard({ hass, entryId }: { hass?: HomeAssistant; entr
 
     <LoadExecutionPolicyPanel hass={hass} entryId={entryId} profiles={profiles} earliestStart={earliestStart} deadline={deadline} />
     <LoadExecutionPendingRunPanel hass={hass} entryId={entryId} />
+    <LoadExecutionFieldAcceptancePanel hass={hass} entryId={entryId} />
     <LoadExecutionRuntimePanel hass={hass} entryId={entryId} />
   </article>;
 }
