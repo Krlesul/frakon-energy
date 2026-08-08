@@ -100,6 +100,7 @@ def test_ready_sources_calculate_headroom_and_worst_phase() -> None:
     )
     assert result.status == STATUS_WITHIN_LIMIT
     assert result.source_ready is True
+    assert result.execution_guard_active is True
     assert result.phases["L1"].headroom_a == pytest.approx(15.0)
     assert result.phases["L2"].headroom_a == pytest.approx(5.0)
     assert result.phases["L3"].headroom_a == pytest.approx(1.0)
@@ -117,6 +118,7 @@ def test_one_phase_over_limit_is_reported_independently() -> None:
         now=NOW,
     )
     assert result.status == STATUS_OVER_LIMIT
+    assert result.execution_guard_active is True
     assert result.any_phase_over_limit is True
     assert result.phases["L2"].over_limit is True
     assert result.phases["L2"].over_limit_a == pytest.approx(2.5)
@@ -133,6 +135,7 @@ def test_partial_mapping_never_computes_false_headroom() -> None:
     )
     assert result.status == STATUS_SOURCE_NOT_READY
     assert result.source_ready is False
+    assert result.execution_guard_active is True
     assert result.phases["L1"].current_a == pytest.approx(10.0)
     assert result.phases["L1"].headroom_a is None
     assert result.phases["L3"].current_a is None
@@ -149,6 +152,7 @@ def test_stale_phase_never_computes_false_headroom() -> None:
     )
     assert result.status == STATUS_SOURCE_NOT_READY
     assert result.source_ready is False
+    assert result.execution_guard_active is True
     assert all(item.headroom_a is None for item in result.phases.values())
     assert all(item.utilization_percent is None for item in result.phases.values())
 
