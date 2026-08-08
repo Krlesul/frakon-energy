@@ -18,10 +18,11 @@ from .load_execution_site_capacity_gate import (
 )
 from .site_capacity import SiteCapacityStatus, build_site_capacity_status
 
-FINAL_RECHECK_BYPASSED = "bypassed_not_configured"
+FINAL_RECHECK_BYPASSED = "bypassed_guard_disabled"
 FINAL_RECHECK_READY = "ready"
 FINAL_RECHECK_BLOCKED = "blocked"
 
+REASON_GUARD_DISABLED = "site_capacity_guard_disabled"
 REASON_NOT_CONFIGURED = "site_capacity_limit_not_configured"
 REASON_NO_DISPATCHING_LIFECYCLE = "dispatching_lifecycle_not_found"
 REASON_MULTIPLE_DISPATCHING_LIFECYCLES = "multiple_dispatching_lifecycles"
@@ -58,98 +59,58 @@ def _entry(hass: HomeAssistant, entry_id: str):
     return entry
 
 
-async def _dispatching_records(
-    hass: HomeAssistant,
-    entry_id: str,
-) -> list[ExecutionLifecycleRecord]:
+async def _dispatching_records(hass: HomeAssistant, entry_id: str) -> list[ExecutionLifecycleRecord]:
     records = await lifecycle_repository(hass, entry_id).async_list()
     return [record for record in records if record.state == STATE_DISPATCHING]
 
 
-async def async_final_capacity_recheck(
-    hass: HomeAssistant,
-    *,
-    entry_id: str,
-) -> FinalCapacityRecheck:
-    """Re-read live grid import immediately before a physical bounded start."""
+async def async_final_capacity_recheck(hass: HomeAssistant, *, entry_id: str) -> FinalCapacityRecheck:
     if not entry_id:
         raise FinalCapacityRecheckError("entry_id is required")
-
     entry = _entry(hass, entry_id)
-    capacity: SiteCapacityStatus = build_site_capacity_status(
-        hass,
-        entry_id=entry_id,
-        options=entry.options,
-    )
+    capacity: SiteCapacityStatus = build_site_capacity_status(hass, entry_id=entry_id, options=entry.options)
 
+    if not capacity.execution_guard_active:
+        return FinalCapacityRecheck(
+            status=FINAL_RECHECK_BYPASSED, reason=REASON_GUARD_DISABLED,
+            lifecycle_id=None, attempt_id=None, planned_power_kw=None,
+            capacity=capacity.as_dict(), capacity_gate=None, can_start=True, guard_active=False,
+        )
     if not capacity.configured:
         return FinalCapacityRecheck(
-            status=FINAL_RECHECK_BYPASSED,
-            reason=REASON_NOT_CONFIGURED,
-            lifecycle_id=None,
-            attempt_id=None,
-            planned_power_kw=None,
-            capacity=capacity.as_dict(),
-            capacity_gate=None,
-            can_start=True,
-            guard_active=False,
+            status=FINAL_RECHECK_BLOCKED, reason=REASON_NOT_CONFIGURED,
+            lifecycle_id=None, attempt_id=None, planned_power_kw=None,
+            capacity=capacity.as_dict(), capacity_gate=None, can_start=False, guard_active=True,
         )
 
     dispatching = await _dispatching_records(hass, entry_id)
     if not dispatching:
         return FinalCapacityRecheck(
-            status=FINAL_RECHECK_BLOCKED,
-            reason=REASON_NO_DISPATCHING_LIFECYCLE,
-            lifecycle_id=None,
-            attempt_id=None,
-            planned_power_kw=None,
-            capacity=capacity.as_dict(),
-            capacity_gate=None,
-            can_start=False,
-            guard_active=True,
+            status=FINAL_RECHECK_BLOCKED, reason=REASON_NO_DISPATCHING_LIFECYCLE,
+            lifecycle_id=None, attempt_id=None, planned_power_kw=None,
+            capacity=capacity.as_dict(), capacity_gate=None, can_start=False, guard_active=True,
         )
     if len(dispatching) != 1:
         return FinalCapacityRecheck(
-            status=FINAL_RECHECK_BLOCKED,
-            reason=REASON_MULTIPLE_DISPATCHING_LIFECYCLES,
-            lifecycle_id=None,
-            attempt_id=None,
-            planned_power_kw=None,
-            capacity=capacity.as_dict(),
-            capacity_gate=None,
-            can_start=False,
-            guard_active=True,
+            status=FINAL_RECHECK_BLOCKED, reason=REASON_MULTIPLE_DISPATCHING_LIFECYCLES,
+            lifecycle_id=None, attempt_id=None, planned_power_kw=None,
+            capacity=capacity.as_dict(), capacity_gate=None, can_start=False, guard_active=True,
         )
 
     lifecycle = dispatching[0]
     lifecycle.validated()
-    decision: SiteCapacityGateDecision = evaluate_site_capacity_execution_gate(
-        capacity=capacity,
-        planned_power_kw=lifecycle.plan.power_kw,
-    )
+    decision: SiteCapacityGateDecision = evaluate_site_capacity_execution_gate(capacity=capacity, planned_power_kw=lifecycle.plan.power_kw)
     allowed = decision.status in (CAPACITY_GATE_READY, CAPACITY_GATE_BYPASSED) and decision.can_start
     return FinalCapacityRecheck(
         status=FINAL_RECHECK_READY if allowed else FINAL_RECHECK_BLOCKED,
-        reason=decision.reason,
-        lifecycle_id=lifecycle.lifecycle_id,
-        attempt_id=lifecycle.attempt_id,
-        planned_power_kw=lifecycle.plan.power_kw,
-        capacity=capacity.as_dict(),
-        capacity_gate=decision.as_dict(),
-        can_start=allowed,
-        guard_active=decision.guard_active,
+        reason=decision.reason, lifecycle_id=lifecycle.lifecycle_id, attempt_id=lifecycle.attempt_id,
+        planned_power_kw=lifecycle.plan.power_kw, capacity=capacity.as_dict(), capacity_gate=decision.as_dict(),
+        can_start=allowed, guard_active=decision.guard_active,
     )
 
 
-async def async_require_final_capacity_recheck(
-    hass: HomeAssistant,
-    *,
-    entry_id: str,
-) -> FinalCapacityRecheck:
-    """Fail closed unless the final capacity recheck explicitly allows start."""
+async def async_require_final_capacity_recheck(hass: HomeAssistant, *, entry_id: str) -> FinalCapacityRecheck:
     result = await async_final_capacity_recheck(hass, entry_id=entry_id)
     if not result.can_start:
-        raise FinalCapacityRecheckError(
-            f"final site capacity recheck blocked start: {result.reason}"
-        )
+        raise FinalCapacityRecheckError(f"final site capacity recheck blocked start: {result.reason}")
     return result
