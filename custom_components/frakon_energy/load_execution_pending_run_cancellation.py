@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import re
 from typing import Any, Protocol
@@ -27,10 +27,11 @@ CANCELLATION_REASON_USER = "user_cancelled_before_lifecycle"
 _HEX_32 = re.compile(r"^[0-9a-f]{32}$")
 _HEX_64 = re.compile(r"^[0-9a-f]{64}$")
 _RUNTIME_KEY = "load_execution_pending_run_cancellation_repositories_by_entry"
+_GUARDS_KEY = "load_execution_pending_pre_lifecycle_guards_by_entry"
 
 
 class PendingRunCancellationError(ValueError):
-    """Raised when a pending-run cancellation artifact is invalid."""
+    """Raised when a pending-run cancellation artifact is invalid or unsafe."""
 
 
 class PendingRunCancellationConflictError(PendingRunCancellationError):
@@ -62,6 +63,23 @@ def _aware(value: str, field: str) -> datetime:
 def _cancellation_id(entry_id: str, attempt_id: str, pending_run_id: str) -> str:
     payload = "\0".join((entry_id, attempt_id, pending_run_id, CANCELLATION_REASON_USER))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
+
+
+def pre_lifecycle_guard(hass: HomeAssistant, entry_id: str) -> asyncio.Lock:
+    """Serialize cancellation against every new lifecycle-prepare boundary."""
+    if not entry_id:
+        raise PendingRunCancellationError("entry_id is required")
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    guards = domain_data.get(_GUARDS_KEY)
+    if not isinstance(guards, dict):
+        guards = {}
+        domain_data[_GUARDS_KEY] = guards
+    guard = guards.get(entry_id)
+    if isinstance(guard, asyncio.Lock):
+        return guard
+    guard = asyncio.Lock()
+    guards[entry_id] = guard
+    return guard
 
 
 @dataclass(frozen=True, slots=True)
@@ -272,13 +290,12 @@ class PendingRunCancellationLedger:
         raw = value.get("cancellations", [])
         if not isinstance(raw, list):
             raise PendingRunCancellationError("cancellations must be a list")
-        return cls(
-            tuple(
-                PendingRunCancellation.from_dict(item)
-                for item in raw
-                if isinstance(item, dict)
-            )
-        )
+        records: list[PendingRunCancellation] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                raise PendingRunCancellationError("cancellation record must be an object")
+            records.append(PendingRunCancellation.from_dict(item))
+        return cls(tuple(records))
 
 
 class PendingRunCancellationRepository:
@@ -338,3 +355,54 @@ def cancellation_repository(
     )
     repositories[entry_id] = repository
     return repository
+
+
+async def async_cancel_pending_run_before_lifecycle(
+    hass: HomeAssistant,
+    *,
+    entry_id: str,
+    attempt_id: str,
+    cancelled_by: str | None,
+    now: datetime | None = None,
+) -> PendingRunCancellationRecordResult:
+    """Persist cancellation only if the attempt still has no durable lifecycle."""
+    if not entry_id or not attempt_id:
+        raise PendingRunCancellationError("entry_id and attempt_id are required")
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None or current.utcoffset() is None:
+        raise PendingRunCancellationError("now must be timezone-aware")
+
+    async with pre_lifecycle_guard(hass, entry_id):
+        cancellations = cancellation_repository(hass, entry_id)
+        existing = await cancellations.async_get_by_attempt_id(attempt_id)
+        if existing is not None:
+            return PendingRunCancellationRecordResult(
+                existing,
+                created=False,
+                idempotent_replay=True,
+            )
+
+        # Runtime imports avoid cancellation <-> scheduling/lifecycle import cycles.
+        from .load_execution_lifecycle_runtime import lifecycle_repository  # noqa: PLC0415
+        from .load_execution_pending_run_runtime import pending_run_repository  # noqa: PLC0415
+
+        pending = await pending_run_repository(hass, entry_id).async_get_by_attempt_id(
+            attempt_id
+        )
+        if pending is None:
+            raise PendingRunCancellationError(f"pending run not found: {attempt_id}")
+        lifecycle = await lifecycle_repository(hass, entry_id).async_get_by_attempt_id(
+            attempt_id
+        )
+        if lifecycle is not None:
+            raise PendingRunCancellationError(
+                "pending run cannot be cancelled after a durable lifecycle exists: "
+                f"{lifecycle.state}"
+            )
+
+        cancellation = PendingRunCancellation.from_pending_run(
+            pending,
+            cancelled_at=int(current.timestamp()),
+            cancelled_by=cancelled_by,
+        )
+        return await cancellations.async_record(cancellation)
