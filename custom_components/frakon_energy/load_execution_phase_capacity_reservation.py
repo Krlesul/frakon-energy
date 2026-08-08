@@ -218,6 +218,28 @@ class PhaseCapacityReservationRepository:
             self._reservations = updated
             return candidate, True
 
+    async def async_release(
+        self,
+        *,
+        lifecycle_id: str,
+        attempt_id: str,
+    ) -> tuple[PhaseCapacityReservation | None, bool]:
+        """Durably remove exactly one reservation bound to the expected attempt."""
+        if not lifecycle_id or not attempt_id:
+            raise PhaseCapacityReservationError("lifecycle_id and attempt_id are required")
+        async with self._lock:
+            await self._async_load()
+            existing = self._reservations.get(lifecycle_id)
+            if existing is None:
+                return None, False
+            if existing.attempt_id != attempt_id:
+                raise PhaseCapacityReservationError("phase-capacity reservation release binding mismatch")
+            updated = dict(self._reservations)
+            del updated[lifecycle_id]
+            await self._async_save(updated)
+            self._reservations = updated
+            return existing, True
+
 
 def home_assistant_phase_capacity_reservation_repository(
     hass: HomeAssistant,
