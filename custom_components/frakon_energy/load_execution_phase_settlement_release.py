@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import time
 from typing import Any
 
 from homeassistant.core import HomeAssistant
@@ -83,7 +84,7 @@ async def async_release_confirmed_phase_reservation(
         raise PhaseSettlementReleaseError("settlement confirmation attempt binding mismatch")
 
     repository = phase_capacity_reservation_repository(hass, entry_id)
-    active = await repository.async_snapshot(now=max(1, confirmation.confirmed_at))
+    active = await repository.async_snapshot(now=max(1, int(time.time())))
     reservation = next((item for item in active if item.lifecycle_id == lifecycle_id), None)
     if reservation is None:
         return PhaseSettlementReleaseResult(
