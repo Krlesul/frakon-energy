@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { callHomeAssistantWs, type HomeAssistant } from "./home-assistant";
 import { LoadExecutionPolicyPanel } from "./load-execution-policy-panel";
+import { LoadExecutionRuntimePanel } from "./load-execution-runtime-panel";
 
 type ProfileKind = "ev" | "boiler" | "battery" | "generic";
 type LoadProfile = {
@@ -187,7 +188,7 @@ export function LoadProfilesCard({ hass, entryId }: { hass?: HomeAssistant; entr
   return <article className="chart-card load-profiles-card">
     <span className="eyebrow">Řízené spotřebiče</span>
     <h2>Profily pro levné spotové intervaly</h2>
-    <p className="settings-copy">Ulož výkon a typickou délku běhu. FRAKON z profilu pouze vypočítá nejlevnější čas; zařízení se touto kartou nikdy samo nespustí.</p>
+    <p className="settings-copy">Ulož výkon, délku běhu a případnou Home Assistant entitu. Profil ani preview samy zařízení nespustí; fyzická exekuce je oddělená a musí projít Execution Guardem, durable stop ownership a globálním ARM interlockem.</p>
 
     <div className="load-profile-form">
       <label>ID profilu<input value={form.profile_id} disabled={editing} placeholder="např. enyaq-home" onChange={(e) => setForm((current) => ({ ...current, profile_id: e.target.value }))} /></label>
@@ -195,11 +196,11 @@ export function LoadProfilesCard({ hass, entryId }: { hass?: HomeAssistant; entr
       <label>Typ<select value={form.kind} onChange={(e) => setForm((current) => ({ ...current, kind: e.target.value as ProfileKind }))}>{(Object.keys(KIND_LABELS) as ProfileKind[]).map((kind) => <option key={kind} value={kind}>{KIND_LABELS[kind]}</option>)}</select></label>
       <label>Výkon · kW<input type="number" min="0.001" step="0.1" value={form.power_kw} onChange={(e) => setForm((current) => ({ ...current, power_kw: Number(e.target.value) }))} /></label>
       <label>Délka · min<input type="number" min="15" step="15" value={form.duration_minutes} onChange={(e) => setForm((current) => ({ ...current, duration_minutes: Number(e.target.value) }))} /></label>
-      <label>Home Assistant entita · volitelné<input list="frakon-load-profile-entities" value={form.entity_id} placeholder="např. switch.ev_charging" onChange={(e) => setForm((current) => ({ ...current, entity_id: e.target.value }))} /><small>Jen vazba pro budoucí řízení. Teď se entita nikdy nespíná.</small></label>
+      <label>Home Assistant entita · volitelné<input list="frakon-load-profile-entities" value={form.entity_id} placeholder="např. switch.ev_charging" onChange={(e) => setForm((current) => ({ ...current, entity_id: e.target.value }))} /><small>Pokud se profil později schválí k fyzické exekuci, tato vazba se uzamkne do immutable action snapshotu.</small></label>
       <label className="load-profile-toggle"><input type="checkbox" checked={form.enabled} onChange={(e) => setForm((current) => ({ ...current, enabled: e.target.checked }))} />Profil aktivní</label>
     </div>
     <datalist id="frakon-load-profile-entities">{entityCandidates.map((entity) => <option key={entity.entity_id} value={entity.entity_id}>{String(entity.attributes.friendly_name ?? entity.entity_id)}</option>)}</datalist>
-    <div className="load-profile-binding-note"><b>Entity binding je zatím pouze metadata.</b><span>FRAKON může zobrazit aktuální stav svázané entity, ale nemá zde žádnou cestu k jejímu zapnutí nebo vypnutí.</span></div>
+    <div className="load-profile-binding-note"><b>Entity binding je bezpečnostně významný cíl exekuce.</b><span>Fyzické `turn_on` může vzniknout pouze z pevně svázané a znovu ověřené entity přes allowlisted executor; klient nemůže dodat vlastní service, target ani service data.</span></div>
     <div className="load-profile-actions"><button className="primary-action" disabled={!entryId || !hass} onClick={save}>{editing ? "Uložit změny" : "Přidat profil"}</button>{editing ? <button className="secondary-action" onClick={resetForm}>Zrušit úpravu</button> : null}<span>{status}</span></div>
 
     <div className="load-profile-runtime">
@@ -221,5 +222,6 @@ export function LoadProfilesCard({ hass, entryId }: { hass?: HomeAssistant; entr
     {preview ? <div className="load-profile-preview"><div><span className="eyebrow">Preview · {preview.profile.name}</span><h3>{preview.available && preview.plan ? `${formatTime(preview.plan.starts_at)} → ${formatTime(preview.plan.ends_at)}` : "Není dostupný vhodný interval"}</h3></div>{preview.plan ? <div className="load-profile-preview__metrics"><div><span>Průměrná cena</span><b>{formatPrice(preview.plan.average_czk_kwh)}</b></div><div><span>Rozsah ceny</span><b>{formatPrice(preview.plan.minimum_czk_kwh)} – {formatPrice(preview.plan.maximum_czk_kwh)}</b></div><div><span>Energie</span><b>{preview.plan.estimated_energy_kwh.toLocaleString("cs-CZ", { maximumFractionDigits: 2 })} kWh</b></div><div><span>Odhad ceny</span><b>{preview.plan.estimated_cost_czk.toLocaleString("cs-CZ", { maximumFractionDigits: 2 })} Kč</b></div></div> : null}<p>Read-only plán. FRAKON tímto krokem nic nezapíná ani nevypíná.</p></div> : null}
 
     <LoadExecutionPolicyPanel hass={hass} entryId={entryId} profiles={profiles} earliestStart={earliestStart} deadline={deadline} />
+    <LoadExecutionRuntimePanel hass={hass} entryId={entryId} />
   </article>;
 }
