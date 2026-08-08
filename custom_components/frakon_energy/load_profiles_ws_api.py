@@ -10,6 +10,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 
 from .const import DOMAIN
+from .load_profile_phase_projection import build_load_profile_phase_projection
 from .load_profiles import (
     PHASE_TOPOLOGIES,
     PHASE_TOPOLOGY_UNKNOWN,
@@ -23,6 +24,7 @@ from .load_profiles import (
 COMMAND_LIST = f"{DOMAIN}/load_profiles/list"
 COMMAND_UPSERT = f"{DOMAIN}/load_profiles/upsert"
 COMMAND_DELETE = f"{DOMAIN}/load_profiles/delete"
+COMMAND_PHASE_PREVIEW = f"{DOMAIN}/load_profiles/phase_preview"
 _REGISTERED_KEY = "load_profiles_websocket_registered"
 
 
@@ -43,6 +45,22 @@ def _payload(entry: ConfigEntry) -> dict[str, Any]:
         "phase_model_execution_active": False,
         "read_only_execution": True,
     }
+
+
+async def async_phase_preview(
+    hass: HomeAssistant,
+    *,
+    entry_id: str,
+    profile_id: str,
+) -> dict[str, Any]:
+    """Return a read-only phase-capacity projection for one persisted profile."""
+    entry = _entry(hass, entry_id)
+    return build_load_profile_phase_projection(
+        hass,
+        entry_id=entry.entry_id,
+        options=entry.options,
+        profile_id=profile_id,
+    ).as_dict()
 
 
 @callback
@@ -136,7 +154,36 @@ def async_register_load_profiles_websocket(hass: HomeAssistant) -> None:
             return
         connection.send_result(msg["id"], _payload(entry))
 
+    @websocket_api.websocket_command(
+        {
+            vol.Required("type"): COMMAND_PHASE_PREVIEW,
+            vol.Required("entry_id"): str,
+            vol.Required("profile_id"): str,
+        }
+    )
+    @websocket_api.async_response
+    async def websocket_phase_preview(
+        hass: HomeAssistant,
+        connection: websocket_api.ActiveConnection,
+        msg: dict[str, Any],
+    ) -> None:
+        connection.require_admin()
+        try:
+            result = await async_phase_preview(
+                hass,
+                entry_id=msg["entry_id"],
+                profile_id=msg["profile_id"],
+            )
+        except (ValueError, TypeError) as err:
+            connection.send_error(msg["id"], "invalid_load_profile_phase_preview", str(err))
+            return
+        except Exception as err:
+            connection.send_error(msg["id"], "load_profile_phase_preview_unavailable", str(err))
+            return
+        connection.send_result(msg["id"], result)
+
     websocket_api.async_register_command(hass, websocket_list)
     websocket_api.async_register_command(hass, websocket_upsert)
     websocket_api.async_register_command(hass, websocket_delete)
+    websocket_api.async_register_command(hass, websocket_phase_preview)
     domain_data[_REGISTERED_KEY] = True
