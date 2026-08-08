@@ -12,6 +12,9 @@ from .const import DOMAIN
 from .load_execution_phase_capacity_reservation_status import (
     async_phase_capacity_reservation_status,
 )
+from .load_execution_phase_settlement_runtime_status import (
+    phase_settlement_runtime_status,
+)
 from .load_execution_safety_status import async_execution_safety_status
 
 COMMAND_EXECUTION_SAFETY_STATUS = f"{DOMAIN}/load_execution/safety_status"
@@ -47,6 +50,10 @@ def async_register_load_execution_safety_status_websocket(hass: HomeAssistant) -
                     hass,
                     entry_id=msg["entry_id"],
                 )
+            )
+            result["phase_settlement_runtime"] = phase_settlement_runtime_status(
+                hass,
+                entry_id=msg["entry_id"],
             )
         except ValueError as err:
             connection.send_error(msg["id"], "execution_safety_status_invalid", str(err))
