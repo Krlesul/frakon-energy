@@ -15,11 +15,18 @@ from .site_capacity import (
     build_site_capacity_status,
     update_site_capacity_settings,
 )
+from .site_phase_capacity import (
+    CONF_MAX_PHASE_CURRENT_A,
+    build_site_phase_capacity_status,
+    update_site_phase_capacity_limit,
+)
 from .site_phase_current import build_site_phase_current_status
 
 COMMAND_SITE_CAPACITY_STATUS = f"{DOMAIN}/site_capacity/status"
 COMMAND_SITE_CAPACITY_SET = f"{DOMAIN}/site_capacity/set"
 COMMAND_SITE_PHASE_CURRENT_STATUS = f"{DOMAIN}/site_phase_current/status"
+COMMAND_SITE_PHASE_CAPACITY_STATUS = f"{DOMAIN}/site_phase_capacity/status"
+COMMAND_SITE_PHASE_CAPACITY_SET = f"{DOMAIN}/site_phase_capacity/set"
 _REGISTERED_KEY = "site_capacity_websocket_registered"
 
 
@@ -37,6 +44,16 @@ def _finite_positive_kw(value: Any) -> float:
         raise vol.Invalid("max_grid_import_kw must be numeric") from err
     if not math.isfinite(number) or number <= 0:
         raise vol.Invalid("max_grid_import_kw must be a finite positive number")
+    return number
+
+
+def _finite_positive_amps(value: Any) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as err:
+        raise vol.Invalid("max_phase_current_a must be numeric") from err
+    if not math.isfinite(number) or number <= 0:
+        raise vol.Invalid("max_phase_current_a must be a finite positive number")
     return number
 
 
@@ -60,6 +77,19 @@ async def async_site_phase_current_status(
 ) -> dict[str, Any]:
     entry = _entry(hass, entry_id)
     return build_site_phase_current_status(
+        hass,
+        entry_id=entry_id,
+        options=entry.options,
+    ).as_dict()
+
+
+async def async_site_phase_capacity_status(
+    hass: HomeAssistant,
+    *,
+    entry_id: str,
+) -> dict[str, Any]:
+    entry = _entry(hass, entry_id)
+    return build_site_phase_capacity_status(
         hass,
         entry_id=entry_id,
         options=entry.options,
@@ -121,6 +151,29 @@ def async_register_site_capacity_websocket(hass: HomeAssistant) -> None:
 
     @websocket_api.websocket_command(
         {
+            vol.Required("type"): COMMAND_SITE_PHASE_CAPACITY_STATUS,
+            vol.Required("entry_id"): str,
+        }
+    )
+    @websocket_api.async_response
+    async def websocket_phase_capacity_status(
+        hass: HomeAssistant,
+        connection: websocket_api.ActiveConnection,
+        msg: dict[str, Any],
+    ) -> None:
+        connection.require_admin()
+        try:
+            result = await async_site_phase_capacity_status(hass, entry_id=msg["entry_id"])
+        except ValueError as err:
+            connection.send_error(msg["id"], "site_phase_capacity_status_rejected", str(err))
+            return
+        except Exception as err:
+            connection.send_error(msg["id"], "site_phase_capacity_status_unavailable", str(err))
+            return
+        connection.send_result(msg["id"], result)
+
+    @websocket_api.websocket_command(
+        {
             vol.Required("type"): COMMAND_SITE_CAPACITY_SET,
             vol.Required("entry_id"): str,
             vol.Required(CONF_MAX_GRID_IMPORT_KW): vol.Any(None, _finite_positive_kw),
@@ -166,7 +219,42 @@ def async_register_site_capacity_websocket(hass: HomeAssistant) -> None:
             return
         connection.send_result(msg["id"], result)
 
+    @websocket_api.websocket_command(
+        {
+            vol.Required("type"): COMMAND_SITE_PHASE_CAPACITY_SET,
+            vol.Required("entry_id"): str,
+            vol.Required(CONF_MAX_PHASE_CURRENT_A): vol.Any(None, _finite_positive_amps),
+        }
+    )
+    @websocket_api.async_response
+    async def websocket_phase_capacity_set(
+        hass: HomeAssistant,
+        connection: websocket_api.ActiveConnection,
+        msg: dict[str, Any],
+    ) -> None:
+        connection.require_admin()
+        try:
+            entry = _entry(hass, msg["entry_id"])
+            value = msg[CONF_MAX_PHASE_CURRENT_A]
+            limit = None if value is None else float(value)
+            options = update_site_phase_capacity_limit(entry.options, limit)
+            hass.config_entries.async_update_entry(entry, options=options)
+            result = build_site_phase_capacity_status(
+                hass,
+                entry_id=entry.entry_id,
+                options=options,
+            ).as_dict()
+        except ValueError as err:
+            connection.send_error(msg["id"], "site_phase_capacity_set_rejected", str(err))
+            return
+        except Exception as err:
+            connection.send_error(msg["id"], "site_phase_capacity_set_unavailable", str(err))
+            return
+        connection.send_result(msg["id"], result)
+
     websocket_api.async_register_command(hass, websocket_status)
     websocket_api.async_register_command(hass, websocket_phase_current_status)
+    websocket_api.async_register_command(hass, websocket_phase_capacity_status)
     websocket_api.async_register_command(hass, websocket_set)
+    websocket_api.async_register_command(hass, websocket_phase_capacity_set)
     domain_data[_REGISTERED_KEY] = True
