@@ -198,4 +198,5 @@ def build_site_phase_capacity_status(
         max_utilization_percent=max_utilization,
         any_phase_over_limit=any(item.over_limit for item in phases.values()),
         reason=reason,
+        execution_guard_active=configured,
     )
