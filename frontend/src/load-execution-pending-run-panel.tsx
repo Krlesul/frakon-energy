@@ -6,7 +6,7 @@ type PendingRunSchedulerItem = {
   pending_run_id: string;
   attempt_id: string;
   entity_id: string;
-  status: "scheduled" | "preparing" | "retrying_stop_lease" | "prepared_with_stop_lease" | "delegated_to_start_scheduler" | "existing_lifecycle" | "missed_start_window" | "blocked" | "error" | string;
+  status: "scheduled" | "preparing" | "retrying_stop_lease" | "no_start_needed" | "prepared_with_stop_lease" | "delegated_to_start_scheduler" | "existing_lifecycle" | "missed_start_window" | "blocked" | "error" | string;
   starts_at: string;
   ends_at: string;
   next_wake_at: string | null;
@@ -40,6 +40,7 @@ const STATUS_LABELS: Record<string, string> = {
   scheduled: "Čeká na start",
   preparing: "Připravuji bezpečný lifecycle",
   retrying_stop_lease: "Opakuji pouze stop lease",
+  no_start_needed: "Cíl už byl splněný · bez startu",
   prepared_with_stop_lease: "Prepared + stop lease",
   delegated_to_start_scheduler: "Předáno start scheduleru",
   existing_lifecycle: "Lifecycle už existuje",
@@ -63,7 +64,7 @@ function formatIso(value: string | null): string {
 }
 
 function statusTone(status: string): string {
-  if (["prepared_with_stop_lease", "delegated_to_start_scheduler"].includes(status)) return "ok";
+  if (["no_start_needed", "prepared_with_stop_lease", "delegated_to_start_scheduler"].includes(status)) return "ok";
   if (["missed_start_window", "blocked", "error"].includes(status)) return "danger";
   if (["preparing", "retrying_stop_lease"].includes(status)) return "working";
   return "waiting";
@@ -123,8 +124,8 @@ export function LoadExecutionPendingRunPanel({ hass, entryId }: { hass?: HomeAss
         <div><span>Start</span><b>{formatIso(item.starts_at)}</b></div>
         <div><span>Stop</span><b>{formatIso(item.ends_at)}</b></div>
         <div><span>Next wake</span><b>{item.timer_active ? formatIso(item.next_wake_at) : "bez aktivního timeru"}</b></div>
-        <div><span>Lifecycle</span><b>{item.lifecycle_prepared ? "prepared" : "zatím ne"}</b></div>
-        <div><span>Stop lease</span><b>{item.stop_lease_prepared ? "prepared" : item.retry_count > 0 ? `retry ${item.retry_count}` : "zatím ne"}</b></div>
+        <div><span>Lifecycle</span><b>{item.lifecycle_prepared ? "prepared" : item.status === "no_start_needed" ? "nebyl potřeba" : "zatím ne"}</b></div>
+        <div><span>Stop lease</span><b>{item.stop_lease_prepared ? "prepared" : item.status === "no_start_needed" ? "nebyl potřeba" : item.retry_count > 0 ? `retry ${item.retry_count}` : "zatím ne"}</b></div>
         {item.last_error ? <small>{item.last_error}</small> : null}
       </article>)}
     </div>
