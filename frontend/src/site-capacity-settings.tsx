@@ -5,10 +5,13 @@ type ConfigEntry = { entry_id: string; domain?: string };
 type WsConnection = { sendMessagePromise?: <T>(message: Record<string, unknown>) => Promise<T> };
 type SiteCapacityStatus = {
   entry_id: string;
-  status: "not_configured" | "topology_not_ready" | "source_unavailable" | "within_limit" | "over_limit" | string;
+  status: "not_configured" | "topology_not_ready" | "source_unavailable" | "source_stale" | "within_limit" | "over_limit" | string;
   configured: boolean;
   topology_ready: boolean;
   source_available: boolean;
+  source_fresh: boolean;
+  source_age_seconds: number | null;
+  max_source_age_seconds: number;
   max_grid_import_kw: number | null;
   current_grid_import_kw: number | null;
   grid_headroom_kw: number | null;
@@ -63,8 +66,12 @@ function formatExpiry(value: number | null): string {
   if (value === null) return "—";
   const remaining = Math.max(0, value - Math.floor(Date.now() / 1000));
   if (remaining < 60) return `${remaining} s`;
-  const minutes = Math.ceil(remaining / 60);
-  return `${minutes} min`;
+  return `${Math.ceil(remaining / 60)} min`;
+}
+
+function formatAge(value: number | null): string {
+  if (value === null) return "—";
+  return `${Math.round(value)} s`;
 }
 
 async function callWs<T>(hass: HomeAssistant, message: Record<string, unknown>): Promise<T> {
@@ -83,6 +90,7 @@ function statusLabel(status: SiteCapacityStatus["status"]): string {
   if (status === "over_limit") return "Limit překročen";
   if (status === "topology_not_ready") return "Topologie není připravená";
   if (status === "source_unavailable") return "Měření není dostupné";
+  if (status === "source_stale") return "Měření je zastaralé";
   if (status === "not_configured") return "Limit není nastaven";
   return status;
 }
@@ -93,6 +101,7 @@ export function SiteCapacitySettings({ hass }: { hass?: HomeAssistant }) {
   const [safety, setSafety] = useState<ExecutionSafetyStatus | null>(null);
   const [safetyError, setSafetyError] = useState<string | null>(null);
   const [limitInput, setLimitInput] = useState("");
+  const [guardEnabled, setGuardEnabled] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const lastSourceFingerprint = useRef<string | null>(null);
@@ -109,6 +118,7 @@ export function SiteCapacitySettings({ hass }: { hass?: HomeAssistant }) {
       setEntryId(entry.entry_id);
       setStatus(value);
       setLimitInput(value.max_grid_import_kw === null ? "" : String(value.max_grid_import_kw));
+      setGuardEnabled(value.execution_guard_active);
       setError(null);
 
       try {
@@ -168,12 +178,14 @@ export function SiteCapacitySettings({ hass }: { hass?: HomeAssistant }) {
         type: "frakon_energy/site_capacity/set",
         entry_id: entryId,
         max_grid_import_kw: parsed,
+        execution_guard_enabled: clear ? false : guardEnabled,
       });
       setStatus(value);
       setLimitInput(value.max_grid_import_kw === null ? "" : String(value.max_grid_import_kw));
+      setGuardEnabled(value.execution_guard_active);
       window.dispatchEvent(new CustomEvent(PROFILE_CHANGED_EVENT));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Limit přívodu se nepodařilo uložit.");
+      setError(reason instanceof Error ? reason.message : "Nastavení kapacity přívodu se nepodařilo uložit.");
     } finally {
       setBusy(false);
     }
@@ -185,23 +197,18 @@ export function SiteCapacitySettings({ hass }: { hass?: HomeAssistant }) {
   return <article className="chart-card technology-settings site-capacity-settings">
     <div className="technology-settings__header">
       <div><span className="eyebrow">Kapacita přívodu</span><h2>Rezerva odběru ze sítě</h2></div>
-      <span className={`entity-badge ${status?.status === "over_limit" || guard?.currently_blocks_all_new_starts ? "warn" : ""}`}>{status ? statusLabel(status.status) : "Načítám…"}</span>
+      <span className={`entity-badge ${status?.status === "over_limit" || status?.status === "source_stale" || guard?.currently_blocks_all_new_starts ? "warn" : ""}`}>{status ? statusLabel(status.status) : "Načítám…"}</span>
     </div>
-    <p className="settings-copy">Zadej skutečný maximální odběr v kW, který má FRAKON při řízených startech respektovat. Hodnota se neodhaduje z jističe ani napětí. Pokud je limit nastavený, execution guard kontroluje živý odběr, rezervuje kapacitu právě startujícím spotřebičům a při nedostatečné rezervě nový start bezpečně zablokuje.</p>
+    <p className="settings-copy">Nastavený limit slouží vždy jako diagnostika rezervy přívodu. Blokování řízených startů je samostatná volba. Po zapnutí execution guard vyžaduje čerstvé hlavní měření, započítává rezervace právě startujících spotřebičů a při nedostatečné kapacitě nový start bezpečně odmítne.</p>
 
     <div className="role-list">
       <div className="role-row">
         <div className="role-row__label"><b>Maximální odběr ze sítě · kW</b><small>Musí odpovídat hlavnímu měření celého domu; může obsahovat i vlastní bezpečnostní rezervu.</small></div>
-        <input
-          type="number"
-          min="0.1"
-          step="0.1"
-          value={limitInput}
-          disabled={busy || !hass}
-          placeholder="např. 15.0"
-          onChange={(event) => setLimitInput(event.target.value)}
-          onKeyDown={(event) => { if (event.key === "Enter") void saveLimit(false); }}
-        />
+        <input type="number" min="0.1" step="0.1" value={limitInput} disabled={busy || !hass} placeholder="např. 15.0" onChange={(event) => setLimitInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void saveLimit(false); }} />
+      </div>
+      <div className="role-row">
+        <div className="role-row__label"><b>Vynucovat limit při řízených startech</b><small>Zapni pouze tehdy, když je zdroj odběru skutečně hlavní měření celého domu. Existující instalace s dříve aktivním limitem zůstávají po aktualizaci chráněné.</small></div>
+        <label><input type="checkbox" checked={guardEnabled} disabled={busy || !hass || !limitInput.trim()} onChange={(event) => setGuardEnabled(event.target.checked)} /> {guardEnabled ? "Execution guard aktivní" : "Pouze diagnostika"}</label>
         <div className="role-actions"><button disabled={busy || !hass} onClick={() => void saveLimit(false)}>Uložit</button>{status?.configured ? <button disabled={busy} onClick={() => void saveLimit(true)}>Zrušit limit</button> : null}</div>
       </div>
     </div>
@@ -213,19 +220,19 @@ export function SiteCapacitySettings({ hass }: { hass?: HomeAssistant }) {
       <span>Rezerva měření <b>{formatKw(status.grid_headroom_kw)}</b></span>
       <span>Překročení <b>{formatKw(status.grid_over_limit_kw)}</b></span>
       <span>Využití <b>{formatPercent(status.utilization_percent)}</b></span>
+      <span>Čerstvost měření <b>{status.source_fresh ? "OK" : "nevyhovuje"}</b></span>
+      <span>Stáří měření <b>{formatAge(status.source_age_seconds)}</b></span>
+      <span>Guard <b>{status.execution_guard_active ? "aktivní" : "vypnutý"}</b></span>
       <span>Rezervováno starty <b>{formatKw(reservations?.reserved_power_kw ?? null)}</b></span>
       <span>Aktivní rezervace <b>{reservations?.active_count ?? "—"}</b></span>
       <span>Nejbližší expirace <b>{formatExpiry(reservations?.next_expiry_at ?? null)}</b></span>
     </div> : null}
     {reservations && !reservations.storage_healthy ? <div className="settings-error">Stav rezervací není důvěryhodný: {reservations.last_error ?? "neznámá chyba"}</div> : null}
     {safetyError ? <p className="missing-reason">Rozšířená bezpečnostní diagnostika není dostupná: {safetyError}</p> : null}
-    {status ? <p className="missing-reason">{status.reason}{status.source_entity_id ? ` Zdroj: ${status.source_entity_id}.` : ""} Execution guard: {status.configured ? "aktivní" : "vypnutý"}{guard?.blocking_reason ? ` · blokuje nové starty: ${guard.blocking_reason}` : ""}.</p> : null}
+    {status ? <p className="missing-reason">{status.reason}{status.source_entity_id ? ` Zdroj: ${status.source_entity_id}.` : ""} Execution guard: {status.execution_guard_active ? "aktivní" : "vypnutý"}{guard?.blocking_reason ? ` · blokuje nové starty: ${guard.blocking_reason}` : ""}.</p> : null}
     {reservations?.reservations?.length ? <div className="role-list">
       {reservations.reservations.map((reservation) => <div className="role-row" key={reservation.lifecycle_id}>
-        <div className="role-row__label">
-          <b>Rezervace {formatKw(reservation.power_kw)}</b>
-          <small>{reservation.lifecycle_id} · {reservation.attempt_id} · expirace za {formatExpiry(reservation.expires_at)}</small>
-        </div>
+        <div className="role-row__label"><b>Rezervace {formatKw(reservation.power_kw)}</b><small>{reservation.lifecycle_id} · {reservation.attempt_id} · expirace za {formatExpiry(reservation.expires_at)}</small></div>
       </div>)}
     </div> : null}
   </article>;
