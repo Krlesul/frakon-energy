@@ -75,13 +75,19 @@ type PhaseCapacityReservation = {
   created_at: number;
   expires_at: number;
 };
+type PhaseMap = { L1: number | null; L2: number | null; L3: number | null };
 type PhaseCapacityReservationSummary = {
   storage_healthy: boolean;
   last_error: string | null;
   active_count: number | null;
-  reserved_current_a: { L1: number | null; L2: number | null; L3: number | null };
+  reserved_current_a: PhaseMap;
   next_expiry_at: number | null;
   reservations: PhaseCapacityReservation[];
+  capacity_healthy: boolean;
+  capacity_error: string | null;
+  effective_current_a: PhaseMap;
+  effective_headroom_a: PhaseMap;
+  effective_over_limit_a: PhaseMap;
 };
 type ExecutionSafetyStatus = {
   site_capacity_guard?: {
@@ -358,21 +364,30 @@ export function SiteCapacitySettings({ hass }: { hass?: HomeAssistant }) {
       <span>Rezervováno L1 <b>{formatA(phaseReservations?.reserved_current_a.L1 ?? null)}</b></span>
       <span>Rezervováno L2 <b>{formatA(phaseReservations?.reserved_current_a.L2 ?? null)}</b></span>
       <span>Rezervováno L3 <b>{formatA(phaseReservations?.reserved_current_a.L3 ?? null)}</b></span>
+      <span>Efektivní rezerva L1 <b>{formatA(phaseReservations?.effective_headroom_a.L1 ?? null)}</b></span>
+      <span>Efektivní rezerva L2 <b>{formatA(phaseReservations?.effective_headroom_a.L2 ?? null)}</b></span>
+      <span>Efektivní rezerva L3 <b>{formatA(phaseReservations?.effective_headroom_a.L3 ?? null)}</b></span>
       <span>Aktivní fázové rezervace <b>{phaseReservations?.active_count ?? "—"}</b></span>
       <span>Nejbližší expirace <b>{formatExpiry(phaseReservations?.next_expiry_at ?? null)}</b></span>
     </div> : null}
     {phaseCapacity ? <div className="role-list">
       {["L1", "L2", "L3"].map((phase) => {
+        const key = phase as "L1" | "L2" | "L3";
         const item = phaseCapacity.phases[phase];
         if (!item) return null;
-        const reserved = phaseReservations?.reserved_current_a[phase as "L1" | "L2" | "L3"] ?? null;
+        const reserved = phaseReservations?.reserved_current_a[key] ?? null;
+        const effectiveCurrent = phaseReservations?.effective_current_a[key] ?? null;
+        const effectiveHeadroom = phaseReservations?.effective_headroom_a[key] ?? null;
+        const effectiveOver = phaseReservations?.effective_over_limit_a[key] ?? null;
         return <div className="role-row" key={phase}>
           <div className="role-row__label"><b>{phase} · {formatA(item.current_a)}</b><small>{item.source_entity_id ?? "měření není přiřazeno"} · {item.reason}</small></div>
           <div className="discovery-summary">
             <span>Rezerva měření <b>{formatA(item.headroom_a)}</b></span>
             <span>Rezervováno starty <b>{formatA(reserved)}</b></span>
-            <span>Využití <b>{formatPercent(item.utilization_percent)}</b></span>
-            <span>Překročení <b>{formatA(item.over_limit_a)}</b></span>
+            <span>Efektivní proud <b>{formatA(effectiveCurrent)}</b></span>
+            <span>Pro další start zbývá <b>{formatA(effectiveHeadroom)}</b></span>
+            <span>Efektivní překročení <b>{formatA(effectiveOver)}</b></span>
+            <span>Využití měření <b>{formatPercent(item.utilization_percent)}</b></span>
           </div>
         </div>;
       })}
@@ -381,6 +396,7 @@ export function SiteCapacitySettings({ hass }: { hass?: HomeAssistant }) {
 
     {reservations && !reservations.storage_healthy ? <div className="settings-error">Stav rezervací není důvěryhodný: {reservations.last_error ?? "neznámá chyba"}</div> : null}
     {phaseReservations && !phaseReservations.storage_healthy ? <div className="settings-error">Stav fázových rezervací není důvěryhodný: {phaseReservations.last_error ?? "neznámá chyba"}</div> : null}
+    {phaseReservations?.storage_healthy && !phaseReservations.capacity_healthy ? <div className="settings-error">Efektivní fázovou rezervu nelze autoritativně spočítat: {phaseReservations.capacity_error ?? "kapacita fází není připravená"}</div> : null}
     {safetyError ? <p className="missing-reason">Rozšířená bezpečnostní diagnostika není dostupná: {safetyError}</p> : null}
     {status ? <p className="missing-reason">{status.reason}{status.source_entity_id ? ` Zdroj: ${status.source_entity_id}.` : ""} Execution guard: {status.execution_guard_active ? "aktivní" : "vypnutý"}{guard?.blocking_reason ? ` · blokuje nové starty: ${guard.blocking_reason}` : ""}.</p> : null}
     {reservations?.reservations?.length ? <div className="role-list">
