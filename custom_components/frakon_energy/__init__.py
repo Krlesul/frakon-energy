@@ -18,6 +18,7 @@ from .ha_entity_registry_adapter import registry_records_from_home_assistant
 from .hdo_coordinator import CezHdoCoordinator
 from .load_execution_action_snapshot_ws_api import async_register_load_execution_action_snapshot_websocket
 from .load_execution_approval_ws_api import async_register_load_execution_approval_preview_websocket
+from .load_execution_arm_ws_api import async_register_load_execution_arm_websocket
 from .load_execution_bounded_dispatch_gate_ws_api import async_register_load_execution_bounded_dispatch_gate_websocket
 from .load_execution_consume_ws_api import async_register_load_execution_consume_websocket
 from .load_execution_dispatch_gate_ws_api import async_register_load_execution_dispatch_gate_websocket
@@ -115,6 +116,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async_register_load_execution_stop_dispatcher_websocket(hass)
     async_register_load_execution_start_dispatcher_websocket(hass)
     async_register_load_execution_start_scheduler_websocket(hass)
+    async_register_load_execution_arm_websocket(hass)
     async_register_load_execution_safety_status_websocket(hass)
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
