@@ -105,10 +105,14 @@ export function SiteCapacitySettings({ hass }: { hass?: HomeAssistant }) {
 
   const saveLimit = async (clear = false) => {
     if (!hass || !entryId) return;
-    const parsed = clear ? null : Number(limitInput.replace(",", "."));
-    if (!clear && (!Number.isFinite(parsed) || parsed <= 0)) {
-      setError("Maximální odběr musí být kladné číslo v kW.");
-      return;
+    let parsed: number | null = null;
+    if (!clear) {
+      const candidate = Number(limitInput.replace(",", "."));
+      if (!Number.isFinite(candidate) || candidate <= 0) {
+        setError("Maximální odběr musí být kladné číslo v kW.");
+        return;
+      }
+      parsed = candidate;
     }
     setBusy(true);
     setError(null);
