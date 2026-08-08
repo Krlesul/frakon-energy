@@ -19,6 +19,7 @@ from .load_execution_lifecycle_runtime import lifecycle_repository
 from .load_execution_site_capacity_gate import (
     CAPACITY_GATE_BYPASSED,
     CAPACITY_GATE_READY,
+    REASON_GUARD_DISABLED,
     SiteCapacityGateDecision,
     evaluate_site_capacity_execution_gate,
 )
@@ -135,6 +136,14 @@ async def async_final_capacity_recheck(
             can_start=True,
             guard_active=False,
         )
+    if not capacity.execution_guard_active:
+        return _result(
+            status=FINAL_RECHECK_BYPASSED,
+            reason=REASON_GUARD_DISABLED,
+            capacity=capacity,
+            can_start=True,
+            guard_active=False,
+        )
 
     dispatching = await _dispatching_records(hass, entry_id)
     if not dispatching:
@@ -161,9 +170,7 @@ async def async_final_capacity_recheck(
         repository = capacity_reservation_repository(hass, entry_id)
         active = await repository.async_active(now=now_ts)
     except Exception as err:
-        raise FinalCapacityRecheckError(
-            f"capacity reservation state unavailable: {err}"
-        ) from err
+        raise FinalCapacityRecheckError(f"capacity reservation state unavailable: {err}") from err
 
     other = tuple(item for item in active if item.lifecycle_id != lifecycle.lifecycle_id)
     reserved_other = sum(item.power_kw for item in other)
@@ -195,13 +202,9 @@ async def async_final_capacity_recheck(
             now=now_ts,
         )
     except CapacityReservationError as err:
-        raise FinalCapacityRecheckError(
-            f"capacity reservation could not be persisted: {err}"
-        ) from err
+        raise FinalCapacityRecheckError(f"capacity reservation could not be persisted: {err}") from err
     except Exception as err:
-        raise FinalCapacityRecheckError(
-            f"capacity reservation persistence unavailable: {err}"
-        ) from err
+        raise FinalCapacityRecheckError(f"capacity reservation persistence unavailable: {err}") from err
 
     return _result(
         status=FINAL_RECHECK_READY,
@@ -224,7 +227,7 @@ async def async_require_final_capacity_recheck(
     *,
     entry_id: str,
 ) -> FinalCapacityRecheck:
-    """Fail closed unless final capacity is reserved for this exact start."""
+    """Fail closed unless final capacity enforcement explicitly allows start."""
     result = await async_final_capacity_recheck(hass, entry_id=entry_id)
     if not result.can_start:
         raise FinalCapacityRecheckError(

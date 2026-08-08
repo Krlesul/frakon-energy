@@ -73,15 +73,10 @@ async def _item(
     record: ExecutionLifecycleRecord,
     scheduler_status_by_start: dict[str, str],
 ) -> ExecutionSafetyItem:
-    proof = await async_start_stop_ownership_proof(
-        hass,
-        entry_id=entry_id,
-        start=record,
+    proof = await async_start_stop_ownership_proof(hass, entry_id=entry_id, start=record)
+    stop = await stop_lifecycle_repository(hass, entry_id).async_get_by_start_lifecycle_id(
+        record.lifecycle_id
     )
-    stop = await stop_lifecycle_repository(
-        hass,
-        entry_id,
-    ).async_get_by_start_lifecycle_id(record.lifecycle_id)
     required = record.state in _OWNERSHIP_REQUIRED_STATES
     unsafe_reason = None
     if required and not proof.ownership_ready:
@@ -106,6 +101,7 @@ async def _item(
 
 def _capacity_guard_summary(capacity: Any) -> dict[str, Any]:
     configured = bool(capacity.configured)
+    guard_active = bool(capacity.execution_guard_active)
     data_ready = (
         not configured
         or (
@@ -121,7 +117,7 @@ def _capacity_guard_summary(capacity: Any) -> dict[str, Any]:
         )
     )
     current_limit_exceeded = configured and capacity.status == STATUS_OVER_LIMIT
-    if not configured:
+    if not guard_active:
         blocking_reason = None
     elif not capacity.topology_ready or capacity.status == STATUS_TOPOLOGY_NOT_READY:
         blocking_reason = "site_capacity_topology_not_ready"
@@ -135,9 +131,9 @@ def _capacity_guard_summary(capacity: Any) -> dict[str, Any]:
         blocking_reason = None
     return {
         "configured": configured,
-        "guard_active": configured,
+        "guard_active": guard_active,
         "data_ready": data_ready,
-        "currently_blocks_all_new_starts": blocking_reason is not None,
+        "currently_blocks_all_new_starts": guard_active and blocking_reason is not None,
         "blocking_reason": blocking_reason,
         "status": capacity.status,
         "reason": capacity.reason,
@@ -150,7 +146,7 @@ def _capacity_guard_summary(capacity: Any) -> dict[str, Any]:
         "source_fresh": capacity.source_fresh,
         "source_age_seconds": capacity.source_age_seconds,
         "max_source_age_seconds": capacity.max_source_age_seconds,
-        "plan_specific_headroom_check_required": configured and data_ready and not current_limit_exceeded,
+        "plan_specific_headroom_check_required": guard_active and data_ready and not current_limit_exceeded,
         "read_only": True,
         "service_call_performed": False,
         "execution_performed": False,
@@ -164,10 +160,7 @@ async def _capacity_reservation_summary(
 ) -> dict[str, Any]:
     now_ts = int(time.time())
     try:
-        reservations = await capacity_reservation_repository(
-            hass,
-            entry_id,
-        ).async_snapshot(now=now_ts)
+        reservations = await capacity_reservation_repository(hass, entry_id).async_snapshot(now=now_ts)
     except Exception as err:
         return {
             "storage_healthy": False,
@@ -210,16 +203,9 @@ async def async_execution_safety_status(
     entry = hass.config_entries.async_get_entry(entry_id)
     if entry is None:
         raise ValueError(f"config entry not found: {entry_id}")
-    capacity = build_site_capacity_status(
-        hass,
-        entry_id=entry_id,
-        options=entry.options,
-    )
+    capacity = build_site_capacity_status(hass, entry_id=entry_id, options=entry.options)
     capacity_guard = _capacity_guard_summary(capacity)
-    capacity_reservations = await _capacity_reservation_summary(
-        hass,
-        entry_id=entry_id,
-    )
+    capacity_reservations = await _capacity_reservation_summary(hass, entry_id=entry_id)
 
     start_recovery = lifecycle_recovery_summary(hass, entry_id)
     stop_recovery = stop_recovery_summary(hass, entry_id)
@@ -261,9 +247,7 @@ async def async_execution_safety_status(
         and pending_runtime.started
         and pending_runtime.healthy
     )
-    execution_armed = bool(
-        arm_status.get("storage_healthy") and arm_status.get("armed")
-    )
+    execution_armed = bool(arm_status.get("storage_healthy") and arm_status.get("armed"))
     explicit_start_executor_available = (
         start_recovery_ready and stop_runtime_ready and execution_armed
     )
