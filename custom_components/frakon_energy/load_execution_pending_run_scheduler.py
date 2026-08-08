@@ -31,7 +31,11 @@ from .load_execution_lifecycle_runtime import lifecycle_repository
 from .load_execution_lifecycle_ws_api import async_prepare_execution_lifecycle
 from .load_execution_pending_run import ExecutionPendingRun
 from .load_execution_pending_run_runtime import pending_run_repository
-from .load_execution_readiness import DEFAULT_START_GRACE_SECONDS
+from .load_execution_readiness import (
+    DEFAULT_START_GRACE_SECONDS,
+    READINESS_ALREADY_SATISFIED,
+)
+from .load_execution_readiness_ws_api import async_execution_readiness
 from .load_execution_start_scheduler import start_scheduler
 from .load_execution_stop_recovery import STOP_RECOVERY_OK, stop_recovery_summary
 from .load_execution_stop_scheduler import stop_scheduler
@@ -44,6 +48,7 @@ STOP_LEASE_RETRY_SECONDS = 5
 STATUS_SCHEDULED = "scheduled"
 STATUS_PREPARING = "preparing"
 STATUS_RETRYING_STOP_LEASE = "retrying_stop_lease"
+STATUS_NO_START_NEEDED = "no_start_needed"
 STATUS_PREPARED_WITH_STOP_LEASE = "prepared_with_stop_lease"
 STATUS_DELEGATED = "delegated_to_start_scheduler"
 STATUS_EXISTING_LIFECYCLE = "existing_lifecycle"
@@ -232,6 +237,39 @@ class ExecutionPendingRunScheduler:
     def _clear_retry(self, attempt_id: str) -> None:
         self._retry_count_by_attempt.pop(attempt_id, None)
 
+    async def _already_satisfied_after_prepare_rejection(
+        self,
+        record: ExecutionPendingRun,
+        *,
+        now: datetime,
+    ) -> bool:
+        """Reclassify only the exact authoritative already-satisfied outcome."""
+        try:
+            payload = await async_execution_readiness(
+                self._hass,
+                entry_id=self._entry_id,
+                attempt_id=record.attempt_id,
+                plan_value=record.plan.as_dict(),
+                now=now,
+            )
+        except Exception:
+            return False
+        readiness = payload.get("readiness")
+        if not isinstance(readiness, dict):
+            return False
+        if readiness.get("status") != READINESS_ALREADY_SATISFIED:
+            return False
+        self._clear_retry(record.attempt_id)
+        self._set_status(
+            record,
+            status=STATUS_NO_START_NEEDED,
+            now=now,
+            lifecycle_prepared=False,
+            stop_lease_prepared=False,
+            retry_count=0,
+        )
+        return True
+
     def _schedule_stop_lease_retry(
         self,
         record: ExecutionPendingRun,
@@ -391,6 +429,11 @@ class ExecutionPendingRunScheduler:
                     latest = await lifecycles.async_get_by_attempt_id(attempt_id)
                 except Exception:
                     latest = None
+                if latest is None and await self._already_satisfied_after_prepare_rejection(
+                    record,
+                    now=now,
+                ):
+                    return
                 if (
                     latest is not None
                     and latest.state == STATE_PREPARED
