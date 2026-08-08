@@ -16,6 +16,7 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
+from .load_execution_arm import async_execution_arm_status
 from .load_execution_bounded_dispatch_gate import (
     BOUNDED_GATE_ALREADY_SATISFIED,
     BOUNDED_GATE_BLOCKED,
@@ -52,6 +53,7 @@ from .load_execution_stop_scheduler import stop_scheduler
 _RUNTIME_KEY = "load_execution_start_schedulers_by_entry"
 
 STATUS_WAITING_STOP_LEASE = "waiting_for_stop_lease"
+STATUS_DISARMED = "disarmed"
 STATUS_STARTING = "starting"
 STATUS_STARTED_VERIFIED = "started_verified"
 STATUS_STARTED_PENDING_VERIFICATION = "started_pending_verification"
@@ -245,6 +247,31 @@ class ExecutionStartScheduler:
                     last_error=f"unexpected bounded gate status: {status}/{reason}",
                 )
                 return
+
+            # No-op completion remains allowed while DISARMED because it cannot
+            # cross a physical start boundary. A real READY start requires ARM.
+            if status == BOUNDED_GATE_READY:
+                arm_status = await async_execution_arm_status(self._hass, self._entry_id)
+                if not arm_status.get("storage_healthy"):
+                    self._status_by_attempt[record.attempt_id] = StartSchedulerStatus(
+                        attempt_id=record.attempt_id,
+                        lifecycle_id=record.lifecycle_id,
+                        entity_id=record.entity_id,
+                        status=STATUS_ERROR,
+                        last_processed_at=timestamp,
+                        last_error=f"execution_arm_unavailable:{arm_status.get('last_error')}",
+                    )
+                    return
+                if not arm_status.get("armed"):
+                    self._status_by_attempt[record.attempt_id] = StartSchedulerStatus(
+                        attempt_id=record.attempt_id,
+                        lifecycle_id=record.lifecycle_id,
+                        entity_id=record.entity_id,
+                        status=STATUS_DISARMED,
+                        last_processed_at=timestamp,
+                        last_error="physical start execution is DISARMED",
+                    )
+                    return
 
             self._status_by_attempt[record.attempt_id] = StartSchedulerStatus(
                 attempt_id=record.attempt_id,

@@ -1,9 +1,10 @@
 """Crash-safe bounded physical start dispatcher for FRAKON Energy.
 
 This is the first execution path allowed to turn a bounded load on. It can cross
-that physical boundary only after the final bounded gate passes, the autonomous
-stop runtime is healthy, start ``dispatching`` is durable, and the exact stop
-lifecycle ownership has already been persisted and proven cross-store.
+that physical boundary only after the final bounded gate passes, the persistent
+execution interlock is ARMED, the autonomous stop runtime is healthy, start
+``dispatching`` is durable, and the exact stop lifecycle ownership has already
+been persisted and proven cross-store.
 """
 
 from __future__ import annotations
@@ -15,6 +16,12 @@ from typing import Any
 from homeassistant.core import Context, HomeAssistant
 
 from .const import DOMAIN
+from .load_execution_arm import (
+    ExecutionArmError,
+    ExecutionDisarmedError,
+    async_require_execution_armed,
+    execution_arm_guard,
+)
 from .load_execution_bounded_dispatch_gate import (
     BOUNDED_GATE_ALREADY_SATISFIED,
     BOUNDED_GATE_READY,
@@ -272,6 +279,10 @@ async def async_dispatch_bounded_start(
             raise StartDispatchError("bounded start is missing its durable stop lease")
         if not _scheduler_ready(hass, entry_id):
             raise StartDispatchError("autonomous stop scheduler became unhealthy before start")
+        try:
+            await async_require_execution_armed(hass, entry_id)
+        except ExecutionArmError as err:
+            raise StartDispatchError(str(err)) from err
 
         current_start = await start_repository.async_get_by_attempt_id(attempt_id)
         if current_start != gated_start:
@@ -348,16 +359,48 @@ async def async_dispatch_bounded_start(
                 f"; stop abort error={stop_abort_err}; start abort error={start_abort_err}"
             )
 
-        try:
-            await hass.services.async_call(
-                persisted_dispatching.service_domain,
-                persisted_dispatching.service_name,
-                {},
-                blocking=True,
-                context=context,
-                target={"entity_id": persisted_dispatching.entity_id},
+        # ARM/DISARM changes and the actual service-call boundary share this lock.
+        # Therefore, once DISARM returns, no later turn_on can cross the boundary.
+        arm_error: ExecutionArmError | None = None
+        call_error: Exception | None = None
+        async with execution_arm_guard(hass, entry_id):
+            try:
+                await async_require_execution_armed(hass, entry_id)
+            except ExecutionArmError as err:
+                arm_error = err
+            else:
+                try:
+                    await hass.services.async_call(
+                        persisted_dispatching.service_domain,
+                        persisted_dispatching.service_name,
+                        {},
+                        blocking=True,
+                        context=context,
+                        target={"entity_id": persisted_dispatching.entity_id},
+                    )
+                except Exception as err:
+                    call_error = err
+
+        if arm_error is not None:
+            reason = (
+                "execution_disarmed_before_start_call"
+                if isinstance(arm_error, ExecutionDisarmedError)
+                else "execution_arm_unavailable_before_start_call"
             )
-        except Exception as call_err:
+            stop_abort_err, start_abort_err = await _abort_before_start_call(
+                hass,
+                entry_id=entry_id,
+                start_dispatching=persisted_dispatching,
+                stop_owned=persisted_stop,
+                reason=reason,
+                now_ts=now_ts,
+            )
+            raise StartDispatchError(
+                f"physical start blocked by execution interlock: {arm_error}"
+                f"; stop abort error={stop_abort_err}; start abort error={start_abort_err}"
+            ) from arm_error
+
+        if call_error is not None:
             recovery_err = await _persist_start_unknown_recovery(
                 hass,
                 entry_id=entry_id,
@@ -367,8 +410,8 @@ async def async_dispatch_bounded_start(
             await async_refresh_stop_scheduler_if_started(hass, entry_id)
             detail = f"; recovery persistence also failed: {recovery_err}" if recovery_err else ""
             raise StartDispatchUnknownOutcomeError(
-                f"physical start call outcome is unknown: {call_err}{detail}"
-            ) from call_err
+                f"physical start call outcome is unknown: {call_error}{detail}"
+            ) from call_error
 
         confirmed = confirm_dispatch(
             persisted_dispatching,

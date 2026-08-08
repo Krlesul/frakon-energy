@@ -23,6 +23,7 @@ from custom_components.frakon_energy.load_execution_start_dispatcher import (
     StartDispatchUnknownOutcomeError,
 )
 from custom_components.frakon_energy.load_execution_start_scheduler import (
+    STATUS_DISARMED,
     STATUS_RECOVERY_REVIEW,
     STATUS_STARTED_VERIFIED,
     STATUS_VERIFIED,
@@ -72,6 +73,8 @@ def _wire_dependencies(
     stop_healthy: bool = True,
     start_recovery: str | None = None,
     stop_recovery: str | None = None,
+    armed: bool = True,
+    arm_storage_healthy: bool = True,
 ) -> None:
     monkeypatch.setattr(
         scheduler_mod,
@@ -100,6 +103,15 @@ def _wire_dependencies(
             healthy=stop_healthy,
         ),
     )
+
+    async def arm_status(hass, entry_id):
+        return {
+            "armed": armed,
+            "storage_healthy": arm_storage_healthy,
+            "last_error": None if arm_storage_healthy else "arm store unavailable",
+        }
+
+    monkeypatch.setattr(scheduler_mod, "async_execution_arm_status", arm_status)
 
 
 def _gate(status: str, reason: str = "test") -> dict[str, Any]:
@@ -195,6 +207,36 @@ async def test_ready_prepared_start_delegates_exactly_once(
 
 
 @pytest.mark.asyncio
+async def test_ready_prepared_start_stays_inert_while_disarmed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record = _Record()
+    repo = _Repo([record])
+    _wire_dependencies(monkeypatch, repo, armed=False)
+    dispatch_calls = 0
+
+    async def bounded_gate(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        return _gate(BOUNDED_GATE_READY)
+
+    async def dispatch(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        nonlocal dispatch_calls
+        dispatch_calls += 1
+        return {}
+
+    monkeypatch.setattr(scheduler_mod, "async_bounded_dispatch_gate", bounded_gate)
+    monkeypatch.setattr(scheduler_mod, "async_dispatch_bounded_start", dispatch)
+
+    scheduler = ExecutionStartScheduler(_Hass(), "entry-1")  # type: ignore[arg-type]
+    scheduler._started = True
+    await scheduler.async_refresh(now=NOW)
+
+    assert dispatch_calls == 0
+    assert record.state == STATE_PREPARED
+    assert scheduler.statuses()[0].status == STATUS_DISARMED
+    assert scheduler.statuses()[0].service_call_performed is False
+
+
+@pytest.mark.asyncio
 async def test_unknown_start_outcome_is_never_redispatched_on_refresh(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -249,7 +291,7 @@ async def test_existing_start_dispatch_only_verifies_without_redispatch(
         service_call_performed=None if state == STATE_RECOVERY_REQUIRED else True,
     )
     repo = _Repo([record])
-    _wire_dependencies(monkeypatch, repo)
+    _wire_dependencies(monkeypatch, repo, armed=False)
     dispatch_calls = 0
     verify_calls = 0
 
