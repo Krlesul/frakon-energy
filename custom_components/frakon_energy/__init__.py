@@ -32,6 +32,10 @@ from .load_execution_pending_run_retention_runtime import async_run_pending_run_
 from .load_execution_pending_run_scheduler import async_start_pending_run_scheduler, async_stop_pending_run_scheduler
 from .load_execution_pending_run_scheduler_ws_api import async_register_load_execution_pending_run_scheduler_websocket
 from .load_execution_pending_run_ws_api import async_register_load_execution_pending_run_websocket
+from .load_execution_phase_settlement_runtime import (
+    async_start_phase_settlement_runtime,
+    async_stop_phase_settlement_runtime,
+)
 from .load_execution_policy_ws_api import async_register_load_execution_policy_websocket
 from .load_execution_readiness_ws_api import async_register_load_execution_readiness_websocket
 from .load_execution_recovery_resolution_ws_api import async_register_load_execution_recovery_resolution_websocket
@@ -101,6 +105,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Housekeeping is deliberately best-effort and cannot block execution setup.
     await async_run_pending_run_retention_best_effort(hass, entry_id=entry.entry_id)
     await async_start_pending_run_scheduler(hass, entry.entry_id)
+    await async_start_phase_settlement_runtime(hass, entry.entry_id)
     async_register_entity_discovery_websocket(hass, runtime_registry)
     async_register_technology_profile_websocket(hass)
     async_register_energy_flow_websocket(hass)
@@ -142,6 +147,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unloaded = await hass.config_entries.async_unload_platforms(entry, ["sensor"])
     if unloaded:
+        await async_stop_phase_settlement_runtime(hass, entry.entry_id)
         await async_stop_pending_run_scheduler(hass, entry.entry_id)
         await async_stop_start_scheduler(hass, entry.entry_id)
         await async_stop_stop_scheduler(hass, entry.entry_id)
