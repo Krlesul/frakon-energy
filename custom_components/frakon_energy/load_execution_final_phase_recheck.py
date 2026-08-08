@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import time
 from typing import Any
 
 from homeassistant.core import HomeAssistant
@@ -10,7 +11,19 @@ from homeassistant.core import HomeAssistant
 from .const import DOMAIN
 from .load_execution_lifecycle import STATE_DISPATCHING, ExecutionLifecycleRecord
 from .load_execution_lifecycle_runtime import lifecycle_repository
-from .load_phase_readiness import LoadPhaseReadinessDecision, build_load_phase_readiness
+from .load_execution_phase_capacity_reservation import (
+    PhaseCapacityReservation,
+    PhaseCapacityReservationError,
+    phase_capacity_reservation_repository,
+)
+from .load_phase_readiness import (
+    LoadPhaseReadinessDecision,
+    evaluate_load_phase_readiness,
+)
+from .load_profile_phase_projection import (
+    LoadProfilePhaseProjection,
+    build_load_profile_phase_projection,
+)
 from .site_phase_capacity import SitePhaseCapacityStatus, build_site_phase_capacity_status
 
 FINAL_PHASE_RECHECK_BYPASSED = "bypassed_not_configured"
@@ -20,6 +33,8 @@ FINAL_PHASE_RECHECK_BLOCKED = "blocked"
 REASON_NOT_CONFIGURED = "phase_capacity_limit_not_configured"
 REASON_NO_DISPATCHING_LIFECYCLE = "dispatching_lifecycle_not_found"
 REASON_MULTIPLE_DISPATCHING_LIFECYCLES = "multiple_dispatching_lifecycles"
+REASON_RESERVATION_UNAVAILABLE = "phase_capacity_reservation_unavailable"
+REASON_RESERVED_HEADROOM_INSUFFICIENT = "reserved_phase_headroom_insufficient"
 
 
 class FinalPhaseRecheckError(RuntimeError):
@@ -34,7 +49,13 @@ class FinalPhaseRecheck:
     attempt_id: str | None
     profile_id: str | None
     phase_capacity: dict[str, Any]
+    phase_projection: dict[str, Any] | None
     phase_readiness: dict[str, Any] | None
+    active_reservations: tuple[dict[str, Any], ...]
+    reserved_other_currents_a: dict[str, float]
+    effective_projected_currents_a: dict[str, float]
+    blocking_phases: tuple[str, ...]
+    reservation: dict[str, Any] | None
     can_start: bool
     guard_active: bool
     read_only: bool = True
@@ -62,6 +83,14 @@ async def _dispatching_records(
     return [record for record in records if record.state == STATE_DISPATCHING]
 
 
+def _sum_currents(reservations: tuple[PhaseCapacityReservation, ...]) -> dict[str, float]:
+    totals = {"L1": 0.0, "L2": 0.0, "L3": 0.0}
+    for reservation in reservations:
+        for phase, value in reservation.currents().items():
+            totals[phase] += value
+    return totals
+
+
 def _result(
     *,
     status: str,
@@ -70,7 +99,14 @@ def _result(
     can_start: bool,
     guard_active: bool,
     lifecycle: ExecutionLifecycleRecord | None = None,
+    projection: LoadProfilePhaseProjection | None = None,
     readiness: LoadPhaseReadinessDecision | None = None,
+    active_reservations: tuple[PhaseCapacityReservation, ...] = (),
+    reserved_other_currents_a: dict[str, float] | None = None,
+    effective_projected_currents_a: dict[str, float] | None = None,
+    blocking_phases: tuple[str, ...] = (),
+    reservation: PhaseCapacityReservation | None = None,
+    reservation_created: bool = False,
 ) -> FinalPhaseRecheck:
     return FinalPhaseRecheck(
         status=status,
@@ -79,9 +115,18 @@ def _result(
         attempt_id=lifecycle.attempt_id if lifecycle is not None else None,
         profile_id=lifecycle.profile_id if lifecycle is not None else None,
         phase_capacity=capacity.as_dict(),
+        phase_projection=projection.as_dict() if projection is not None else None,
         phase_readiness=readiness.as_dict() if readiness is not None else None,
+        active_reservations=tuple(value.as_dict() for value in active_reservations),
+        reserved_other_currents_a=reserved_other_currents_a or {"L1": 0.0, "L2": 0.0, "L3": 0.0},
+        effective_projected_currents_a=effective_projected_currents_a or {},
+        blocking_phases=blocking_phases,
+        reservation=reservation.as_dict() if reservation is not None else None,
         can_start=can_start,
         guard_active=guard_active,
+        read_only=not reservation_created,
+        state_transition_performed=reservation_created,
+        reservation_performed=reservation_created,
     )
 
 
@@ -90,7 +135,7 @@ async def async_final_phase_recheck(
     *,
     entry_id: str,
 ) -> FinalPhaseRecheck:
-    """Re-read L1/L2/L3 immediately before the physical service-call boundary."""
+    """Re-read L1/L2/L3, account for reservations, then reserve before start."""
     if not entry_id:
         raise FinalPhaseRecheckError("entry_id is required")
 
@@ -129,12 +174,13 @@ async def async_final_phase_recheck(
 
     lifecycle = dispatching[0]
     lifecycle.validated()
-    readiness = build_load_phase_readiness(
+    projection = build_load_profile_phase_projection(
         hass,
         entry_id=entry_id,
         options=entry.options,
         profile_id=lifecycle.profile_id,
     )
+    readiness = evaluate_load_phase_readiness(projection)
     if not readiness.can_start_phase:
         return _result(
             status=FINAL_PHASE_RECHECK_BLOCKED,
@@ -143,8 +189,67 @@ async def async_final_phase_recheck(
             can_start=False,
             guard_active=True,
             lifecycle=lifecycle,
+            projection=projection,
             readiness=readiness,
         )
+
+    now_ts = int(time.time())
+    try:
+        repository = phase_capacity_reservation_repository(hass, entry_id)
+        active = await repository.async_active(now=now_ts)
+    except Exception as err:
+        raise FinalPhaseRecheckError(f"phase capacity reservation state unavailable: {err}") from err
+
+    other = tuple(value for value in active if value.lifecycle_id != lifecycle.lifecycle_id)
+    reserved_other = _sum_currents(other)
+    effective: dict[str, float] = {}
+    blocking: list[str] = []
+    for phase in ("L1", "L2", "L3"):
+        phase_projection = projection.phases.get(phase)
+        if phase_projection is None:
+            raise FinalPhaseRecheckError(f"phase projection missing {phase}")
+        value = phase_projection.projected_current_a + reserved_other[phase]
+        effective[phase] = value
+        if value > phase_projection.max_current_a:
+            blocking.append(phase)
+
+    if blocking:
+        return _result(
+            status=FINAL_PHASE_RECHECK_BLOCKED,
+            reason=REASON_RESERVED_HEADROOM_INSUFFICIENT,
+            capacity=capacity,
+            can_start=False,
+            guard_active=True,
+            lifecycle=lifecycle,
+            projection=projection,
+            readiness=readiness,
+            active_reservations=active,
+            reserved_other_currents_a=reserved_other,
+            effective_projected_currents_a=effective,
+            blocking_phases=tuple(blocking),
+        )
+
+    planned = {
+        phase: projection.phases[phase].planned_current_a
+        for phase in ("L1", "L2", "L3")
+    }
+    try:
+        reservation, created = await repository.async_reserve(
+            lifecycle_id=lifecycle.lifecycle_id,
+            attempt_id=lifecycle.attempt_id,
+            current_l1_a=planned["L1"],
+            current_l2_a=planned["L2"],
+            current_l3_a=planned["L3"],
+            now=now_ts,
+        )
+    except PhaseCapacityReservationError as err:
+        raise FinalPhaseRecheckError(
+            f"phase capacity reservation could not be persisted: {err}"
+        ) from err
+    except Exception as err:
+        raise FinalPhaseRecheckError(
+            f"phase capacity reservation persistence unavailable: {err}"
+        ) from err
 
     return _result(
         status=FINAL_PHASE_RECHECK_READY,
@@ -153,7 +258,13 @@ async def async_final_phase_recheck(
         can_start=True,
         guard_active=True,
         lifecycle=lifecycle,
+        projection=projection,
         readiness=readiness,
+        active_reservations=active,
+        reserved_other_currents_a=reserved_other,
+        effective_projected_currents_a=effective,
+        reservation=reservation,
+        reservation_created=created,
     )
 
 
