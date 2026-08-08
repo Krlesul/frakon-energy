@@ -24,6 +24,33 @@ type SiteCapacityStatus = {
   execution_performed: false;
   execution_guard_active: boolean;
 };
+type PhaseCapacityValue = {
+  phase: string;
+  current_a: number | null;
+  max_current_a: number | null;
+  headroom_a: number | null;
+  over_limit_a: number | null;
+  utilization_percent: number | null;
+  over_limit: boolean;
+  source_entity_id: string | null;
+  source_available: boolean;
+  source_fresh: boolean;
+  reason: string;
+};
+type SitePhaseCapacityStatus = {
+  entry_id: string;
+  status: "not_configured" | "source_not_ready" | "within_limit" | "over_limit" | string;
+  configured: boolean;
+  max_phase_current_a: number | null;
+  phase_current_status: string;
+  source_ready: boolean;
+  phases: Record<string, PhaseCapacityValue>;
+  worst_phase: string | null;
+  max_utilization_percent: number | null;
+  any_phase_over_limit: boolean;
+  reason: string;
+  execution_guard_active: false;
+};
 type CapacityReservation = {
   lifecycle_id: string;
   attempt_id: string;
@@ -55,6 +82,11 @@ const PROFILE_CHANGED_EVENT = "frakon-energy-technology-profile-changed";
 function formatKw(value: number | null): string {
   if (value === null) return "—";
   return `${value.toLocaleString("cs-CZ", { maximumFractionDigits: 2 })} kW`;
+}
+
+function formatA(value: number | null): string {
+  if (value === null) return "—";
+  return `${value.toLocaleString("cs-CZ", { maximumFractionDigits: 2 })} A`;
 }
 
 function formatPercent(value: number | null): string {
@@ -98,28 +130,36 @@ function statusLabel(status: SiteCapacityStatus["status"]): string {
 export function SiteCapacitySettings({ hass }: { hass?: HomeAssistant }) {
   const [entryId, setEntryId] = useState<string | null>(null);
   const [status, setStatus] = useState<SiteCapacityStatus | null>(null);
+  const [phaseCapacity, setPhaseCapacity] = useState<SitePhaseCapacityStatus | null>(null);
   const [safety, setSafety] = useState<ExecutionSafetyStatus | null>(null);
   const [safetyError, setSafetyError] = useState<string | null>(null);
   const [limitInput, setLimitInput] = useState("");
+  const [phaseLimitInput, setPhaseLimitInput] = useState("");
   const [guardEnabled, setGuardEnabled] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [phaseBusy, setPhaseBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [phaseError, setPhaseError] = useState<string | null>(null);
   const lastSourceFingerprint = useRef<string | null>(null);
+  const lastPhaseFingerprint = useRef<string | null>(null);
 
   const load = useCallback(async () => {
     if (!hass) return;
     try {
       const entry = await findEntry(hass);
       if (!entry) throw new Error("Nebyla nalezena položka integrace FRAKON Energy.");
-      const value = await callWs<SiteCapacityStatus>(hass, {
-        type: "frakon_energy/site_capacity/status",
-        entry_id: entry.entry_id,
-      });
+      const [value, phaseValue] = await Promise.all([
+        callWs<SiteCapacityStatus>(hass, { type: "frakon_energy/site_capacity/status", entry_id: entry.entry_id }),
+        callWs<SitePhaseCapacityStatus>(hass, { type: "frakon_energy/site_phase_capacity/status", entry_id: entry.entry_id }),
+      ]);
       setEntryId(entry.entry_id);
       setStatus(value);
       setLimitInput(value.max_grid_import_kw === null ? "" : String(value.max_grid_import_kw));
       setGuardEnabled(value.execution_guard_active);
+      setPhaseCapacity(phaseValue);
+      setPhaseLimitInput(phaseValue.max_phase_current_a === null ? "" : String(phaseValue.max_phase_current_a));
       setError(null);
+      setPhaseError(null);
 
       try {
         const safetyValue = await callWs<ExecutionSafetyStatus>(hass, {
@@ -149,6 +189,15 @@ export function SiteCapacitySettings({ hass }: { hass?: HomeAssistant }) {
     return `${status.source_entity_id}:${source?.state ?? "missing"}:${String(source?.attributes.unit_of_measurement ?? "")}`;
   }, [hass, status?.source_entity_id]);
 
+  const phaseFingerprint = useMemo(() => {
+    if (!hass || !phaseCapacity) return "";
+    return ["L1", "L2", "L3"].map((phase) => {
+      const entityId = phaseCapacity.phases[phase]?.source_entity_id;
+      const source = entityId ? hass.states[entityId] : undefined;
+      return `${phase}:${entityId ?? "none"}:${source?.state ?? "missing"}:${String(source?.attributes.unit_of_measurement ?? "")}`;
+    }).join("|");
+  }, [hass, phaseCapacity]);
+
   useEffect(() => {
     if (!sourceFingerprint) return;
     if (lastSourceFingerprint.current === null) {
@@ -159,6 +208,17 @@ export function SiteCapacitySettings({ hass }: { hass?: HomeAssistant }) {
     lastSourceFingerprint.current = sourceFingerprint;
     void load();
   }, [load, sourceFingerprint]);
+
+  useEffect(() => {
+    if (!phaseFingerprint) return;
+    if (lastPhaseFingerprint.current === null) {
+      lastPhaseFingerprint.current = phaseFingerprint;
+      return;
+    }
+    if (lastPhaseFingerprint.current === phaseFingerprint) return;
+    lastPhaseFingerprint.current = phaseFingerprint;
+    void load();
+  }, [load, phaseFingerprint]);
 
   const saveLimit = async (clear = false) => {
     if (!hass || !entryId) return;
@@ -188,6 +248,35 @@ export function SiteCapacitySettings({ hass }: { hass?: HomeAssistant }) {
       setError(reason instanceof Error ? reason.message : "Nastavení kapacity přívodu se nepodařilo uložit.");
     } finally {
       setBusy(false);
+    }
+  };
+
+  const savePhaseLimit = async (clear = false) => {
+    if (!hass || !entryId) return;
+    let parsed: number | null = null;
+    if (!clear) {
+      const candidate = Number(phaseLimitInput.replace(",", "."));
+      if (!Number.isFinite(candidate) || candidate <= 0) {
+        setPhaseError("Maximální proud fáze musí být kladné číslo v A.");
+        return;
+      }
+      parsed = candidate;
+    }
+    setPhaseBusy(true);
+    setPhaseError(null);
+    try {
+      const value = await callWs<SitePhaseCapacityStatus>(hass, {
+        type: "frakon_energy/site_phase_capacity/set",
+        entry_id: entryId,
+        max_phase_current_a: parsed,
+      });
+      setPhaseCapacity(value);
+      setPhaseLimitInput(value.max_phase_current_a === null ? "" : String(value.max_phase_current_a));
+      window.dispatchEvent(new CustomEvent(PROFILE_CHANGED_EVENT));
+    } catch (reason) {
+      setPhaseError(reason instanceof Error ? reason.message : "Proudový limit fází se nepodařilo uložit.");
+    } finally {
+      setPhaseBusy(false);
     }
   };
 
@@ -227,6 +316,42 @@ export function SiteCapacitySettings({ hass }: { hass?: HomeAssistant }) {
       <span>Aktivní rezervace <b>{reservations?.active_count ?? "—"}</b></span>
       <span>Nejbližší expirace <b>{formatExpiry(reservations?.next_expiry_at ?? null)}</b></span>
     </div> : null}
+
+    <div className="technology-settings__header">
+      <div><span className="eyebrow">Třífázová diagnostika</span><h2>Proudová rezerva L1 / L2 / L3</h2></div>
+      <span className={`entity-badge ${phaseCapacity?.status === "over_limit" || phaseCapacity?.status === "source_not_ready" ? "warn" : ""}`}>{phaseCapacity?.status ?? "Načítám…"}</span>
+    </div>
+    <p className="settings-copy">Tento limit je zatím pouze diagnostický. FRAKON ho nepoužívá k povolení ani blokování fyzických startů. Rezerva se počítá jen z potvrzených a čerstvých měření proudu všech tří fází; chybějící fáze se nikdy nedopočítává z celkového výkonu.</p>
+    <div className="role-list">
+      <div className="role-row">
+        <div className="role-row__label"><b>Maximální proud jedné fáze · A</b><small>Zadej skutečný limit jedné fáze přípojky/jističe. Hodnota není automaticky odvozena z celkových kW.</small></div>
+        <input type="number" min="0.1" step="0.1" value={phaseLimitInput} disabled={phaseBusy || !hass} placeholder="např. 25" onChange={(event) => setPhaseLimitInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void savePhaseLimit(false); }} />
+        <div className="role-actions"><button disabled={phaseBusy || !hass} onClick={() => void savePhaseLimit(false)}>Uložit proudový limit</button>{phaseCapacity?.configured ? <button disabled={phaseBusy} onClick={() => void savePhaseLimit(true)}>Zrušit proudový limit</button> : null}</div>
+      </div>
+    </div>
+    {phaseError ? <div className="settings-error">{phaseError}</div> : null}
+    {phaseCapacity ? <div className="discovery-summary">
+      <span>Limit fáze <b>{formatA(phaseCapacity.max_phase_current_a)}</b></span>
+      <span>Zdroj L1/L2/L3 <b>{phaseCapacity.source_ready ? "připraven" : phaseCapacity.phase_current_status}</b></span>
+      <span>Nejzatíženější fáze <b>{phaseCapacity.worst_phase ?? "—"}</b></span>
+      <span>Max. využití <b>{formatPercent(phaseCapacity.max_utilization_percent)}</b></span>
+    </div> : null}
+    {phaseCapacity ? <div className="role-list">
+      {["L1", "L2", "L3"].map((phase) => {
+        const item = phaseCapacity.phases[phase];
+        if (!item) return null;
+        return <div className="role-row" key={phase}>
+          <div className="role-row__label"><b>{phase} · {formatA(item.current_a)}</b><small>{item.source_entity_id ?? "měření není přiřazeno"} · {item.reason}</small></div>
+          <div className="discovery-summary">
+            <span>Rezerva <b>{formatA(item.headroom_a)}</b></span>
+            <span>Využití <b>{formatPercent(item.utilization_percent)}</b></span>
+            <span>Překročení <b>{formatA(item.over_limit_a)}</b></span>
+          </div>
+        </div>;
+      })}
+    </div> : null}
+    {phaseCapacity ? <p className="missing-reason">{phaseCapacity.reason} Phase execution guard: vypnutý.</p> : null}
+
     {reservations && !reservations.storage_healthy ? <div className="settings-error">Stav rezervací není důvěryhodný: {reservations.last_error ?? "neznámá chyba"}</div> : null}
     {safetyError ? <p className="missing-reason">Rozšířená bezpečnostní diagnostika není dostupná: {safetyError}</p> : null}
     {status ? <p className="missing-reason">{status.reason}{status.source_entity_id ? ` Zdroj: ${status.source_entity_id}.` : ""} Execution guard: {status.execution_guard_active ? "aktivní" : "vypnutý"}{guard?.blocking_reason ? ` · blokuje nové starty: ${guard.blocking_reason}` : ""}.</p> : null}
