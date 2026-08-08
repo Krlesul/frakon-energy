@@ -35,6 +35,21 @@ type ServerEnergyFlowSnapshot = {
   service_call_performed: false;
   execution_performed: false;
 };
+type CapacityReservationSummary = {
+  storage_healthy: boolean;
+  last_error: string | null;
+  active_count: number | null;
+  reserved_power_kw: number | null;
+  next_expiry_at: number | null;
+};
+type CapacityGuardSummary = {
+  configured: boolean;
+  grid_headroom_kw: number | null;
+};
+type ExecutionSafetyStatus = {
+  site_capacity_guard?: CapacityGuardSummary;
+  site_capacity_reservations?: CapacityReservationSummary;
+};
 type FlowNode = {
   id: string;
   label: string;
@@ -70,6 +85,13 @@ async function loadServerFlow(hass: HomeAssistant, entryId: string): Promise<Ser
   });
 }
 
+async function loadSafetyStatus(hass: HomeAssistant, entryId: string): Promise<ExecutionSafetyStatus> {
+  return callWs<ExecutionSafetyStatus>(hass, {
+    type: "frakon_energy/load_execution/safety_status",
+    entry_id: entryId,
+  });
+}
+
 function isOverviewVisible(): boolean {
   const label = document.querySelector<HTMLElement>(".view-header > span");
   return label?.textContent?.trim() === "Přehled";
@@ -84,6 +106,11 @@ function formatKw(value: number | null): string {
   if (value === null) return "—";
   const abs = Math.abs(value);
   return `${abs.toLocaleString("cs-CZ", { maximumFractionDigits: abs >= 10 ? 1 : 2 })} kW`;
+}
+
+function formatExpiry(timestamp: number | null): string {
+  if (timestamp === null) return "bez aktivní rezervace";
+  return `nejbližší uvolnění ${new Date(timestamp * 1000).toLocaleTimeString("cs-CZ", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
 }
 
 function qualityClass(quality: FlowQuality): string {
@@ -131,6 +158,7 @@ function batterySummary(flow: ServerEnergyFlowSnapshot): string {
 function EnergyFlow({ hass }: { hass: HomeAssistant }) {
   const [entryId, setEntryId] = useState<string | null>(null);
   const [flow, setFlow] = useState<ServerEnergyFlowSnapshot | null>(null);
+  const [safety, setSafety] = useState<ExecutionSafetyStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const lastSourceFingerprint = useRef<string | null>(null);
 
@@ -143,13 +171,18 @@ function EnergyFlow({ hass }: { hass: HomeAssistant }) {
         if (!entry) {
           setEntryId(null);
           setFlow(null);
+          setSafety(null);
           setError(null);
           return;
         }
-        const value = await loadServerFlow(hass, entry.entry_id);
+        const [value, safetyValue] = await Promise.all([
+          loadServerFlow(hass, entry.entry_id),
+          loadSafetyStatus(hass, entry.entry_id).catch(() => null),
+        ]);
         if (!active) return;
         setEntryId(entry.entry_id);
         setFlow(value);
+        setSafety(safetyValue);
         setError(null);
       } catch (reason) {
         if (active) setError(reason instanceof Error ? reason.message : "Energetický tok se nepodařilo načíst.");
@@ -184,10 +217,14 @@ function EnergyFlow({ hass }: { hass: HomeAssistant }) {
     if (lastSourceFingerprint.current === sourceFingerprint) return;
     lastSourceFingerprint.current = sourceFingerprint;
     let active = true;
-    loadServerFlow(hass, entryId)
-      .then((value) => {
+    Promise.all([
+      loadServerFlow(hass, entryId),
+      loadSafetyStatus(hass, entryId).catch(() => null),
+    ])
+      .then(([value, safetyValue]) => {
         if (!active) return;
         setFlow(value);
+        setSafety(safetyValue);
         setError(null);
       })
       .catch((reason) => {
@@ -221,6 +258,12 @@ function EnergyFlow({ hass }: { hass: HomeAssistant }) {
   const activePower = nodes.filter((item) => item.numeric !== null && Math.abs(item.numeric) > 0.03).length;
   const tone = qualityClass(flow.quality);
   const primaryReason = flow.reasons[0] ?? "Serverový energetický model nemá další diagnostiku.";
+  const reservations = safety?.site_capacity_reservations;
+  const capacityGuard = safety?.site_capacity_guard;
+  const reservedKw = reservations?.storage_healthy ? reservations.reserved_power_kw ?? 0 : null;
+  const effectiveHeadroom = capacityGuard?.configured && capacityGuard.grid_headroom_kw !== null && reservedKw !== null
+    ? Math.max(0, capacityGuard.grid_headroom_kw - reservedKw)
+    : null;
 
   return <section className="energy-flow">
     <div className="energy-flow__heading">
@@ -250,8 +293,10 @@ function EnergyFlow({ hass }: { hass: HomeAssistant }) {
       <div><span>Přetok do sítě</span><strong>{formatKw(flow.grid_export_kw)}</strong><small>potvrzený export hlavního elektroměru</small></div>
       <div><span>Známé spotřeby</span><strong>{formatKw(flow.known_load_kw)}</strong><small>{flow.known_load_reason}</small></div>
       <div><span>Baterie</span><strong>{batterySummary(flow)}</strong><small>{flow.entities.battery?.entity_id ? "směr určuje potvrzená serverová topologie" : "baterie není součástí potvrzené topologie"}</small></div>
+      {capacityGuard?.configured && <div><span>Rezervováno FRAKONem</span><strong>{formatKw(reservedKw)}</strong><small>{reservations?.storage_healthy ? `${reservations.active_count ?? 0} aktivní rezervace · ${formatExpiry(reservations.next_expiry_at)}` : `stav rezervací není dostupný${reservations?.last_error ? ` · ${reservations.last_error}` : ""}`}</small></div>}
+      {capacityGuard?.configured && <div><span>Efektivně volná kapacita</span><strong>{formatKw(effectiveHeadroom)}</strong><small>živá rezerva přípojky minus aktivní FRAKON rezervace</small></div>}
     </div>
-    <p className="energy-flow__note">Dashboard už bilanci nepřepočítává. Spotřebu domu, kvalitu, jednotky, směr baterie i deduplikaci EV/wallboxu přebírá z autoritativního serverového modelu FRAKON Energy, který používají také nativní Home Assistant entity.</p>
+    <p className="energy-flow__note">Dashboard už bilanci nepřepočítává. Spotřebu domu, kvalitu, jednotky, směr baterie i deduplikaci EV/wallboxu přebírá z autoritativního serverového modelu FRAKON Energy. Rezervovaná kapacita se zobrazuje ze stejného read-only Execution Safety Status, který chrání souběžné starty před zpožděnou telemetrií elektroměru.</p>
   </section>;
 }
 
