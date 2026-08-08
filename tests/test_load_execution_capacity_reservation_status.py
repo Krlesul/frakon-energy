@@ -67,7 +67,9 @@ async def test_status_exposes_active_reservations_total_and_nearest_expiry(
 
 
 @pytest.mark.asyncio
-async def test_status_omits_expired_reservations() -> None:
+async def test_status_omits_expired_reservations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     repository = CapacityReservationRepository(_Store())
     await repository.async_reserve(
         lifecycle_id="life-a",
@@ -76,7 +78,11 @@ async def test_status_omits_expired_reservations() -> None:
         now=100,
         ttl_seconds=10,
     )
-    status_module.capacity_reservation_repository = lambda hass, entry_id: repository
+    monkeypatch.setattr(
+        status_module,
+        "capacity_reservation_repository",
+        lambda hass, entry_id: repository,
+    )
 
     result = await async_capacity_reservation_status(
         object(),  # type: ignore[arg-type]
