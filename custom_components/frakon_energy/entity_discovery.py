@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+import re
 from typing import Iterable
 
 from .technology_profile import HouseTechnology
@@ -17,6 +18,9 @@ class EntityRole(StrEnum):
     PV_POWER = "pv_power"
     GRID_IMPORT = "grid_import"
     GRID_EXPORT = "grid_export"
+    GRID_CURRENT_L1 = "grid_current_l1"
+    GRID_CURRENT_L2 = "grid_current_l2"
+    GRID_CURRENT_L3 = "grid_current_l3"
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +107,9 @@ ROLE_RULES: dict[HouseTechnology, tuple[EntityRole, ...]] = {
         EntityRole.GRID_IMPORT,
         EntityRole.GRID_EXPORT,
         EntityRole.ENERGY_TOTAL,
+        EntityRole.GRID_CURRENT_L1,
+        EntityRole.GRID_CURRENT_L2,
+        EntityRole.GRID_CURRENT_L3,
     ),
     HouseTechnology.SUBMETERS: (
         EntityRole.POWER,
@@ -113,6 +120,23 @@ ROLE_RULES: dict[HouseTechnology, tuple[EntityRole, ...]] = {
         EntityRole.ENERGY_TOTAL,
     ),
 }
+
+_PHASE_ROLE_NUMBER = {
+    EntityRole.GRID_CURRENT_L1: 1,
+    EntityRole.GRID_CURRENT_L2: 2,
+    EntityRole.GRID_CURRENT_L3: 3,
+}
+
+
+def _phase_name_matches(text: str, phase: int) -> bool:
+    """Require an explicit phase marker; never infer a phase from generic current."""
+    patterns = (
+        rf"(?:^|[^a-z0-9])l[ _-]?{phase}(?:[^a-z0-9]|$)",
+        rf"(?:^|[^a-z0-9])phase[ _-]?{phase}(?:[^a-z0-9]|$)",
+        rf"(?:^|[^a-z0-9])faze[ _-]?{phase}(?:[^a-z0-9]|$)",
+        rf"(?:^|[^a-z0-9])fáze[ _-]?{phase}(?:[^a-z0-9]|$)",
+    )
+    return any(re.search(pattern, text) for pattern in patterns)
 
 
 def _score(entity: EntityDescriptor, role: EntityRole) -> tuple[int, tuple[str, ...]]:
@@ -186,6 +210,20 @@ def _score(entity: EntityDescriptor, role: EntityRole) -> tuple[int, tuple[str, 
         if any(word in text for word in words):
             score += 65
             reasons.append("grid direction name")
+    elif role in _PHASE_ROLE_NUMBER:
+        phase = _PHASE_ROLE_NUMBER[role]
+        # Phase current is safety-relevant. A generic current sensor is never
+        # assigned to L1/L2/L3 merely because its unit is amperes.
+        if not _phase_name_matches(text, phase):
+            return 0, ()
+        score += 50
+        reasons.append(f"explicit phase {phase} name")
+        if entity.device_class == "current":
+            score += 30
+            reasons.append("device_class current")
+        if entity.unit in ("A", "mA"):
+            score += 20
+            reasons.append("current unit")
 
     return min(score, 100), tuple(reasons)
 
@@ -194,12 +232,7 @@ def discover_existing_entities(
     technology: HouseTechnology,
     entities: Iterable[EntityDescriptor],
 ) -> dict[EntityRole, tuple[EntityMatch, ...]]:
-    """Rank existing Home Assistant entities for the selected technology.
-
-    FRAKON reuses confirmed physical entities. It creates separate entities only for
-    its own derived calculations, forecasts and costs.
-    """
-
+    """Rank existing Home Assistant entities for the selected technology."""
     result: dict[EntityRole, tuple[EntityMatch, ...]] = {}
     for role in ROLE_RULES.get(technology, ()):
         matches: list[EntityMatch] = []
