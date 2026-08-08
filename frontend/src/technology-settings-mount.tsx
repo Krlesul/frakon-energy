@@ -1,5 +1,6 @@
 import React from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { SiteCapacitySettings } from "./site-capacity-settings";
 import { TechnologySettings } from "./technology-settings";
 import type { HomeAssistant } from "./home-assistant";
 import "./technology-settings.css";
@@ -40,7 +41,8 @@ function mount(): void {
     root = createRoot(host);
   }
 
-  root?.render(<TechnologySettings hass={currentHass()} />);
+  const hass = currentHass();
+  root?.render(<><TechnologySettings hass={hass} /><SiteCapacitySettings hass={hass} /></>);
 }
 
 const observer = new MutationObserver(mount);
