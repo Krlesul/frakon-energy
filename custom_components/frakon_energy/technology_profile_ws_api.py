@@ -7,21 +7,24 @@ from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 
 from .const import DOMAIN
+from .energy_flow_settings import (
+    BATTERY_POWER_SIGNS,
+    CONF_BATTERY_POWER_SIGN,
+    CONF_ENERGY_FLOW,
+    CONF_EV_WALLBOX_RELATION,
+    CONF_GRID_METER_SCOPE,
+    CONF_PV_POWER_SCOPE,
+    EV_WALLBOX_RELATIONS,
+    GRID_METER_SCOPES,
+    PV_POWER_SCOPES,
+    flow_settings_from_options,
+)
 from .technology_profile import HouseTechnology
 from .technology_profile_storage import update_technology_enabled
 
 COMMAND_SET_TECHNOLOGY_ENABLED = "frakon_energy/technology/set_enabled"
 COMMAND_GET_ENERGY_FLOW_SETTINGS = "frakon_energy/energy_flow/get"
 COMMAND_SET_ENERGY_FLOW_SETTINGS = "frakon_energy/energy_flow/set"
-CONF_ENERGY_FLOW = "energy_flow"
-CONF_BATTERY_POWER_SIGN = "battery_power_sign"
-CONF_GRID_METER_SCOPE = "grid_meter_scope"
-CONF_PV_POWER_SCOPE = "pv_power_scope"
-CONF_EV_WALLBOX_RELATION = "ev_wallbox_relation"
-BATTERY_POWER_SIGNS = ("unknown", "positive_is_charge", "positive_is_discharge")
-GRID_METER_SCOPES = ("unknown", "whole_house", "inverter_branch")
-PV_POWER_SCOPES = ("unknown", "gross_generation", "inverter_net")
-EV_WALLBOX_RELATIONS = ("unknown", "same_flow", "separate")
 _REGISTERED_KEY = "technology_profile_websocket_registered"
 
 
@@ -39,32 +42,6 @@ def _entry_or_error(
         )
         return None
     return entry
-
-
-def _validated_setting(
-    stored: Mapping[str, Any], key: str, allowed: tuple[str, ...], default: str = "unknown"
-) -> str:
-    value = str(stored.get(key, default))
-    return value if value in allowed else default
-
-
-def _flow_settings(options: Mapping[str, Any]) -> dict[str, str]:
-    raw = options.get(CONF_ENERGY_FLOW, {})
-    stored = raw if isinstance(raw, Mapping) else {}
-    return {
-        CONF_BATTERY_POWER_SIGN: _validated_setting(
-            stored, CONF_BATTERY_POWER_SIGN, BATTERY_POWER_SIGNS
-        ),
-        CONF_GRID_METER_SCOPE: _validated_setting(
-            stored, CONF_GRID_METER_SCOPE, GRID_METER_SCOPES
-        ),
-        CONF_PV_POWER_SCOPE: _validated_setting(
-            stored, CONF_PV_POWER_SCOPE, PV_POWER_SCOPES
-        ),
-        CONF_EV_WALLBOX_RELATION: _validated_setting(
-            stored, CONF_EV_WALLBOX_RELATION, EV_WALLBOX_RELATIONS
-        ),
-    }
 
 
 @callback
@@ -125,7 +102,7 @@ def async_register_technology_profile_websocket(hass: HomeAssistant) -> None:
         entry = _entry_or_error(hass, connection, msg)
         if entry is None:
             return
-        connection.send_result(msg["id"], _flow_settings(entry.options))
+        connection.send_result(msg["id"], flow_settings_from_options(entry.options))
 
     @websocket_api.websocket_command(
         {
@@ -147,7 +124,7 @@ def async_register_technology_profile_websocket(hass: HomeAssistant) -> None:
         entry = _entry_or_error(hass, connection, msg)
         if entry is None:
             return
-        settings = _flow_settings(entry.options)
+        settings = flow_settings_from_options(entry.options)
         for key in (
             CONF_BATTERY_POWER_SIGN,
             CONF_GRID_METER_SCOPE,
