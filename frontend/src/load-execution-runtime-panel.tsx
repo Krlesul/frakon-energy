@@ -71,6 +71,54 @@ type ArmMutationResponse = {
   stop_obligations_remain_enabled: true;
 };
 
+type CommissioningAction = {
+  service_domain: string;
+  service_name: string;
+  entity_id: string;
+  service_data: Record<string, never>;
+  ends_at?: string;
+};
+
+type CommissioningPreflightResponse = {
+  entry_id: string;
+  attempt_id: string;
+  status: "ready_for_arm" | "blocked" | "no_start_needed" | "already_armed";
+  reasons: string[];
+  commissioning_window_safe: boolean;
+  can_arm_to_execute: boolean;
+  arm_is_only_remaining_interlock: boolean;
+  execution_arm: ExecutionArmStatus;
+  runtime: {
+    start_recovery_ready: boolean;
+    stop_recovery_ready: boolean;
+    start_scheduler_ready: boolean;
+    stop_scheduler_ready: boolean;
+  };
+  bounded_dispatch_gate: {
+    status: string;
+    reason: string;
+    stop_lease_matches?: boolean;
+    dispatch_gate_matches?: boolean;
+  };
+  immutable_start_action: CommissioningAction;
+  immutable_stop_action: CommissioningAction | null;
+  durable_stop_lease_present: boolean;
+  durable_stop_lease_matches: boolean;
+  client_supplied_action_fields: false;
+  preflight_snapshot_reserves_execution: false;
+  gates_rechecked_after_arm: true;
+  dry_run: true;
+  read_only: true;
+  state_transition_performed: false;
+  service_call_performed: false;
+  execution_performed: false;
+};
+
+type PreflightView = {
+  response: CommissioningPreflightResponse;
+  checkedAt: number;
+};
+
 const ARM_CONFIRMATION = "ARM";
 
 function formatEpoch(seconds: number | null): string {
@@ -78,6 +126,21 @@ function formatEpoch(seconds: number | null): string {
   const date = new Date(seconds * 1000);
   return Number.isNaN(date.getTime())
     ? String(seconds)
+    : date.toLocaleString("cs-CZ", {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      });
+}
+
+function formatIso(value: string | undefined): string {
+  if (!value) return "—";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? value
     : date.toLocaleString("cs-CZ", {
         day: "2-digit",
         month: "2-digit",
@@ -99,15 +162,38 @@ function evidenceLabel(value: boolean | null): string {
   return "neznámý výsledek";
 }
 
+function preflightLabel(status: CommissioningPreflightResponse["status"]): string {
+  if (status === "ready_for_arm") return "READY FOR ARM";
+  if (status === "no_start_needed") return "START NENÍ POTŘEBA";
+  if (status === "already_armed") return "UŽ ARMED";
+  return "BLOCKED";
+}
+
+function preflightStatusMessage(response: CommissioningPreflightResponse): string {
+  if (response.status === "ready_for_arm") {
+    return "Suchý preflight je zelený. ARM je nyní jediný commissioning interlock; skutečný dispatcher po ARM všechny brány znovu ověří.";
+  }
+  if (response.status === "no_start_needed") {
+    return "Preflight zjistil, že požadovaný stav už je splněný. Fyzický start není potřeba.";
+  }
+  if (response.status === "already_armed") {
+    return "Preflight pro commissioning vyžaduje DISARMED stav. Nejdřív zablokuj nové fyzické starty.";
+  }
+  return `Suchý preflight je blokovaný${response.reasons.length > 0 ? `: ${response.reasons.join(", ")}` : "."}`;
+}
+
 export function LoadExecutionRuntimePanel({ hass, entryId }: { hass?: HomeAssistant; entryId: string | null }) {
   const [safety, setSafety] = useState<ExecutionSafetyStatus | null>(null);
   const [status, setStatus] = useState("Načítám execution runtime…");
   const [busy, setBusy] = useState<"refresh" | "arm" | "disarm" | null>(null);
+  const [preflightBusyAttemptId, setPreflightBusyAttemptId] = useState<string | null>(null);
+  const [preflightView, setPreflightView] = useState<PreflightView | null>(null);
   const [armConfirmation, setArmConfirmation] = useState("");
 
   const refresh = useCallback(async (quiet = false) => {
     if (!hass || !entryId) {
       setSafety(null);
+      setPreflightView(null);
       setStatus("Čekám na Home Assistant");
       return;
     }
@@ -118,11 +204,13 @@ export function LoadExecutionRuntimePanel({ hass, entryId }: { hass?: HomeAssist
         entry_id: entryId,
       });
       setSafety(response);
+      if (response.execution_armed) setPreflightView(null);
       setStatus(response.execution_arm.storage_healthy
         ? (response.execution_armed ? "Execution runtime je ARMED." : "Execution runtime je bezpečně DISARMED.")
         : "Execution ARM storage není důvěryhodný. Nové starty jsou fail-closed zablokované.");
     } catch (error) {
       setSafety(null);
+      setPreflightView(null);
       setStatus(`Execution status nelze načíst: ${String(error)}. Ovládání je dostupné pouze administrátorovi Home Assistantu.`);
     } finally {
       if (!quiet) setBusy(null);
@@ -150,6 +238,7 @@ export function LoadExecutionRuntimePanel({ hass, entryId }: { hass?: HomeAssist
         ...(armed ? { confirmation: ARM_CONFIRMATION } : {}),
       });
       setArmConfirmation("");
+      setPreflightView(null);
       setStatus(armed
         ? "ARM potvrzen. Již připravená a stále platná práce může nyní projít všemi bezpečnostními branami."
         : "DISARM potvrzen. Nové turn_on jsou zablokované; existující stop povinnosti zůstávají aktivní.");
@@ -162,6 +251,30 @@ export function LoadExecutionRuntimePanel({ hass, entryId }: { hass?: HomeAssist
       await refresh(true);
     } finally {
       setBusy(null);
+    }
+  };
+
+  const runPreflight = async (item: SafetyItem) => {
+    if (!hass || !entryId) return;
+    if (safety?.execution_armed) {
+      setStatus("Suchý commissioning preflight lze spustit pouze při DISARMED execution runtime.");
+      return;
+    }
+    setPreflightBusyAttemptId(item.attempt_id);
+    setStatus(`Provádím read-only preflight pro ${item.entity_id}…`);
+    try {
+      const response = await callHomeAssistantWs<CommissioningPreflightResponse>(hass, {
+        type: "frakon_energy/load_execution/commissioning_preflight",
+        entry_id: entryId,
+        attempt_id: item.attempt_id,
+      });
+      setPreflightView({ response, checkedAt: Date.now() });
+      setStatus(preflightStatusMessage(response));
+    } catch (error) {
+      setPreflightView(null);
+      setStatus(`Commissioning preflight selhal: ${String(error)}`);
+    } finally {
+      setPreflightBusyAttemptId(null);
     }
   };
 
@@ -222,15 +335,44 @@ export function LoadExecutionRuntimePanel({ hass, entryId }: { hass?: HomeAssist
     </div>
 
     {safety ? <div className="execution-runtime-audit">
-      <div className="execution-runtime-audit__header"><div><span className="eyebrow">Durable audit</span><h4>Poslední execution lifecycle</h4></div><button className="secondary-action" disabled={busy !== null} onClick={() => void refresh()}>{busy === "refresh" ? "Obnovuji…" : "Obnovit stav"}</button></div>
-      {activeItems.length === 0 ? <div className="execution-runtime-empty">Žádný aktivní nebo ověřený execution lifecycle.</div> : <div className="execution-runtime-list">{activeItems.map((item) => <div className={`execution-runtime-item ${item.safety_status === "unsafe" ? "is-unsafe" : ""}`} key={item.lifecycle_id}>
-        <div><strong>{item.entity_id}</strong><span>{item.lifecycle_state} · live {item.current_state ?? "—"}</span></div>
-        <div><span>Stop ownership</span><b>{item.stop_ownership_required ? (item.stop_ownership_ready ? "ready" : "CHYBÍ") : "není vyžadován"}</b></div>
-        <div><span>Stop lifecycle</span><b>{item.stop_lifecycle_state ?? "—"}</b></div>
-        <div><span>Call evidence</span><b>{evidenceLabel(item.service_call_performed)}</b></div>
-        {item.unsafe_reason ? <small>{item.unsafe_reason}</small> : null}
-      </div>)}</div>}
-      <small>ARM změněn: {formatEpoch(safety.execution_arm.changed_at)}{safety.execution_arm.changed_by ? ` · user ${safety.execution_arm.changed_by}` : ""}. Read-only safety status nikdy neprovádí service call.</small>
+      <div className="execution-runtime-audit__header"><div><span className="eyebrow">Durable audit</span><h4>Poslední execution lifecycle</h4></div><button className="secondary-action" disabled={busy !== null || preflightBusyAttemptId !== null} onClick={() => void refresh()}>{busy === "refresh" ? "Obnovuji…" : "Obnovit stav"}</button></div>
+      {activeItems.length === 0 ? <div className="execution-runtime-empty">Žádný aktivní nebo ověřený execution lifecycle.</div> : <div className="execution-runtime-list">{activeItems.map((item) => {
+        const matchingPreflight = preflightView?.response.attempt_id === item.attempt_id ? preflightView : null;
+        const canPreflight = item.lifecycle_state === "prepared" && !armed && armHealthy;
+        return <div className={`execution-runtime-item ${item.safety_status === "unsafe" ? "is-unsafe" : ""}`} key={item.lifecycle_id}>
+          <div><strong>{item.entity_id}</strong><span>{item.lifecycle_state} · live {item.current_state ?? "—"}</span></div>
+          <div><span>Stop ownership</span><b>{item.stop_ownership_required ? (item.stop_ownership_ready ? "ready" : "CHYBÍ") : "není vyžadován"}</b></div>
+          <div><span>Stop lifecycle</span><b>{item.stop_lifecycle_state ?? "—"}</b></div>
+          <div><span>Call evidence</span><b>{evidenceLabel(item.service_call_performed)}</b></div>
+          {item.lifecycle_state === "prepared" ? <div className="execution-runtime-item__actions">
+            <button className="execution-preflight-button" disabled={!canPreflight || busy !== null || preflightBusyAttemptId !== null} onClick={() => void runPreflight(item)}>{preflightBusyAttemptId === item.attempt_id ? "Kontroluji…" : "Suchý commissioning preflight"}</button>
+            <span>{armed ? "Nejdřív DISARM." : armHealthy ? "Bez service callu · přesný bounded gate + stop lease." : "ARM storage není důvěryhodný."}</span>
+          </div> : null}
+          {matchingPreflight ? <div className={`execution-preflight-card is-${matchingPreflight.response.status}`}>
+            <div className="execution-preflight-card__header">
+              <div><span className="eyebrow">Commissioning preflight</span><strong>{matchingPreflight.response.status === "ready_for_arm" ? "Všechny suché kontroly prošly" : matchingPreflight.response.status === "no_start_needed" ? "Start není potřeba" : matchingPreflight.response.status === "already_armed" ? "Runtime už je ARMED" : "Preflight je blokovaný"}</strong></div>
+              <span className="execution-preflight-badge">{preflightLabel(matchingPreflight.response.status)}</span>
+            </div>
+            <div className="execution-preflight-grid">
+              <div><span>Start recovery</span><b>{matchingPreflight.response.runtime.start_recovery_ready ? "ready" : "BLOCKED"}</b></div>
+              <div><span>Stop recovery</span><b>{matchingPreflight.response.runtime.stop_recovery_ready ? "ready" : "BLOCKED"}</b></div>
+              <div><span>Start scheduler</span><b>{matchingPreflight.response.runtime.start_scheduler_ready ? "ready" : "BLOCKED"}</b></div>
+              <div><span>Stop scheduler</span><b>{matchingPreflight.response.runtime.stop_scheduler_ready ? "ready" : "BLOCKED"}</b></div>
+              <div><span>Bounded gate</span><b>{matchingPreflight.response.bounded_dispatch_gate.status}</b></div>
+              <div><span>Stop lease</span><b>{matchingPreflight.response.durable_stop_lease_present && matchingPreflight.response.durable_stop_lease_matches ? "exact match" : "BLOCKED"}</b></div>
+            </div>
+            <div className="execution-preflight-actions">
+              <div><span>Immutable start</span><code>{matchingPreflight.response.immutable_start_action.service_domain}.{matchingPreflight.response.immutable_start_action.service_name}</code><b>{matchingPreflight.response.immutable_start_action.entity_id}</b><small>service_data = {"{}"}</small></div>
+              <div><span>Durable stop</span>{matchingPreflight.response.immutable_stop_action ? <><code>{matchingPreflight.response.immutable_stop_action.service_domain}.{matchingPreflight.response.immutable_stop_action.service_name}</code><b>{matchingPreflight.response.immutable_stop_action.entity_id}</b><small>ends_at · {formatIso(matchingPreflight.response.immutable_stop_action.ends_at)}</small></> : <b>není potřeba / není dostupný</b>}</div>
+            </div>
+            {matchingPreflight.response.reasons.length > 0 ? <div className="execution-preflight-reasons">{matchingPreflight.response.reasons.map((reason) => <span key={reason}>{reason}</span>)}</div> : null}
+            <p>{preflightStatusMessage(matchingPreflight.response)}</p>
+            <small>Kontrola: {new Date(matchingPreflight.checkedAt).toLocaleString("cs-CZ")} · dry_run={String(matchingPreflight.response.dry_run)} · service_call_performed={String(matchingPreflight.response.service_call_performed)} · execution_performed={String(matchingPreflight.response.execution_performed)}. Snapshot nic nerezervuje a po ARM se všechny autoritativní brány znovu vyhodnotí.</small>
+          </div> : null}
+          {item.unsafe_reason ? <small>{item.unsafe_reason}</small> : null}
+        </div>;
+      })}</div>}
+      <small>ARM změněn: {formatEpoch(safety.execution_arm.changed_at)}{safety.execution_arm.changed_by ? ` · user ${safety.execution_arm.changed_by}` : ""}. Read-only safety status ani commissioning preflight nikdy neprovádí service call.</small>
     </div> : null}
 
     <div className="execution-runtime-footer"><span>{status}</span><small>DISARM není emergency stop. Bezpečnostní turn_off pro už vlastněnou stop povinnost zůstává vždy dostupný.</small></div>
