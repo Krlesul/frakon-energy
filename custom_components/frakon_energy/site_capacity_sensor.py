@@ -97,7 +97,7 @@ class FrakonSiteCapacitySensor(SensorEntity):
             "utilization_percent": status.utilization_percent,
             "source_entity_id": status.source_entity_id,
             "reason": status.reason,
-            "execution_guard_active": False,
+            "execution_guard_active": status.execution_guard_active,
             "read_only": True,
             "service_call_performed": False,
             "execution_performed": False,
