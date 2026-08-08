@@ -23,6 +23,12 @@ from .load_execution_start_stop_ownership import async_start_stop_ownership_proo
 from .load_execution_stop_lifecycle_runtime import stop_lifecycle_repository
 from .load_execution_stop_recovery import STOP_RECOVERY_OK, stop_recovery_summary
 from .load_execution_stop_scheduler import stop_scheduler
+from .site_capacity import (
+    STATUS_OVER_LIMIT,
+    STATUS_SOURCE_UNAVAILABLE,
+    STATUS_TOPOLOGY_NOT_READY,
+    build_site_capacity_status,
+)
 
 _OWNERSHIP_REQUIRED_STATES = {
     STATE_DISPATCHING,
@@ -95,6 +101,48 @@ async def _item(
     )
 
 
+def _capacity_guard_summary(capacity: Any) -> dict[str, Any]:
+    configured = bool(capacity.configured)
+    data_ready = (
+        not configured
+        or (
+            capacity.topology_ready
+            and capacity.source_available
+            and capacity.status not in {STATUS_TOPOLOGY_NOT_READY, STATUS_SOURCE_UNAVAILABLE}
+        )
+    )
+    current_limit_exceeded = configured and capacity.status == STATUS_OVER_LIMIT
+    if not configured:
+        blocking_reason = None
+    elif not capacity.topology_ready or capacity.status == STATUS_TOPOLOGY_NOT_READY:
+        blocking_reason = "site_capacity_topology_not_ready"
+    elif not capacity.source_available or capacity.status == STATUS_SOURCE_UNAVAILABLE:
+        blocking_reason = "site_capacity_source_unavailable"
+    elif current_limit_exceeded:
+        blocking_reason = "site_capacity_already_over_limit"
+    else:
+        blocking_reason = None
+    return {
+        "configured": configured,
+        "guard_active": configured,
+        "data_ready": data_ready,
+        "currently_blocks_all_new_starts": blocking_reason is not None,
+        "blocking_reason": blocking_reason,
+        "status": capacity.status,
+        "reason": capacity.reason,
+        "max_grid_import_kw": capacity.max_grid_import_kw,
+        "current_grid_import_kw": capacity.current_grid_import_kw,
+        "grid_headroom_kw": capacity.grid_headroom_kw,
+        "grid_over_limit_kw": capacity.grid_over_limit_kw,
+        "utilization_percent": capacity.utilization_percent,
+        "source_entity_id": capacity.source_entity_id,
+        "plan_specific_headroom_check_required": configured and data_ready and not current_limit_exceeded,
+        "read_only": True,
+        "service_call_performed": False,
+        "execution_performed": False,
+    }
+
+
 async def async_execution_safety_status(
     hass: HomeAssistant,
     *,
@@ -103,6 +151,16 @@ async def async_execution_safety_status(
     """Aggregate durable execution and runtime safety without mutation."""
     if not entry_id:
         raise ValueError("entry_id is required")
+
+    entry = hass.config_entries.async_get_entry(entry_id)
+    if entry is None:
+        raise ValueError(f"config entry not found: {entry_id}")
+    capacity = build_site_capacity_status(
+        hass,
+        entry_id=entry_id,
+        options=entry.options,
+    )
+    capacity_guard = _capacity_guard_summary(capacity)
 
     start_recovery = lifecycle_recovery_summary(hass, entry_id)
     stop_recovery = stop_recovery_summary(hass, entry_id)
@@ -153,6 +211,8 @@ async def async_execution_safety_status(
     return {
         "entry_id": entry_id,
         "execution_arm": arm_status,
+        "site_capacity": capacity.as_dict(),
+        "site_capacity_guard": capacity_guard,
         "start_recovery": start_recovery.as_dict(),
         "stop_recovery": stop_recovery.as_dict(),
         "stop_scheduler": {
