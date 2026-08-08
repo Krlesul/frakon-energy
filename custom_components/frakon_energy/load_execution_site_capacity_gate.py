@@ -1,4 +1,4 @@
-"""Read-only execution gate for configured whole-site grid import capacity."""
+"""Read-only execution gate for explicitly enforced whole-site grid capacity."""
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ CAPACITY_GATE_READY = "ready"
 CAPACITY_GATE_BLOCKED = "blocked"
 
 REASON_NOT_CONFIGURED = "site_capacity_limit_not_configured"
+REASON_GUARD_DISABLED = "site_capacity_execution_guard_disabled"
 REASON_READY = "site_capacity_headroom_sufficient"
 REASON_TOPOLOGY = "site_capacity_topology_not_ready"
 REASON_SOURCE = "site_capacity_source_unavailable"
@@ -55,7 +56,7 @@ def evaluate_site_capacity_execution_gate(
     capacity: SiteCapacityStatus,
     planned_power_kw: float,
 ) -> SiteCapacityGateDecision:
-    """Fail closed for configured capacity limits without executing anything."""
+    """Fail closed only when explicit capacity enforcement is active."""
     if isinstance(planned_power_kw, bool) or not math.isfinite(planned_power_kw) or planned_power_kw <= 0:
         return SiteCapacityGateDecision(
             status=CAPACITY_GATE_BLOCKED,
@@ -69,7 +70,7 @@ def evaluate_site_capacity_execution_gate(
             projected_grid_import_kw=None,
             projected_over_limit_kw=None,
             can_start=False,
-            guard_active=capacity.configured,
+            guard_active=capacity.execution_guard_active,
         )
 
     base = dict(
@@ -85,6 +86,17 @@ def evaluate_site_capacity_execution_gate(
         return SiteCapacityGateDecision(
             status=CAPACITY_GATE_BYPASSED,
             reason=REASON_NOT_CONFIGURED,
+            projected_grid_import_kw=None,
+            projected_over_limit_kw=None,
+            can_start=True,
+            guard_active=False,
+            **base,
+        )
+
+    if not capacity.execution_guard_active:
+        return SiteCapacityGateDecision(
+            status=CAPACITY_GATE_BYPASSED,
+            reason=REASON_GUARD_DISABLED,
             projected_grid_import_kw=None,
             projected_over_limit_kw=None,
             can_start=True,
