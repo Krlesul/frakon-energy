@@ -17,6 +17,7 @@ from .load_execution_lifecycle import (
 )
 from .load_execution_lifecycle_recovery import RECOVERY_OK, lifecycle_recovery_summary
 from .load_execution_lifecycle_runtime import lifecycle_repository
+from .load_execution_pending_run_scheduler import pending_run_scheduler
 from .load_execution_start_scheduler import start_scheduler
 from .load_execution_start_stop_ownership import async_start_stop_ownership_proof
 from .load_execution_stop_lifecycle_runtime import stop_lifecycle_repository
@@ -107,8 +108,11 @@ async def async_execution_safety_status(
     stop_recovery = stop_recovery_summary(hass, entry_id)
     stop_runtime = stop_scheduler(hass, entry_id)
     start_runtime = start_scheduler(hass, entry_id)
+    pending_runtime = pending_run_scheduler(hass, entry_id)
     arm_status = await async_execution_arm_status(hass, entry_id)
     stop_scheduler_statuses = stop_runtime.statuses()
+    start_scheduler_statuses = start_runtime.statuses()
+    pending_scheduler_statuses = pending_runtime.statuses()
     scheduler_status_by_start = {
         status.start_lifecycle_id: status.status for status in stop_scheduler_statuses
     }
@@ -135,6 +139,11 @@ async def async_execution_safety_status(
         and start_runtime.started
         and start_runtime.healthy
     )
+    pending_run_runtime_ready = (
+        autonomous_start_runtime_ready
+        and pending_runtime.started
+        and pending_runtime.healthy
+    )
     execution_armed = bool(
         arm_status.get("storage_healthy") and arm_status.get("armed")
     )
@@ -156,16 +165,25 @@ async def async_execution_safety_status(
             "started": start_runtime.started,
             "healthy": start_runtime.healthy,
             "last_error": start_runtime.last_error,
-            "statuses": [status.as_dict() for status in start_runtime.statuses()],
+            "statuses": [status.as_dict() for status in start_scheduler_statuses],
+        },
+        "pending_run_scheduler": {
+            "started": pending_runtime.started,
+            "healthy": pending_runtime.healthy,
+            "last_error": pending_runtime.last_error,
+            "statuses": [status.as_dict() for status in pending_scheduler_statuses],
+            "calls_home_assistant_services_directly": False,
         },
         "start_runtime_ready": start_recovery_ready,
         "stop_runtime_ready": stop_runtime_ready,
         "autonomous_start_runtime_ready": autonomous_start_runtime_ready,
+        "pending_run_runtime_ready": pending_run_runtime_ready,
         "execution_armed": execution_armed,
         "explicit_start_executor_available": explicit_start_executor_available,
         "explicit_stop_executor_available": True,
         "autonomous_stop_enabled": stop_runtime_ready,
         "autonomous_start_enabled": autonomous_start_runtime_ready and execution_armed,
+        "autonomous_pending_run_enabled": pending_run_runtime_ready,
         "unsafe_start_lifecycles": unsafe,
         "items": [item.as_dict() for item in items],
         "read_only": True,
