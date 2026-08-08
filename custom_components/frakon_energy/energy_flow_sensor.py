@@ -12,6 +12,7 @@ from homeassistant.helpers.event import async_track_state_change_event
 
 from .const import DOMAIN
 from .energy_flow_model import EnergyFlowSnapshot, build_energy_flow_snapshot
+from .site_capacity_sensor import build_site_capacity_sensors
 from .technology_profile import HouseTechnology
 from .technology_profile_options import technology_profile_from_options
 
@@ -168,8 +169,9 @@ class FrakonEnergyFlowSensor(SensorEntity):
 def build_energy_flow_sensors(
     hass: HomeAssistant,
     entry: ConfigEntry,
-) -> tuple[FrakonEnergyFlowSensor, ...]:
-    return tuple(
+) -> tuple[SensorEntity, ...]:
+    energy_flow = tuple(
         FrakonEnergyFlowSensor(hass, entry, definition)
         for definition in energy_flow_sensor_definitions(entry)
     )
+    return energy_flow + build_site_capacity_sensors(hass, entry)
