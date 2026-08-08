@@ -33,6 +33,10 @@ class ExecutionDisarmedError(ExecutionArmError):
     """Raised when a new physical start is blocked by DISARM."""
 
 
+class ExecutionCapacityBlockedError(ExecutionArmError):
+    """Raised when the last pre-call capacity recheck blocks a physical start."""
+
+
 class ExecutionArmStore(Protocol):
     async def async_load(self) -> dict[str, Any] | None: ...
     async def async_save(self, data: dict[str, Any]) -> None: ...
@@ -214,17 +218,77 @@ def execution_arm_guard(hass: HomeAssistant, entry_id: str) -> asyncio.Lock:
     return lock
 
 
+async def _async_require_dispatching_site_capacity(
+    hass: HomeAssistant,
+    entry_id: str,
+) -> None:
+    """Recheck capacity only at a live dispatching start boundary.
+
+    The start dispatcher calls ``async_require_execution_armed`` once before it
+    persists ``dispatching`` and again inside the ARM lock immediately before
+    the Home Assistant service call. Therefore this helper is inert on the first
+    check and becomes the final TOCTOU-closing capacity check on the second.
+    """
+    config_entries = getattr(hass, "config_entries", None)
+    if config_entries is None:
+        # Minimal unit-test Home Assistant doubles may omit config entries. Real
+        # integration runtime always has them; preserve arm-only unit isolation.
+        return
+    entry = config_entries.async_get_entry(entry_id)
+    if entry is None:
+        return
+
+    from .site_capacity import SiteCapacitySettings, build_site_capacity_status  # noqa: PLC0415
+
+    settings = SiteCapacitySettings.from_options(entry.options)
+    if not settings.execution_guard_enabled:
+        return
+
+    from .load_execution_lifecycle import STATE_DISPATCHING  # noqa: PLC0415
+    from .load_execution_lifecycle_runtime import lifecycle_repository  # noqa: PLC0415
+    from .load_execution_site_capacity_gate import (  # noqa: PLC0415
+        evaluate_site_capacity_execution_gate,
+    )
+
+    records = await lifecycle_repository(hass, entry_id).async_list()
+    dispatching = [record for record in records if record.state == STATE_DISPATCHING]
+    if not dispatching:
+        return
+    if len(dispatching) != 1:
+        raise ExecutionCapacityBlockedError(
+            "site capacity pre-call recheck cannot identify exactly one dispatching start"
+        )
+
+    record = dispatching[0]
+    capacity = build_site_capacity_status(
+        hass,
+        entry_id=entry_id,
+        options=entry.options,
+    )
+    decision = evaluate_site_capacity_execution_gate(
+        capacity=capacity,
+        planned_power_kw=record.plan.power_kw,
+    )
+    if not decision.can_start:
+        raise ExecutionCapacityBlockedError(
+            "site capacity blocked immediately before physical start: "
+            f"{decision.reason}; current={decision.current_grid_import_kw}; "
+            f"planned={decision.planned_power_kw}; limit={decision.max_grid_import_kw}"
+        )
+
+
 async def async_require_execution_armed(
     hass: HomeAssistant,
     entry_id: str,
 ) -> ExecutionArmState:
-    """Fail closed unless the durable interlock explicitly says ARMED."""
+    """Fail closed unless ARMED and any active pre-call capacity guard is ready."""
     try:
         state = await execution_arm_repository(hass, entry_id).async_get()
     except Exception as err:
         raise ExecutionArmError(f"execution arm state unavailable: {err}") from err
     if not state.armed:
         raise ExecutionDisarmedError("physical start execution is DISARMED")
+    await _async_require_dispatching_site_capacity(hass, entry_id)
     return state
 
 
