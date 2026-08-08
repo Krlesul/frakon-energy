@@ -49,7 +49,7 @@ type SitePhaseCapacityStatus = {
   max_utilization_percent: number | null;
   any_phase_over_limit: boolean;
   reason: string;
-  execution_guard_active: false;
+  execution_guard_active: boolean;
 };
 type CapacityReservation = {
   lifecycle_id: string;
@@ -66,6 +66,23 @@ type CapacityReservationSummary = {
   next_expiry_at: number | null;
   reservations: CapacityReservation[];
 };
+type PhaseCapacityReservation = {
+  lifecycle_id: string;
+  attempt_id: string;
+  current_l1_a: number;
+  current_l2_a: number;
+  current_l3_a: number;
+  created_at: number;
+  expires_at: number;
+};
+type PhaseCapacityReservationSummary = {
+  storage_healthy: boolean;
+  last_error: string | null;
+  active_count: number | null;
+  reserved_current_a: { L1: number | null; L2: number | null; L3: number | null };
+  next_expiry_at: number | null;
+  reservations: PhaseCapacityReservation[];
+};
 type ExecutionSafetyStatus = {
   site_capacity_guard?: {
     configured: boolean;
@@ -75,6 +92,7 @@ type ExecutionSafetyStatus = {
     blocking_reason: string | null;
   };
   site_capacity_reservations?: CapacityReservationSummary;
+  site_phase_capacity_reservations?: PhaseCapacityReservationSummary;
 };
 
 const PROFILE_CHANGED_EVENT = "frakon-energy-technology-profile-changed";
@@ -281,6 +299,7 @@ export function SiteCapacitySettings({ hass }: { hass?: HomeAssistant }) {
   };
 
   const reservations = safety?.site_capacity_reservations;
+  const phaseReservations = safety?.site_phase_capacity_reservations;
   const guard = safety?.site_capacity_guard;
 
   return <article className="chart-card technology-settings site-capacity-settings">
@@ -318,10 +337,10 @@ export function SiteCapacitySettings({ hass }: { hass?: HomeAssistant }) {
     </div> : null}
 
     <div className="technology-settings__header">
-      <div><span className="eyebrow">Třífázová diagnostika</span><h2>Proudová rezerva L1 / L2 / L3</h2></div>
+      <div><span className="eyebrow">Třífázová ochrana</span><h2>Proudová rezerva L1 / L2 / L3</h2></div>
       <span className={`entity-badge ${phaseCapacity?.status === "over_limit" || phaseCapacity?.status === "source_not_ready" ? "warn" : ""}`}>{phaseCapacity?.status ?? "Načítám…"}</span>
     </div>
-    <p className="settings-copy">Tento limit je zatím pouze diagnostický. FRAKON ho nepoužívá k povolení ani blokování fyzických startů. Rezerva se počítá jen z potvrzených a čerstvých měření proudu všech tří fází; chybějící fáze se nikdy nedopočítává z celkového výkonu.</p>
+    <p className="settings-copy">Po nastavení proudového limitu je třífázová ochrana součástí bounded i finální fyzické startovací hranice. FRAKON vyžaduje čerstvé potvrzené L1/L2/L3, explicitní fázovou topologii profilu a započítává také durable rezervace právě startujících spotřebičů. Chybějící fáze ani proudy se nikdy neodhadují z celkového výkonu.</p>
     <div className="role-list">
       <div className="role-row">
         <div className="role-row__label"><b>Maximální proud jedné fáze · A</b><small>Zadej skutečný limit jedné fáze přípojky/jističe. Hodnota není automaticky odvozena z celkových kW.</small></div>
@@ -335,29 +354,43 @@ export function SiteCapacitySettings({ hass }: { hass?: HomeAssistant }) {
       <span>Zdroj L1/L2/L3 <b>{phaseCapacity.source_ready ? "připraven" : phaseCapacity.phase_current_status}</b></span>
       <span>Nejzatíženější fáze <b>{phaseCapacity.worst_phase ?? "—"}</b></span>
       <span>Max. využití <b>{formatPercent(phaseCapacity.max_utilization_percent)}</b></span>
+      <span>Phase guard <b>{phaseCapacity.execution_guard_active ? "aktivní" : "vypnutý"}</b></span>
+      <span>Rezervováno L1 <b>{formatA(phaseReservations?.reserved_current_a.L1 ?? null)}</b></span>
+      <span>Rezervováno L2 <b>{formatA(phaseReservations?.reserved_current_a.L2 ?? null)}</b></span>
+      <span>Rezervováno L3 <b>{formatA(phaseReservations?.reserved_current_a.L3 ?? null)}</b></span>
+      <span>Aktivní fázové rezervace <b>{phaseReservations?.active_count ?? "—"}</b></span>
+      <span>Nejbližší expirace <b>{formatExpiry(phaseReservations?.next_expiry_at ?? null)}</b></span>
     </div> : null}
     {phaseCapacity ? <div className="role-list">
       {["L1", "L2", "L3"].map((phase) => {
         const item = phaseCapacity.phases[phase];
         if (!item) return null;
+        const reserved = phaseReservations?.reserved_current_a[phase as "L1" | "L2" | "L3"] ?? null;
         return <div className="role-row" key={phase}>
           <div className="role-row__label"><b>{phase} · {formatA(item.current_a)}</b><small>{item.source_entity_id ?? "měření není přiřazeno"} · {item.reason}</small></div>
           <div className="discovery-summary">
-            <span>Rezerva <b>{formatA(item.headroom_a)}</b></span>
+            <span>Rezerva měření <b>{formatA(item.headroom_a)}</b></span>
+            <span>Rezervováno starty <b>{formatA(reserved)}</b></span>
             <span>Využití <b>{formatPercent(item.utilization_percent)}</b></span>
             <span>Překročení <b>{formatA(item.over_limit_a)}</b></span>
           </div>
         </div>;
       })}
     </div> : null}
-    {phaseCapacity ? <p className="missing-reason">{phaseCapacity.reason} Phase execution guard: vypnutý.</p> : null}
+    {phaseCapacity ? <p className="missing-reason">{phaseCapacity.reason} Phase execution guard: {phaseCapacity.execution_guard_active ? "aktivní" : "vypnutý"}.</p> : null}
 
     {reservations && !reservations.storage_healthy ? <div className="settings-error">Stav rezervací není důvěryhodný: {reservations.last_error ?? "neznámá chyba"}</div> : null}
+    {phaseReservations && !phaseReservations.storage_healthy ? <div className="settings-error">Stav fázových rezervací není důvěryhodný: {phaseReservations.last_error ?? "neznámá chyba"}</div> : null}
     {safetyError ? <p className="missing-reason">Rozšířená bezpečnostní diagnostika není dostupná: {safetyError}</p> : null}
     {status ? <p className="missing-reason">{status.reason}{status.source_entity_id ? ` Zdroj: ${status.source_entity_id}.` : ""} Execution guard: {status.execution_guard_active ? "aktivní" : "vypnutý"}{guard?.blocking_reason ? ` · blokuje nové starty: ${guard.blocking_reason}` : ""}.</p> : null}
     {reservations?.reservations?.length ? <div className="role-list">
       {reservations.reservations.map((reservation) => <div className="role-row" key={reservation.lifecycle_id}>
         <div className="role-row__label"><b>Rezervace {formatKw(reservation.power_kw)}</b><small>{reservation.lifecycle_id} · {reservation.attempt_id} · expirace za {formatExpiry(reservation.expires_at)}</small></div>
+      </div>)}
+    </div> : null}
+    {phaseReservations?.reservations?.length ? <div className="role-list">
+      {phaseReservations.reservations.map((reservation) => <div className="role-row" key={`phase-${reservation.lifecycle_id}`}>
+        <div className="role-row__label"><b>Fázová rezervace · L1 {formatA(reservation.current_l1_a)} · L2 {formatA(reservation.current_l2_a)} · L3 {formatA(reservation.current_l3_a)}</b><small>{reservation.lifecycle_id} · {reservation.attempt_id} · expirace za {formatExpiry(reservation.expires_at)}</small></div>
       </div>)}
     </div> : null}
   </article>;
