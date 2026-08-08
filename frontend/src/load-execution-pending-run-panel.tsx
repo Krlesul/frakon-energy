@@ -6,7 +6,7 @@ type PendingRunSchedulerItem = {
   pending_run_id: string;
   attempt_id: string;
   entity_id: string;
-  status: "scheduled" | "preparing" | "retrying_stop_lease" | "no_start_needed" | "prepared_with_stop_lease" | "delegated_to_start_scheduler" | "existing_lifecycle" | "missed_start_window" | "blocked" | "error" | string;
+  status: "scheduled" | "preparing" | "retrying_stop_lease" | "no_start_needed" | "cancelled" | "prepared_with_stop_lease" | "delegated_to_start_scheduler" | "existing_lifecycle" | "missed_start_window" | "blocked" | "error" | string;
   starts_at: string;
   ends_at: string;
   next_wake_at: string | null;
@@ -36,11 +36,34 @@ type PendingRunSchedulerResponse = {
   execution_performed: false;
 };
 
+type PendingRunCancellationResponse = {
+  cancelled: true;
+  created: boolean;
+  idempotent_replay: boolean;
+  terminal_for_attempt: true;
+  new_lifecycle_allowed: false;
+  runtime_refresh_error: string | null;
+  cancellation: {
+    cancellation_id: string;
+    attempt_id: string;
+    pending_run_id: string;
+    entity_id: string;
+    cancelled_at: number;
+    cancelled_by: string | null;
+    reason: string;
+  };
+  service_call_performed: false;
+  execution_performed: false;
+};
+
+const CANCEL_CONFIRMATION = "CANCEL";
+
 const STATUS_LABELS: Record<string, string> = {
   scheduled: "Čeká na start",
   preparing: "Připravuji bezpečný lifecycle",
   retrying_stop_lease: "Opakuji pouze stop lease",
   no_start_needed: "Cíl už byl splněný · bez startu",
+  cancelled: "Zrušeno před lifecycle",
   prepared_with_stop_lease: "Prepared + stop lease",
   delegated_to_start_scheduler: "Předáno start scheduleru",
   existing_lifecycle: "Lifecycle už existuje",
@@ -64,16 +87,23 @@ function formatIso(value: string | null): string {
 }
 
 function statusTone(status: string): string {
-  if (["no_start_needed", "prepared_with_stop_lease", "delegated_to_start_scheduler"].includes(status)) return "ok";
+  if (["no_start_needed", "cancelled", "prepared_with_stop_lease", "delegated_to_start_scheduler"].includes(status)) return "ok";
   if (["missed_start_window", "blocked", "error"].includes(status)) return "danger";
   if (["preparing", "retrying_stop_lease"].includes(status)) return "working";
   return "waiting";
+}
+
+function canOfferCancellation(item: PendingRunSchedulerItem): boolean {
+  return !item.lifecycle_prepared && ["scheduled", "blocked", "error", "missed_start_window"].includes(item.status);
 }
 
 export function LoadExecutionPendingRunPanel({ hass, entryId }: { hass?: HomeAssistant; entryId: string | null }) {
   const [runtime, setRuntime] = useState<PendingRunSchedulerResponse | null>(null);
   const [status, setStatus] = useState("Načítám pending scheduler…");
   const [refreshing, setRefreshing] = useState(false);
+  const [cancelAttemptId, setCancelAttemptId] = useState<string | null>(null);
+  const [cancelConfirmation, setCancelConfirmation] = useState("");
+  const [cancelBusy, setCancelBusy] = useState(false);
 
   const refresh = useCallback(async (quiet = false) => {
     if (!hass || !entryId) {
@@ -110,9 +140,40 @@ export function LoadExecutionPendingRunPanel({ hass, entryId }: { hass?: HomeAss
     [runtime],
   );
 
+  const beginCancel = (item: PendingRunSchedulerItem) => {
+    setCancelAttemptId(item.attempt_id);
+    setCancelConfirmation("");
+    setStatus(`Připraveno ke zrušení ${item.entity_id}. Backend ještě znovu ověří, že lifecycle nevznikl.`);
+  };
+
+  const cancelPendingRun = async (item: PendingRunSchedulerItem) => {
+    if (!hass || !entryId || cancelConfirmation !== CANCEL_CONFIRMATION) return;
+    setCancelBusy(true);
+    setStatus(`Ukládám durable cancellation pro ${item.entity_id}…`);
+    try {
+      const response = await callHomeAssistantWs<PendingRunCancellationResponse>(hass, {
+        type: "frakon_energy/load_execution_pending_run/cancel",
+        entry_id: entryId,
+        attempt_id: item.attempt_id,
+        confirmation: CANCEL_CONFIRMATION,
+      });
+      setCancelAttemptId(null);
+      setCancelConfirmation("");
+      setStatus(response.runtime_refresh_error
+        ? `Cancellation je durable a platná. Runtime refresh hlásí: ${response.runtime_refresh_error}`
+        : "Pending run byl durable zrušen před lifecycle. Stejný attempt už nelze znovu naplánovat.");
+      await refresh(true);
+    } catch (error) {
+      setStatus(`Zrušení odmítnuto: ${String(error)}. Pokud už vznikl lifecycle, pokračuje jeho bezpečnostní řetězec beze změny.`);
+      await refresh(true);
+    } finally {
+      setCancelBusy(false);
+    }
+  };
+
   return <section className={`pending-run-panel ${runtime?.healthy === false ? "has-error" : ""}`}>
     <div className="pending-run-header">
-      <div><span className="eyebrow">Pending Run Scheduler</span><h3>Restart-safe budoucí běhy</h3><p>Vrstva mezi spotřebovaným approval a krátkým start window. Drží pouze exact plan a timer; sama nikdy nevolá Home Assistant service.</p></div>
+      <div><span className="eyebrow">Pending Run Scheduler</span><h3>Restart-safe budoucí běhy</h3><p>Vrstva mezi spotřebovaným approval a krátkým start window. Drží pouze exact plan a timer; sama nikdy nevolá Home Assistant service. Budoucí run lze zrušit jen dokud ještě neexistuje durable lifecycle.</p></div>
       <div className={`pending-run-health ${runtime?.started && runtime?.healthy ? "ok" : "danger"}`}><span>Runtime</span><strong>{runtime ? (runtime.started ? (runtime.healthy ? "HEALTHY" : "FAIL-CLOSED") : "STOPPED") : "—"}</strong></div>
     </div>
 
@@ -124,9 +185,17 @@ export function LoadExecutionPendingRunPanel({ hass, entryId }: { hass?: HomeAss
         <div><span>Start</span><b>{formatIso(item.starts_at)}</b></div>
         <div><span>Stop</span><b>{formatIso(item.ends_at)}</b></div>
         <div><span>Next wake</span><b>{item.timer_active ? formatIso(item.next_wake_at) : "bez aktivního timeru"}</b></div>
-        <div><span>Lifecycle</span><b>{item.lifecycle_prepared ? "prepared" : item.status === "no_start_needed" ? "nebyl potřeba" : "zatím ne"}</b></div>
-        <div><span>Stop lease</span><b>{item.stop_lease_prepared ? "prepared" : item.status === "no_start_needed" ? "nebyl potřeba" : item.retry_count > 0 ? `retry ${item.retry_count}` : "zatím ne"}</b></div>
+        <div><span>Lifecycle</span><b>{item.lifecycle_prepared ? "prepared" : ["no_start_needed", "cancelled"].includes(item.status) ? "nebyl potřeba" : "zatím ne"}</b></div>
+        <div><span>Stop lease</span><b>{item.stop_lease_prepared ? "prepared" : ["no_start_needed", "cancelled"].includes(item.status) ? "nebyl potřeba" : item.retry_count > 0 ? `retry ${item.retry_count}` : "zatím ne"}</b></div>
         {item.last_error ? <small>{item.last_error}</small> : null}
+        {canOfferCancellation(item) ? <div className="pending-run-cancel">
+          {cancelAttemptId === item.attempt_id ? <>
+            <div><strong>Zrušit pouze tento pending run</strong><span>Pro potvrzení napiš <b>{CANCEL_CONFIRMATION}</b>. Pokud už mezitím vznikl lifecycle, backend zrušení odmítne.</span></div>
+            <input value={cancelConfirmation} autoComplete="off" spellCheck={false} onChange={(event) => setCancelConfirmation(event.target.value.toUpperCase())} placeholder={CANCEL_CONFIRMATION} />
+            <button className="pending-run-cancel__confirm" disabled={cancelBusy || cancelConfirmation !== CANCEL_CONFIRMATION} onClick={() => void cancelPendingRun(item)}>{cancelBusy ? "Ruším…" : "Potvrdit zrušení"}</button>
+            <button className="secondary-action" disabled={cancelBusy} onClick={() => { setCancelAttemptId(null); setCancelConfirmation(""); }}>Zpět</button>
+          </> : <button className="pending-run-cancel__open" onClick={() => beginCancel(item)}>Zrušit pending run</button>}
+        </div> : null}
       </article>)}
     </div>
 
