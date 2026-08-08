@@ -36,6 +36,7 @@ from .config_flow import (
 from .const import CONF_PROVIDER, DOMAIN, PROVIDER_CEZ_HDO
 from .coordinator import FrakonEnergyCoordinator
 from .cost import TariffPrices, calculate_cost_projection
+from .energy_flow_sensor import build_energy_flow_sensors
 from .hdo_coordinator import CezHdoCoordinator
 from .metering import MeterSegment, total_cycle_consumption
 from .providers.cez_hdo import CezHdoSnapshot
@@ -75,6 +76,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     entities: list[SensorEntity] = [FrakonEnergySensor(coordinator, description) for description in VISIONQ_SENSORS]
     if entry.options.get(CONF_BILLING_ENABLED, False):
         entities.extend(FrakonBillingSensor(coordinator, entry, key) for key in BILLING_KEYS)
+    entities.extend(build_energy_flow_sensors(hass, entry))
     async_add_entities(entities)
 
 
