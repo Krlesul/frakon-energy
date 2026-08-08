@@ -7,7 +7,7 @@ from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, Sen
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfPower
 from homeassistant.core import Event, HomeAssistant, callback
-from homeassistant.helpers.event import EventStateChangedData, async_track_state_change_event
+from homeassistant.helpers.event import async_track_state_change_event
 
 from .const import DOMAIN
 from .energy_flow_model import EnergyFlowSnapshot, build_energy_flow_snapshot
@@ -99,7 +99,7 @@ class FrakonEnergyFlowSensor(SensorEntity):
             )
 
     @callback
-    def _async_source_state_changed(self, event: Event[EventStateChangedData]) -> None:
+    def _async_source_state_changed(self, event: Event[Any]) -> None:
         self.async_write_ha_state()
 
 
