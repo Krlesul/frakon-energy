@@ -22,6 +22,15 @@ ROLE_LABELS_CS: dict[EntityRole, str] = {
     EntityRole.PV_POWER: "Výkon fotovoltaiky",
     EntityRole.GRID_IMPORT: "Odběr ze sítě",
     EntityRole.GRID_EXPORT: "Přetok do sítě",
+    EntityRole.GRID_CURRENT_L1: "Proud sítě L1",
+    EntityRole.GRID_CURRENT_L2: "Proud sítě L2",
+    EntityRole.GRID_CURRENT_L3: "Proud sítě L3",
+}
+
+OPTIONAL_ROLES = {
+    EntityRole.GRID_CURRENT_L1,
+    EntityRole.GRID_CURRENT_L2,
+    EntityRole.GRID_CURRENT_L3,
 }
 
 
@@ -51,12 +60,7 @@ def build_discovery_results(
     entities: Iterable[EntityDescriptor],
     assignments: Iterable[EntityAssignment] = (),
 ) -> tuple[TechnologyDiscoveryResult, ...]:
-    """Build discovery results only for enabled technologies.
-
-    Existing physical Home Assistant entities are recommended and reused. FRAKON
-    creates its own entities only for derived calculations, forecasts and costs.
-    """
-
+    """Build discovery results only for enabled technologies."""
     entity_list = tuple(entities)
     assignment_list = tuple(assignments)
     results: list[TechnologyDiscoveryResult] = []
@@ -80,12 +84,14 @@ def discovery_payload(results: Iterable[TechnologyDiscoveryResult]) -> dict[str,
         role_items: list[dict[str, object]] = []
         for role, matches in result.recommendations.items():
             selected = result.assigned_entity(role)
+            required = role not in OPTIONAL_ROLES
             role_items.append(
                 {
                     "role": role.value,
                     "label": ROLE_LABELS_CS[role],
                     "selected_entity_id": selected,
                     "configured": selected is not None,
+                    "required": required,
                     "candidates": [
                         {
                             "entity_id": match.entity_id,
@@ -98,13 +104,17 @@ def discovery_payload(results: Iterable[TechnologyDiscoveryResult]) -> dict[str,
                 }
             )
         configured = sum(1 for item in role_items if item["configured"])
+        required_roles = [item for item in role_items if item["required"]]
+        required_configured = sum(1 for item in required_roles if item["configured"])
         technologies.append(
             {
                 "technology": result.technology.value,
                 "roles": role_items,
                 "configured_roles": configured,
                 "total_roles": len(role_items),
-                "complete": configured == len(role_items) and bool(role_items),
+                "required_roles": len(required_roles),
+                "configured_required_roles": required_configured,
+                "complete": bool(required_roles) and required_configured == len(required_roles),
             }
         )
     return {"technologies": technologies}
