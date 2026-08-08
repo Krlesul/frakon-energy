@@ -15,9 +15,11 @@ from .site_capacity import (
     build_site_capacity_status,
     update_site_capacity_settings,
 )
+from .site_phase_current import build_site_phase_current_status
 
 COMMAND_SITE_CAPACITY_STATUS = f"{DOMAIN}/site_capacity/status"
 COMMAND_SITE_CAPACITY_SET = f"{DOMAIN}/site_capacity/set"
+COMMAND_SITE_PHASE_CURRENT_STATUS = f"{DOMAIN}/site_phase_current/status"
 _REGISTERED_KEY = "site_capacity_websocket_registered"
 
 
@@ -51,9 +53,22 @@ async def async_site_capacity_status(
     ).as_dict()
 
 
+async def async_site_phase_current_status(
+    hass: HomeAssistant,
+    *,
+    entry_id: str,
+) -> dict[str, Any]:
+    entry = _entry(hass, entry_id)
+    return build_site_phase_current_status(
+        hass,
+        entry_id=entry_id,
+        options=entry.options,
+    ).as_dict()
+
+
 @callback
 def async_register_site_capacity_websocket(hass: HomeAssistant) -> None:
-    """Register admin-only capacity status and explicit limit/enforcement settings."""
+    """Register admin-only site capacity settings and read-only diagnostics."""
     domain_data = hass.data.setdefault(DOMAIN, {})
     if domain_data.get(_REGISTERED_KEY):
         return
@@ -78,6 +93,29 @@ def async_register_site_capacity_websocket(hass: HomeAssistant) -> None:
             return
         except Exception as err:
             connection.send_error(msg["id"], "site_capacity_status_unavailable", str(err))
+            return
+        connection.send_result(msg["id"], result)
+
+    @websocket_api.websocket_command(
+        {
+            vol.Required("type"): COMMAND_SITE_PHASE_CURRENT_STATUS,
+            vol.Required("entry_id"): str,
+        }
+    )
+    @websocket_api.async_response
+    async def websocket_phase_current_status(
+        hass: HomeAssistant,
+        connection: websocket_api.ActiveConnection,
+        msg: dict[str, Any],
+    ) -> None:
+        connection.require_admin()
+        try:
+            result = await async_site_phase_current_status(hass, entry_id=msg["entry_id"])
+        except ValueError as err:
+            connection.send_error(msg["id"], "site_phase_current_status_rejected", str(err))
+            return
+        except Exception as err:
+            connection.send_error(msg["id"], "site_phase_current_status_unavailable", str(err))
             return
         connection.send_result(msg["id"], result)
 
@@ -129,5 +167,6 @@ def async_register_site_capacity_websocket(hass: HomeAssistant) -> None:
         connection.send_result(msg["id"], result)
 
     websocket_api.async_register_command(hass, websocket_status)
+    websocket_api.async_register_command(hass, websocket_phase_current_status)
     websocket_api.async_register_command(hass, websocket_set)
     domain_data[_REGISTERED_KEY] = True
