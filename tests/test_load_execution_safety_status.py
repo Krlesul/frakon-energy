@@ -77,6 +77,16 @@ class _Scheduler:
         return self._statuses
 
 
+class _StartScheduler:
+    def __init__(self, *, started=True, healthy=True):
+        self.started = started
+        self.healthy = healthy
+        self.last_error = None if healthy else "start scheduler failed"
+
+    def statuses(self):
+        return ()
+
+
 def _proof(ready: bool, reason: str):
     return SimpleNamespace(
         ownership_ready=ready,
@@ -90,6 +100,9 @@ def _wire(
     record_state: str,
     ownership_ready: bool,
     scheduler_healthy: bool = True,
+    start_scheduler_healthy: bool = True,
+    armed: bool = True,
+    arm_storage_healthy: bool = True,
 ):
     record = _Record(record_state)
     monkeypatch.setattr(
@@ -119,6 +132,26 @@ def _wire(
         "stop_scheduler",
         lambda hass, entry_id: _Scheduler(healthy=scheduler_healthy),
     )
+    monkeypatch.setattr(
+        safety,
+        "start_scheduler",
+        lambda hass, entry_id: _StartScheduler(healthy=start_scheduler_healthy),
+    )
+
+    async def arm_status(hass, entry_id):
+        return {
+            "entry_id": entry_id,
+            "armed": armed,
+            "storage_healthy": arm_storage_healthy,
+            "last_error": None if arm_storage_healthy else "arm store unavailable",
+            "revision": 1 if armed else 0,
+            "changed_at": 1 if armed else 0,
+            "changed_by": "admin" if armed else None,
+            "required_arm_confirmation": "ARM",
+            "fail_closed": True,
+        }
+
+    monkeypatch.setattr(safety, "async_execution_arm_status", arm_status)
 
     async def ownership(hass, *, entry_id, start):
         return _proof(
@@ -150,7 +183,8 @@ async def test_prepared_start_without_stop_ownership_is_not_unsafe(
     assert item["safety_status"] == "safe"
     assert item["unsafe_reason"] is None
     assert result["unsafe_start_lifecycles"] == []
-    assert result["autonomous_start_enabled"] is False
+    assert result["execution_armed"] is True
+    assert result["autonomous_start_enabled"] is True
 
 
 @pytest.mark.asyncio
@@ -200,6 +234,54 @@ async def test_recovered_start_with_matching_stop_ownership_is_safe(
 
 
 @pytest.mark.asyncio
+async def test_disarmed_interlock_disables_new_start_without_disabling_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _wire(
+        monkeypatch,
+        record_state="prepared",
+        ownership_ready=False,
+        armed=False,
+    )
+
+    result = await safety.async_execution_safety_status(
+        _Hass("off"),  # type: ignore[arg-type]
+        entry_id="entry-1",
+    )
+
+    assert result["execution_armed"] is False
+    assert result["execution_arm"]["storage_healthy"] is True
+    assert result["explicit_start_executor_available"] is False
+    assert result["autonomous_start_enabled"] is False
+    assert result["autonomous_stop_enabled"] is True
+    assert result["explicit_stop_executor_available"] is True
+
+
+@pytest.mark.asyncio
+async def test_arm_storage_failure_is_fail_closed_in_global_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _wire(
+        monkeypatch,
+        record_state="prepared",
+        ownership_ready=False,
+        armed=True,
+        arm_storage_healthy=False,
+    )
+
+    result = await safety.async_execution_safety_status(
+        _Hass("off"),  # type: ignore[arg-type]
+        entry_id="entry-1",
+    )
+
+    assert result["execution_armed"] is False
+    assert result["execution_arm"]["storage_healthy"] is False
+    assert result["explicit_start_executor_available"] is False
+    assert result["autonomous_start_enabled"] is False
+    assert result["autonomous_stop_enabled"] is True
+
+
+@pytest.mark.asyncio
 async def test_unhealthy_stop_scheduler_is_visible_in_global_runtime_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -219,7 +301,7 @@ async def test_unhealthy_stop_scheduler_is_visible_in_global_runtime_status(
     assert result["stop_runtime_ready"] is False
     assert result["autonomous_stop_enabled"] is False
     assert result["stop_scheduler"]["healthy"] is False
-    assert result["explicit_start_executor_available"] is True
+    assert result["explicit_start_executor_available"] is False
     assert result["read_only"] is True
     assert result["state_transition_performed"] is False
     assert result["service_call_performed"] is False
