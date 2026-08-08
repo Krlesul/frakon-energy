@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from datetime import datetime
 import time
 from typing import Any
 
@@ -15,6 +16,10 @@ from .load_execution_phase_capacity_reservation import (
     PhaseCapacityReservation,
     PhaseCapacityReservationError,
     phase_capacity_reservation_repository,
+)
+from .load_execution_phase_settlement_evidence import (
+    PhaseSettlementBaseline,
+    phase_settlement_evidence_repository,
 )
 from .load_phase_readiness import (
     LoadPhaseReadinessDecision,
@@ -56,6 +61,9 @@ class FinalPhaseRecheck:
     effective_projected_currents_a: dict[str, float]
     blocking_phases: tuple[str, ...]
     reservation: dict[str, Any] | None
+    settlement_baseline: dict[str, Any] | None
+    settlement_evidence_persisted: bool
+    settlement_evidence_error: str | None
     can_start: bool
     guard_active: bool
     read_only: bool = True
@@ -91,6 +99,39 @@ def _sum_currents(reservations: tuple[PhaseCapacityReservation, ...]) -> dict[st
     return totals
 
 
+def _settlement_baseline(
+    hass: HomeAssistant,
+    *,
+    lifecycle: ExecutionLifecycleRecord,
+    capacity: SitePhaseCapacityStatus,
+    created_at: int,
+) -> PhaseSettlementBaseline | None:
+    values: dict[str, tuple[str, float, float]] = {}
+    for phase in ("L1", "L2", "L3"):
+        item = capacity.phases.get(phase)
+        if item is None or item.current_a is None or not item.source_entity_id:
+            return None
+        state = hass.states.get(item.source_entity_id)
+        last_updated = getattr(state, "last_updated", None)
+        if not isinstance(last_updated, datetime) or last_updated.tzinfo is None or last_updated.utcoffset() is None:
+            return None
+        values[phase] = (item.source_entity_id, item.current_a, last_updated.timestamp())
+    return PhaseSettlementBaseline(
+        lifecycle_id=lifecycle.lifecycle_id,
+        attempt_id=lifecycle.attempt_id,
+        entity_l1=values["L1"][0],
+        entity_l2=values["L2"][0],
+        entity_l3=values["L3"][0],
+        baseline_l1_a=values["L1"][1],
+        baseline_l2_a=values["L2"][1],
+        baseline_l3_a=values["L3"][1],
+        observed_l1_at=values["L1"][2],
+        observed_l2_at=values["L2"][2],
+        observed_l3_at=values["L3"][2],
+        created_at=created_at,
+    ).validated()
+
+
 def _result(
     *,
     status: str,
@@ -107,6 +148,9 @@ def _result(
     blocking_phases: tuple[str, ...] = (),
     reservation: PhaseCapacityReservation | None = None,
     reservation_created: bool = False,
+    settlement_baseline: PhaseSettlementBaseline | None = None,
+    settlement_evidence_persisted: bool = False,
+    settlement_evidence_error: str | None = None,
 ) -> FinalPhaseRecheck:
     return FinalPhaseRecheck(
         status=status,
@@ -122,6 +166,9 @@ def _result(
         effective_projected_currents_a=effective_projected_currents_a or {},
         blocking_phases=blocking_phases,
         reservation=reservation.as_dict() if reservation is not None else None,
+        settlement_baseline=settlement_baseline.as_dict() if settlement_baseline is not None else None,
+        settlement_evidence_persisted=settlement_evidence_persisted,
+        settlement_evidence_error=settlement_evidence_error,
         can_start=can_start,
         guard_active=guard_active,
         read_only=not reservation_created,
@@ -251,6 +298,26 @@ async def async_final_phase_recheck(
             f"phase capacity reservation persistence unavailable: {err}"
         ) from err
 
+    baseline: PhaseSettlementBaseline | None = None
+    evidence_persisted = False
+    evidence_error: str | None = None
+    if created:
+        try:
+            baseline = _settlement_baseline(
+                hass,
+                lifecycle=lifecycle,
+                capacity=capacity,
+                created_at=now_ts,
+            )
+            if baseline is None:
+                evidence_error = "authoritative_phase_baseline_unavailable"
+            else:
+                _, evidence_persisted = await phase_settlement_evidence_repository(
+                    hass, entry_id
+                ).async_put(baseline)
+        except Exception as err:
+            evidence_error = str(err)
+
     return _result(
         status=FINAL_PHASE_RECHECK_READY,
         reason=readiness.reason,
@@ -265,6 +332,9 @@ async def async_final_phase_recheck(
         effective_projected_currents_a=effective,
         reservation=reservation,
         reservation_created=created,
+        settlement_baseline=baseline,
+        settlement_evidence_persisted=evidence_persisted,
+        settlement_evidence_error=evidence_error,
     )
 
 
