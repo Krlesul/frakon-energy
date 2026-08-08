@@ -14,6 +14,10 @@ from .load_execution_capacity_reservation import (
     CapacityReservationError,
     capacity_reservation_repository,
 )
+from .load_execution_final_phase_recheck import (
+    FinalPhaseRecheckError,
+    async_require_final_phase_recheck,
+)
 from .load_execution_lifecycle import STATE_DISPATCHING, ExecutionLifecycleRecord
 from .load_execution_lifecycle_runtime import lifecycle_repository
 from .load_execution_site_capacity_gate import (
@@ -227,10 +231,18 @@ async def async_require_final_capacity_recheck(
     *,
     entry_id: str,
 ) -> FinalCapacityRecheck:
-    """Fail closed unless final capacity enforcement explicitly allows start."""
+    """Fail closed unless both final total and per-phase capacity checks allow start."""
     result = await async_final_capacity_recheck(hass, entry_id=entry_id)
     if not result.can_start:
         raise FinalCapacityRecheckError(
             f"final site capacity recheck blocked start: {result.reason}"
         )
+    try:
+        await async_require_final_phase_recheck(hass, entry_id=entry_id)
+    except FinalPhaseRecheckError as err:
+        raise FinalCapacityRecheckError(str(err)) from err
+    except Exception as err:
+        raise FinalCapacityRecheckError(
+            f"final phase capacity recheck unavailable: {err}"
+        ) from err
     return result
