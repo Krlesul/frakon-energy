@@ -11,6 +11,7 @@ from .energy_flow_settings import CONF_GRID_METER_SCOPE
 
 OPTION_SITE_CAPACITY = "site_capacity"
 CONF_MAX_GRID_IMPORT_KW = "max_grid_import_kw"
+CONF_EXECUTION_GUARD_ENABLED = "execution_guard_enabled"
 
 STATUS_NOT_CONFIGURED = "not_configured"
 STATUS_TOPOLOGY_NOT_READY = "topology_not_ready"
@@ -22,15 +23,20 @@ STATUS_OVER_LIMIT = "over_limit"
 @dataclass(frozen=True, slots=True)
 class SiteCapacitySettings:
     max_grid_import_kw: float | None = None
+    execution_guard_enabled: bool = False
 
     def validated(self) -> "SiteCapacitySettings":
         if self.max_grid_import_kw is not None:
             value = float(self.max_grid_import_kw)
             if not math.isfinite(value) or value <= 0:
                 raise ValueError("max_grid_import_kw must be a finite positive number")
+        if not isinstance(self.execution_guard_enabled, bool):
+            raise ValueError("execution_guard_enabled must be boolean")
+        if self.execution_guard_enabled and self.max_grid_import_kw is None:
+            raise ValueError("execution_guard_enabled requires max_grid_import_kw")
         return self
 
-    def as_dict(self) -> dict[str, float | None]:
+    def as_dict(self) -> dict[str, float | bool | None]:
         return asdict(self)
 
     @classmethod
@@ -47,18 +53,49 @@ class SiteCapacitySettings:
             return cls()
         if not math.isfinite(parsed) or parsed <= 0:
             return cls()
-        return cls(max_grid_import_kw=parsed)
+
+        raw_guard = raw.get(CONF_EXECUTION_GUARD_ENABLED)
+        if isinstance(raw_guard, bool):
+            guard_enabled = raw_guard
+        else:
+            # Migration compatibility: before this flag existed, every configured
+            # limit was already an active execution guard. Preserve that safety
+            # posture for existing installations until an admin explicitly changes it.
+            guard_enabled = True
+        return cls(
+            max_grid_import_kw=parsed,
+            execution_guard_enabled=guard_enabled,
+        )
+
+
+def update_site_capacity_settings(
+    options: Mapping[str, Any],
+    *,
+    max_grid_import_kw: float | None,
+    execution_guard_enabled: bool,
+) -> dict[str, Any]:
+    """Persist explicit capacity diagnostics/enforcement while preserving other options."""
+    settings = SiteCapacitySettings(
+        max_grid_import_kw=max_grid_import_kw,
+        execution_guard_enabled=execution_guard_enabled,
+    ).validated()
+    updated = dict(options)
+    updated[OPTION_SITE_CAPACITY] = settings.as_dict()
+    return updated
 
 
 def update_site_capacity_limit(
     options: Mapping[str, Any],
     max_grid_import_kw: float | None,
 ) -> dict[str, Any]:
-    """Persist an explicit site import limit while preserving unrelated options."""
-    settings = SiteCapacitySettings(max_grid_import_kw=max_grid_import_kw).validated()
-    updated = dict(options)
-    updated[OPTION_SITE_CAPACITY] = settings.as_dict()
-    return updated
+    """Compatibility helper preserving the current explicit/legacy guard state."""
+    current = SiteCapacitySettings.from_options(options)
+    guard_enabled = current.execution_guard_enabled if max_grid_import_kw is not None else False
+    return update_site_capacity_settings(
+        options,
+        max_grid_import_kw=max_grid_import_kw,
+        execution_guard_enabled=guard_enabled,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +132,7 @@ def build_site_capacity_status(
     flow = build_energy_flow_snapshot(hass, entry_id=entry_id, options=options)
     grid = flow.entities["grid_import"]
     limit = settings.max_grid_import_kw
+    guard_active = bool(limit is not None and settings.execution_guard_enabled)
 
     if limit is None:
         return SiteCapacityStatus(
@@ -110,6 +148,7 @@ def build_site_capacity_status(
             utilization_percent=None,
             source_entity_id=grid.entity_id,
             reason="Maximální odběr ze sítě není nastavený.",
+            execution_guard_active=False,
         )
 
     if flow.topology.get(CONF_GRID_METER_SCOPE) != "whole_house":
@@ -126,6 +165,7 @@ def build_site_capacity_status(
             utilization_percent=None,
             source_entity_id=grid.entity_id,
             reason="Kapacitní ochrana vyžaduje potvrzené hlavní měření celého domu.",
+            execution_guard_active=guard_active,
         )
 
     if grid.value_kw is None:
@@ -142,6 +182,7 @@ def build_site_capacity_status(
             utilization_percent=None,
             source_entity_id=grid.entity_id,
             reason=f"Aktuální odběr ze sítě není použitelný ({grid.reason}).",
+            execution_guard_active=guard_active,
         )
 
     current = abs(grid.value_kw)
@@ -167,4 +208,5 @@ def build_site_capacity_status(
         utilization_percent=utilization,
         source_entity_id=grid.entity_id,
         reason=reason,
+        execution_guard_active=guard_active,
     )
