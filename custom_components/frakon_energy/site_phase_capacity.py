@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from datetime import datetime
 import math
 from typing import Any, Mapping
 
@@ -142,6 +143,7 @@ def build_site_phase_capacity_status(
     *,
     entry_id: str,
     options: Mapping[str, Any],
+    now: datetime | None = None,
 ) -> SitePhaseCapacityStatus:
     """Calculate per-phase headroom without creating execution authority."""
     if not entry_id:
@@ -152,6 +154,7 @@ def build_site_phase_capacity_status(
         hass,
         entry_id=entry_id,
         options=options,
+        now=now,
     )
     phases = _diagnostic_phase_values(current, limit)
     configured = limit is not None
