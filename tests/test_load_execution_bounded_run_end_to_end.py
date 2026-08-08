@@ -116,12 +116,21 @@ class _Services:
             raise AssertionError(f"unexpected physical service: {domain}.{service}")
 
 
+class _ArmGuard:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
 class _Hass:
     def __init__(self) -> None:
         self.data: dict[str, Any] = {}
         self.states = _States()
         self.services = _Services(self.states)
         self.tasks: list[asyncio.Task[Any]] = []
+        self.execution_armed = True
 
     def async_create_task(self, coro):
         task = asyncio.create_task(coro)
@@ -282,6 +291,22 @@ def _wire(
     monkeypatch.setattr(stop_resolution, "assert_stop_recovery_ready", lambda hass, entry_id: None)
     monkeypatch.setattr(stop_scheduler_mod, "stop_recovery_summary", lambda hass, entry_id: ok)
 
+    async def arm_status(hass_obj, entry_id):
+        return {
+            "armed": hass.execution_armed,
+            "storage_healthy": True,
+            "last_error": None,
+        }
+
+    async def require_armed(hass_obj, entry_id):
+        if not hass.execution_armed:
+            raise start_dispatcher.ExecutionDisarmedError("physical start execution is DISARMED")
+        return SimpleNamespace(armed=True)
+
+    monkeypatch.setattr(start_scheduler_mod, "async_execution_arm_status", arm_status)
+    monkeypatch.setattr(start_dispatcher, "async_require_execution_armed", require_armed)
+    monkeypatch.setattr(start_dispatcher, "execution_arm_guard", lambda hass, entry_id: _ArmGuard())
+
     async def bounded_gate(hass_obj, *, entry_id, attempt_id, now):
         current = await start_repo.async_get_by_attempt_id(attempt_id)
         assert current is not None
@@ -313,7 +338,7 @@ def _physical_services(calls: list[dict[str, Any]]) -> list[str]:
 
 
 @pytest.mark.asyncio
-async def test_full_autonomous_bounded_run_turns_on_once_then_off_once(
+async def test_full_autonomous_bounded_run_turns_on_once_then_off_once_even_if_disarmed_after_start(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     prepared, lease, start_repo, lease_repo, stop_repo = await _repositories()
@@ -346,6 +371,9 @@ async def test_full_autonomous_bounded_run_turns_on_once_then_off_once(
     assert start_runtime.statuses()[0].status == STATUS_STARTED_VERIFIED
     assert timers and timers[-1][1] == END.astimezone(timezone.utc)
 
+    # Commissioning DISARM blocks future starts only. The already-owned safety
+    # stop must still execute exactly once at its persisted deadline.
+    hass.execution_armed = False
     timers[-1][0](END)
     await asyncio.gather(*hass.tasks)
 
@@ -418,6 +446,7 @@ async def test_lost_start_confirmation_recovers_without_second_turn_on_and_still
     assert restarted_start.statuses()[0].status == STATUS_VERIFIED
     assert timers
 
+    hass.execution_armed = False
     timers[-1][0](END)
     await asyncio.gather(*hass.tasks)
 
