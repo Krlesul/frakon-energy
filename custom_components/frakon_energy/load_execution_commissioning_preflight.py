@@ -28,6 +28,9 @@ PREFLIGHT_BLOCKED = "blocked"
 PREFLIGHT_NO_START_NEEDED = "no_start_needed"
 PREFLIGHT_ALREADY_ARMED = "already_armed"
 
+COMMISSIONING_TARGET_HELPER = "home_assistant_helper"
+COMMISSIONING_TARGET_PHYSICAL_CAPABLE = "physical_capable_target"
+
 
 class ExecutionCommissioningPreflightError(ValueError):
     """Raised when commissioning evidence cannot be reconstructed safely."""
@@ -43,6 +46,23 @@ def _required_text(value: Any, name: str) -> str:
     if not isinstance(value, str) or not value:
         raise ExecutionCommissioningPreflightError(f"{name} evidence is invalid")
     return value
+
+
+def _commissioning_target(start_domain: str, entity_id: str) -> dict[str, Any]:
+    """Classify direct service reach without inferring downstream automation safety."""
+    helper = start_domain == "input_boolean" and entity_id.startswith("input_boolean.")
+    return {
+        "class": (
+            COMMISSIONING_TARGET_HELPER
+            if helper
+            else COMMISSIONING_TARGET_PHYSICAL_CAPABLE
+        ),
+        "direct_hardware_service": not helper,
+        "home_assistant_helper": helper,
+        "indirect_automation_side_effects_assessed": False,
+        "recommended_first_field_test_target": helper,
+        "requires_downstream_automation_review": helper,
+    }
 
 
 async def async_execution_commissioning_preflight(
@@ -98,6 +118,7 @@ async def async_execution_commissioning_preflight(
         )
         gate_status = _required_text(decision.get("status"), "bounded gate status")
         gate_reason = _required_text(decision.get("reason"), "bounded gate reason")
+        target_classification = _commissioning_target(start_domain, entity_id)
 
         arm_storage_healthy = arm.get("storage_healthy") is True
         execution_armed = arm.get("armed") is True and arm_storage_healthy
@@ -193,6 +214,7 @@ async def async_execution_commissioning_preflight(
                 "stop_scheduler_ready": stop_scheduler_ready,
             },
             "bounded_dispatch_gate": decision,
+            "commissioning_target": target_classification,
             "immutable_start_action": {
                 "service_domain": start_domain,
                 "service_name": start_service,
