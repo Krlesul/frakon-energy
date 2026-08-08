@@ -51,6 +51,7 @@ from .load_plan_ws_api import async_register_load_plan_websocket
 from .load_profiles_ws_api import async_register_load_profiles_websocket
 from .panel import async_register_panel
 from .providers.visionq import VisionQApiClient
+from .site_capacity_ws_api import async_register_site_capacity_websocket
 from .spot_price_settings_ws_api import async_register_spot_price_settings_websocket
 from .spot_price_ws_api import async_register_spot_price_websocket
 from .technology_profile_options import technology_profile_from_options
@@ -103,6 +104,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async_register_entity_discovery_websocket(hass, runtime_registry)
     async_register_technology_profile_websocket(hass)
     async_register_energy_flow_websocket(hass)
+    async_register_site_capacity_websocket(hass)
     async_register_spot_price_websocket(hass)
     async_register_spot_price_settings_websocket(hass)
     async_register_load_plan_websocket(hass)
