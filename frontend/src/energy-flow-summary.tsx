@@ -1,39 +1,54 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { HomeAssistant } from "./home-assistant";
 import "./energy-flow-summary.css";
 
-type CandidateRole = { role: string; selected_entity_id?: string | null; confirmed_entity_id?: string | null };
-type TechnologySuggestion = { technology: string; enabled?: boolean; roles?: CandidateRole[] };
-type DiscoverySnapshot = { technologies?: TechnologySuggestion[] };
-type BatteryPowerSign = "unknown" | "positive_is_charge" | "positive_is_discharge";
-type GridMeterScope = "unknown" | "whole_house" | "inverter_branch";
-type PvPowerScope = "unknown" | "gross_generation" | "inverter_net";
-type EvWallboxRelation = "unknown" | "same_flow" | "separate";
-type EnergyFlowSettings = {
-  battery_power_sign: BatteryPowerSign;
-  grid_meter_scope: GridMeterScope;
-  pv_power_scope: PvPowerScope;
-  ev_wallbox_relation: EvWallboxRelation;
-};
 type ConfigEntry = { entry_id: string; domain?: string };
 type WsConnection = { sendMessagePromise?: <T>(message: Record<string, unknown>) => Promise<T> };
 type FlowDirection = "into-house" | "out-of-house" | "house-load" | "bidirectional";
-type FlowNode = { id: string; label: string; entityId: string | null; value: string | null; numeric: number | null; active: boolean; direction: FlowDirection; directionLabel: string };
-type BalanceQuality = "complete" | "partial" | "needs-setup";
-type WholeHouseResult = { value: number | null; reason: string; quality: BalanceQuality; qualityLabel: string };
+type FlowQuality = "complete" | "partial" | "needs_setup";
+type PowerReading = {
+  entity_id: string | null;
+  value_kw: number | null;
+  state: string | null;
+  unit: string | null;
+  available: boolean;
+  reason: string;
+};
+type ServerEnergyFlowSnapshot = {
+  entry_id: string;
+  quality: FlowQuality;
+  quality_label: string;
+  reasons: string[];
+  house_load_kw: number | null;
+  pv_generation_kw: number | null;
+  grid_import_kw: number | null;
+  grid_export_kw: number | null;
+  battery_charge_kw: number | null;
+  battery_discharge_kw: number | null;
+  known_load_kw: number | null;
+  known_load_quality: string;
+  known_load_reason: string;
+  topology: Record<string, string>;
+  entities: Record<string, PowerReading>;
+  read_only: true;
+  service_call_performed: false;
+  execution_performed: false;
+};
+type FlowNode = {
+  id: string;
+  label: string;
+  entityId: string | null;
+  numeric: number | null;
+  active: boolean;
+  direction: FlowDirection;
+  directionLabel: string;
+  unavailableReason: string | null;
+};
 
 const HOST_ID = "frakon-energy-flow-host";
 const PROFILE_CHANGED_EVENT = "frakon-energy-technology-profile-changed";
-const DEFAULT_FLOW_SETTINGS: EnergyFlowSettings = {
-  battery_power_sign: "unknown",
-  grid_meter_scope: "unknown",
-  pv_power_scope: "unknown",
-  ev_wallbox_relation: "unknown",
-};
 let root: Root | null = null;
-let cachedSnapshot: DiscoverySnapshot | null = null;
-let cachedFlowSettings: EnergyFlowSettings = DEFAULT_FLOW_SETTINGS;
 
 function currentHass(): HomeAssistant | undefined { return window.__FRAKON_ENERGY_HASS__ ?? window.hass; }
 
@@ -48,14 +63,11 @@ async function findEntry(hass: HomeAssistant): Promise<ConfigEntry | null> {
   return entries.find((item) => item.domain === "frakon_energy") ?? null;
 }
 
-async function loadData(hass: HomeAssistant): Promise<{ snapshot: DiscoverySnapshot; settings: EnergyFlowSettings }> {
-  const entry = await findEntry(hass);
-  if (!entry) return { snapshot: {}, settings: DEFAULT_FLOW_SETTINGS };
-  const [snapshot, settings] = await Promise.all([
-    callWs<DiscoverySnapshot>(hass, { type: "frakon_energy/entity_discovery/get", entry_id: entry.entry_id }),
-    callWs<Partial<EnergyFlowSettings>>(hass, { type: "frakon_energy/energy_flow/get", entry_id: entry.entry_id }),
-  ]);
-  return { snapshot, settings: { ...DEFAULT_FLOW_SETTINGS, ...settings } };
+async function loadServerFlow(hass: HomeAssistant, entryId: string): Promise<ServerEnergyFlowSnapshot> {
+  return callWs<ServerEnergyFlowSnapshot>(hass, {
+    type: "frakon_energy/energy_flow/status",
+    entry_id: entryId,
+  });
 }
 
 function isOverviewVisible(): boolean {
@@ -68,211 +80,178 @@ function overviewAnchor(): HTMLElement | null {
   return document.getElementById("frakon-technology-overview-host") ?? document.querySelector<HTMLElement>(".hdo-plan-card") ?? document.querySelector<HTMLElement>(".metrics-grid");
 }
 
-function roleEntity(snapshot: DiscoverySnapshot, technology: string, role: string): string | null {
-  const item = (snapshot.technologies ?? []).find((entry) => entry.technology === technology && entry.enabled);
-  const mapped = item?.roles?.find((entry) => entry.role === role);
-  return mapped?.selected_entity_id ?? mapped?.confirmed_entity_id ?? null;
-}
-
-function powerValue(hass: HomeAssistant, entityId: string | null): { text: string | null; numeric: number | null } {
-  if (!entityId) return { text: null, numeric: null };
-  const entity = hass.states[entityId];
-  if (!entity) return { text: null, numeric: null };
-  const raw = Number(entity.state.replace(",", "."));
-  if (!Number.isFinite(raw)) return { text: null, numeric: null };
-  const unit = String(entity.attributes.unit_of_measurement ?? "").trim();
-  let kw = raw;
-  if (unit === "W") kw = raw / 1000;
-  else if (unit === "MW") kw = raw * 1000;
-  else if (unit && unit !== "kW") return { text: `${entity.state} ${unit}`, numeric: null };
-  const abs = Math.abs(kw);
-  return { text: `${abs.toLocaleString("cs-CZ", { maximumFractionDigits: abs >= 10 ? 1 : 2 })} kW`, numeric: kw };
-}
-
 function formatKw(value: number | null): string {
   if (value === null) return "—";
   const abs = Math.abs(value);
   return `${abs.toLocaleString("cs-CZ", { maximumFractionDigits: abs >= 10 ? 1 : 2 })} kW`;
 }
 
-function sumUnique(nodes: FlowNode[], directions: FlowDirection[], excludedIds: Set<string> = new Set()): number | null {
-  const seen = new Set<string>();
-  let total = 0;
-  let count = 0;
-  for (const node of nodes) {
-    if (excludedIds.has(node.id) || !directions.includes(node.direction) || node.numeric === null || !node.entityId || seen.has(node.entityId)) continue;
-    seen.add(node.entityId);
-    total += Math.abs(node.numeric);
-    count += 1;
-  }
-  return count > 0 ? total : null;
+function qualityClass(quality: FlowQuality): string {
+  return quality === "needs_setup" ? "needs-setup" : quality;
 }
 
-function batteryDirection(value: number | null, sign: BatteryPowerSign): { direction: FlowDirection; label: string } {
-  if (value === null || Math.abs(value) <= 0.03 || sign === "unknown") {
-    return { direction: "bidirectional", label: sign === "unknown" ? "směr není nastaven" : "baterie je téměř v klidu" };
-  }
-  const charging = sign === "positive_is_charge" ? value > 0 : value < 0;
-  return charging
-    ? { direction: "house-load", label: "nabíjení baterie" }
-    : { direction: "into-house", label: "vybíjení do domu" };
-}
-
-function node(nodes: FlowNode[], id: string): FlowNode | undefined {
-  return nodes.find((item) => item.id === id);
-}
-
-function needsSetup(reason: string): WholeHouseResult {
-  return { value: null, reason, quality: "needs-setup", qualityLabel: "Vyžaduje nastavení" };
-}
-
-function partial(reason: string, value: number | null = null): WholeHouseResult {
-  return { value, reason, quality: "partial", qualityLabel: "Částečné měření" };
-}
-
-function deriveWholeHousePower(nodes: FlowNode[], settings: EnergyFlowSettings): WholeHouseResult {
-  if (settings.grid_meter_scope !== "whole_house") {
-    return needsSetup("Pro výpočet nastav hlavní elektroměr jako měření celého domu.");
-  }
-  if (settings.pv_power_scope !== "gross_generation") {
-    return needsSetup("Pro bezpečný výpočet musí být výkon FVE označen jako hrubá AC výroba.");
-  }
-
-  const pvNode = node(nodes, "pv");
-  if (!pvNode || pvNode.numeric === null) {
-    return partial("Topologie je nastavená, ale chybí živý výkon FVE.");
-  }
-
-  const gridImportNode = node(nodes, "grid-in");
-  const gridExportNode = node(nodes, "grid-out");
-  if (!gridImportNode || gridImportNode.numeric === null || !gridExportNode || gridExportNode.numeric === null) {
-    return partial("Topologie je nastavená, ale chybí živý odběr nebo přetok hlavního elektroměru.");
-  }
-
-  const batteryNode = node(nodes, "battery");
-  if (batteryNode) {
-    if (settings.battery_power_sign === "unknown") {
-      return needsSetup("Je připojena baterie, ale není nastaven význam znaménka jejího výkonu.");
-    }
-    if (batteryNode.numeric === null) {
-      return partial("Směr baterie je nastavený, ale její aktuální výkon není dostupný.");
-    }
-  }
-
-  const pv = Math.abs(pvNode.numeric);
-  const gridImport = Math.abs(gridImportNode.numeric);
-  const gridExport = Math.abs(gridExportNode.numeric);
-  const batteryCharge = batteryNode?.direction === "house-load" ? Math.abs(batteryNode.numeric ?? 0) : 0;
-  const batteryDischarge = batteryNode?.direction === "into-house" ? Math.abs(batteryNode.numeric ?? 0) : 0;
-  const value = Math.max(0, pv + gridImport + batteryDischarge - gridExport - batteryCharge);
-
-  const hasEv = Boolean(node(nodes, "ev"));
-  const hasWallbox = Boolean(node(nodes, "wallbox"));
-  if (hasEv && hasWallbox && settings.ev_wallbox_relation === "unknown") {
-    return partial("Spotřeba domu je vypočtená, ale rozpad spotřebičů čeká na určení vztahu EV a wallboxu.", value);
-  }
-
+function readingNode(
+  id: string,
+  label: string,
+  reading: PowerReading | undefined,
+  direction: FlowDirection,
+  directionLabel: string,
+): FlowNode {
   return {
-    value,
-    reason: "Výpočet používá kompletní potvrzenou topologii FVE, sítě a případné baterie.",
-    quality: "complete",
-    qualityLabel: "Kompletní měření",
+    id,
+    label,
+    entityId: reading?.entity_id ?? null,
+    numeric: reading?.value_kw ?? null,
+    active: Boolean(reading?.entity_id),
+    direction,
+    directionLabel,
+    unavailableReason: reading && !reading.available ? reading.reason : null,
   };
 }
 
+function batteryNode(flow: ServerEnergyFlowSnapshot): FlowNode | null {
+  const reading = flow.entities.battery;
+  if (!reading?.entity_id) return null;
+  if ((flow.battery_charge_kw ?? 0) > 0.03) {
+    return readingNode("battery", "Baterie", reading, "house-load", "nabíjení baterie");
+  }
+  if ((flow.battery_discharge_kw ?? 0) > 0.03) {
+    return readingNode("battery", "Baterie", reading, "into-house", "vybíjení do domu");
+  }
+  return readingNode("battery", "Baterie", reading, "bidirectional", reading.available ? "baterie je téměř v klidu" : "výkon baterie není dostupný");
+}
+
+function batterySummary(flow: ServerEnergyFlowSnapshot): string {
+  if (flow.battery_charge_kw === null && flow.battery_discharge_kw === null) return "—";
+  if ((flow.battery_charge_kw ?? 0) > 0.03) return `nabíjení ${formatKw(flow.battery_charge_kw)}`;
+  if ((flow.battery_discharge_kw ?? 0) > 0.03) return `vybíjení ${formatKw(flow.battery_discharge_kw)}`;
+  return "0 kW";
+}
+
 function EnergyFlow({ hass }: { hass: HomeAssistant }) {
-  const [snapshot, setSnapshot] = useState<DiscoverySnapshot | null>(cachedSnapshot);
-  const [flowSettings, setFlowSettings] = useState<EnergyFlowSettings>(cachedFlowSettings);
+  const [entryId, setEntryId] = useState<string | null>(null);
+  const [flow, setFlow] = useState<ServerEnergyFlowSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const lastSourceFingerprint = useRef<string | null>(null);
 
   useEffect(() => {
     let active = true;
-    const refresh = () => loadData(hass).then(({ snapshot: value, settings }) => {
-      if (!active) return;
-      cachedSnapshot = value;
-      cachedFlowSettings = settings;
-      setSnapshot(value);
-      setFlowSettings(settings);
-      setError(null);
-    }).catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : "Energetický tok se nepodařilo načíst."); });
-    if (!cachedSnapshot) void refresh();
+    const refresh = async () => {
+      try {
+        const entry = await findEntry(hass);
+        if (!active) return;
+        if (!entry) {
+          setEntryId(null);
+          setFlow(null);
+          setError(null);
+          return;
+        }
+        const value = await loadServerFlow(hass, entry.entry_id);
+        if (!active) return;
+        setEntryId(entry.entry_id);
+        setFlow(value);
+        setError(null);
+      } catch (reason) {
+        if (active) setError(reason instanceof Error ? reason.message : "Energetický tok se nepodařilo načíst.");
+      }
+    };
+    void refresh();
     window.addEventListener(PROFILE_CHANGED_EVENT, refresh);
-    return () => { active = false; window.removeEventListener(PROFILE_CHANGED_EVENT, refresh); };
+    return () => {
+      active = false;
+      window.removeEventListener(PROFILE_CHANGED_EVENT, refresh);
+    };
   }, [hass.connection]);
 
-  const nodes = useMemo<FlowNode[]>(() => {
-    if (!snapshot) return [];
-    const batteryEntity = roleEntity(snapshot, "home_battery", "power");
-    const batteryValue = powerValue(hass, batteryEntity);
-    const batteryFlow = batteryDirection(batteryValue.numeric, flowSettings.battery_power_sign);
-    const specs = [
-      ["pv", "FVE", roleEntity(snapshot, "photovoltaics", "pv_power"), "into-house", "do domu"],
-      ["grid-in", "Síť · odběr", roleEntity(snapshot, "smart_meter", "grid_import") ?? roleEntity(snapshot, "photovoltaics", "grid_import"), "into-house", "ze sítě do domu"],
-      ["grid-out", "Síť · přetok", roleEntity(snapshot, "smart_meter", "grid_export") ?? roleEntity(snapshot, "energy_export", "grid_export") ?? roleEntity(snapshot, "photovoltaics", "grid_export"), "out-of-house", "z domu do sítě"],
-      ["wallbox", "Wallbox", roleEntity(snapshot, "wallbox", "power"), "house-load", "spotřeba domu"],
-      ["ev", "Elektromobil", roleEntity(snapshot, "electric_vehicle", "power"), "house-load", "spotřeba při nabíjení"],
-      ["heatpump", "Tepelné čerpadlo", roleEntity(snapshot, "heat_pump", "power"), "house-load", "spotřeba domu"],
-    ] as const;
-    const mapped = specs.map(([id, label, entityId, direction, directionLabel]) => {
-      const value = powerValue(hass, entityId);
-      return { id, label, entityId, value: value.text, numeric: value.numeric, active: Boolean(entityId), direction, directionLabel } as FlowNode;
-    });
-    if (batteryEntity) {
-      mapped.splice(3, 0, {
-        id: "battery",
-        label: "Baterie",
-        entityId: batteryEntity,
-        value: batteryValue.text,
-        numeric: batteryValue.numeric,
-        active: true,
-        direction: batteryFlow.direction,
-        directionLabel: batteryFlow.label,
-      });
+  const sourceFingerprint = useMemo(() => {
+    if (!flow) return "";
+    return Object.values(flow.entities)
+      .filter((reading) => reading.entity_id !== null)
+      .map((reading) => {
+        const source = reading.entity_id ? hass.states[reading.entity_id] : undefined;
+        return `${reading.entity_id}:${source?.state ?? "missing"}:${String(source?.attributes.unit_of_measurement ?? "")}`;
+      })
+      .sort()
+      .join("|");
+  }, [flow, hass.states]);
+
+  useEffect(() => {
+    if (!entryId || !sourceFingerprint) return;
+    if (lastSourceFingerprint.current === null) {
+      lastSourceFingerprint.current = sourceFingerprint;
+      return;
     }
-    return mapped.filter((item) => item.active);
-  }, [snapshot, hass.states, flowSettings.battery_power_sign]);
+    if (lastSourceFingerprint.current === sourceFingerprint) return;
+    lastSourceFingerprint.current = sourceFingerprint;
+    let active = true;
+    loadServerFlow(hass, entryId)
+      .then((value) => {
+        if (!active) return;
+        setFlow(value);
+        setError(null);
+      })
+      .catch((reason) => {
+        if (active) setError(reason instanceof Error ? reason.message : "Energetický tok se nepodařilo obnovit.");
+      });
+    return () => { active = false; };
+  }, [entryId, hass, sourceFingerprint]);
+
+  const nodes = useMemo<FlowNode[]>(() => {
+    if (!flow) return [];
+    const result: FlowNode[] = [
+      readingNode("pv", "FVE", flow.entities.pv, "into-house", "do domu"),
+      readingNode("grid-in", "Síť · odběr", flow.entities.grid_import, "into-house", "ze sítě do domu"),
+      readingNode("grid-out", "Síť · přetok", flow.entities.grid_export, "out-of-house", "z domu do sítě"),
+      readingNode("wallbox", "Wallbox", flow.entities.wallbox, "house-load", "spotřeba domu"),
+      readingNode("ev", "Elektromobil", flow.entities.ev, "house-load", "spotřeba při nabíjení"),
+      readingNode("heatpump", "Tepelné čerpadlo", flow.entities.heat_pump, "house-load", "spotřeba domu"),
+      readingNode("boiler", "Elektrický bojler", flow.entities.electric_boiler, "house-load", "spotřeba domu"),
+      readingNode("hot-water", "Ohřev vody", flow.entities.hot_water_tank, "house-load", "spotřeba domu"),
+      readingNode("electric-heating", "Elektrické vytápění", flow.entities.electric_heating, "house-load", "spotřeba domu"),
+      readingNode("submeters", "Podružné měření", flow.entities.submeters, "house-load", "známá spotřeba"),
+    ];
+    const battery = batteryNode(flow);
+    if (battery) result.splice(3, 0, battery);
+    return result.filter((item) => item.active);
+  }, [flow]);
 
   if (error) return <section className="energy-flow energy-flow--error">{error}</section>;
-  if (!snapshot || nodes.length < 2) return null;
+  if (!flow || nodes.length < 2) return null;
 
   const activePower = nodes.filter((item) => item.numeric !== null && Math.abs(item.numeric) > 0.03).length;
-  const duplicateLoads = flowSettings.ev_wallbox_relation === "same_flow" ? new Set(["ev"]) : new Set<string>();
-  const knownSources = sumUnique(nodes, ["into-house"]);
-  const knownLoads = sumUnique(nodes, ["house-load"], duplicateLoads);
-  const knownExport = sumUnique(nodes, ["out-of-house"]);
-  const battery = nodes.find((item) => item.id === "battery" && item.numeric !== null)?.numeric ?? null;
-  const batteryKnown = flowSettings.battery_power_sign !== "unknown";
-  const wholeHouse = deriveWholeHousePower(nodes, flowSettings);
+  const tone = qualityClass(flow.quality);
+  const primaryReason = flow.reasons[0] ?? "Serverový energetický model nemá další diagnostiku.";
 
   return <section className="energy-flow">
     <div className="energy-flow__heading">
       <div><span className="eyebrow">Živý energetický tok</span><h2>Kam právě teče energie</h2></div>
       <div className="energy-flow__heading-meta">
-        <span className={`energy-flow__quality energy-flow__quality--${wholeHouse.quality}`}>{wholeHouse.qualityLabel}</span>
+        <span className={`energy-flow__quality energy-flow__quality--${tone}`}>{flow.quality_label}</span>
         <small>{activePower > 0 ? `${activePower} aktivní toky` : "Toky jsou právě téměř nulové"}</small>
       </div>
     </div>
     <div className="energy-flow__map">
-      <div className={`energy-flow__hub energy-flow__hub--${wholeHouse.quality}`}><span>Dům</span><strong>{wholeHouse.value !== null ? formatKw(wholeHouse.value) : "FRAKON"}</strong><small>{wholeHouse.value !== null ? "aktuální spotřeba" : wholeHouse.qualityLabel}</small></div>
+      <div className={`energy-flow__hub energy-flow__hub--${tone}`}><span>Dům</span><strong>{flow.house_load_kw !== null ? formatKw(flow.house_load_kw) : "FRAKON"}</strong><small>{flow.house_load_kw !== null ? "aktuální spotřeba · server model" : flow.quality_label}</small></div>
       {nodes.map((item, index) => {
         const live = item.numeric !== null && Math.abs(item.numeric) > 0.03;
         return <article className={`energy-flow__node energy-flow__node--${item.direction}${live ? " energy-flow__node--live" : " energy-flow__node--idle"}`} key={item.id} style={{ "--flow-index": index } as React.CSSProperties}>
-          <span>{item.label}</span><strong>{item.value ?? "Bez dat"}</strong><small className="energy-flow__direction">{item.directionLabel}</small><i aria-hidden="true" />
+          <span>{item.label}</span><strong>{item.numeric !== null ? formatKw(item.numeric) : "Bez dat"}</strong><small className="energy-flow__direction">{item.unavailableReason ? `${item.directionLabel} · ${item.unavailableReason}` : item.directionLabel}</small><i aria-hidden="true" />
         </article>;
       })}
     </div>
     <div className="energy-flow__balance-status">
-      <div><span>Kvalita bilance</span><strong>{wholeHouse.qualityLabel}</strong></div>
-      <p>{wholeHouse.reason}</p>
+      <div><span>Kvalita bilance</span><strong>{flow.quality_label}</strong></div>
+      <p>{flow.reasons.join(" ")}</p>
     </div>
-    <div className="energy-flow__balance" aria-label="Souhrn dostupných energetických toků">
-      <div><span>Spotřeba domu</span><strong>{formatKw(wholeHouse.value)}</strong><small>{wholeHouse.reason}</small></div>
-      <div><span>Zdroje do domu</span><strong>{formatKw(knownSources)}</strong><small>FVE + síť + známé vybíjení baterie</small></div>
-      <div><span>Známé spotřeby</span><strong>{formatKw(knownLoads)}</strong><small>{flowSettings.ev_wallbox_relation === "same_flow" ? "EV není započten dvakrát s wallboxem" : flowSettings.ev_wallbox_relation === "unknown" ? "vztah EV a wallboxu zatím není potvrzen" : "potvrzené samostatné spotřeby"}</small></div>
-      <div><span>Přetok do sítě</span><strong>{formatKw(knownExport)}</strong><small>potvrzené měření exportu</small></div>
-      <div><span>Baterie</span><strong>{formatKw(battery)}</strong><small>{batteryKnown ? "směr je započten podle nastavení" : "nastav směr v Technologie domu"}</small></div>
+    <div className="energy-flow__balance" aria-label="Serverový souhrn energetických toků">
+      <div><span>Spotřeba domu</span><strong>{formatKw(flow.house_load_kw)}</strong><small>{primaryReason}</small></div>
+      <div><span>Výroba FVE</span><strong>{formatKw(flow.pv_generation_kw)}</strong><small>normalizovaný serverový výkon</small></div>
+      <div><span>Odběr ze sítě</span><strong>{formatKw(flow.grid_import_kw)}</strong><small>potvrzený vstup hlavního elektroměru</small></div>
+      <div><span>Přetok do sítě</span><strong>{formatKw(flow.grid_export_kw)}</strong><small>potvrzený export hlavního elektroměru</small></div>
+      <div><span>Známé spotřeby</span><strong>{formatKw(flow.known_load_kw)}</strong><small>{flow.known_load_reason}</small></div>
+      <div><span>Baterie</span><strong>{batterySummary(flow)}</strong><small>{flow.entities.battery?.entity_id ? "směr určuje potvrzená serverová topologie" : "baterie není součástí potvrzené topologie"}</small></div>
     </div>
-    <p className="energy-flow__note">FRAKON rozlišuje kompletní bilanci, částečné živé měření a stav vyžadující doplnění nastavení. Celkovou spotřebu domu zobrazí jen tehdy, když dostupná data a topologie dovolují výpočet bez skrytých předpokladů.</p>
+    <p className="energy-flow__note">Dashboard už bilanci nepřepočítává. Spotřebu domu, kvalitu, jednotky, směr baterie i deduplikaci EV/wallboxu přebírá z autoritativního serverového modelu FRAKON Energy, který používají také nativní Home Assistant entity.</p>
   </section>;
 }
 
