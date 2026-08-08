@@ -39,8 +39,11 @@ from .load_execution_stop_lease_ws_api import async_prepare_stop_lease
 
 _RUNTIME_KEY = "load_execution_pending_run_schedulers_by_entry"
 
+STOP_LEASE_RETRY_SECONDS = 5
+
 STATUS_SCHEDULED = "scheduled"
 STATUS_PREPARING = "preparing"
+STATUS_RETRYING_STOP_LEASE = "retrying_stop_lease"
 STATUS_PREPARED_WITH_STOP_LEASE = "prepared_with_stop_lease"
 STATUS_DELEGATED = "delegated_to_start_scheduler"
 STATUS_EXISTING_LIFECYCLE = "existing_lifecycle"
@@ -72,6 +75,7 @@ class PendingRunSchedulerStatus:
     timer_active: bool = False
     lifecycle_prepared: bool = False
     stop_lease_prepared: bool = False
+    retry_count: int = 0
     service_call_performed: bool = False
     execution_performed: bool = False
     executor_available: bool = False
@@ -94,6 +98,7 @@ class ExecutionPendingRunScheduler:
         self._last_error: str | None = None
         self._unsub_by_attempt: dict[str, Callable[[], None]] = {}
         self._status_by_attempt: dict[str, PendingRunSchedulerStatus] = {}
+        self._retry_count_by_attempt: dict[str, int] = {}
 
     @property
     def entry_id(self) -> str:
@@ -176,15 +181,18 @@ class ExecutionPendingRunScheduler:
             return
         self._hass.async_create_task(self._async_process(attempt_id, fired_at))
 
-    def _schedule_timer(self, record: ExecutionPendingRun, starts_at: datetime) -> None:
+    def _schedule_timer(self, record: ExecutionPendingRun, when: datetime) -> None:
         @callback
         def timer_action(now: datetime) -> None:
             self._timer_fired(record.attempt_id, now)
 
+        previous = self._unsub_by_attempt.pop(record.attempt_id, None)
+        if previous is not None:
+            previous()
         unsubscribe = async_track_point_in_utc_time(
             self._hass,
             timer_action,
-            starts_at.astimezone(timezone.utc),
+            when.astimezone(timezone.utc),
         )
         self._unsub_by_attempt[record.attempt_id] = unsubscribe
 
@@ -199,6 +207,7 @@ class ExecutionPendingRunScheduler:
         last_error: str | None = None,
         lifecycle_prepared: bool = False,
         stop_lease_prepared: bool = False,
+        retry_count: int | None = None,
     ) -> None:
         self._status_by_attempt[record.attempt_id] = PendingRunSchedulerStatus(
             pending_run_id=record.pending_run_id,
@@ -213,7 +222,48 @@ class ExecutionPendingRunScheduler:
             timer_active=timer_active,
             lifecycle_prepared=lifecycle_prepared,
             stop_lease_prepared=stop_lease_prepared,
+            retry_count=(
+                self._retry_count_by_attempt.get(record.attempt_id, 0)
+                if retry_count is None
+                else retry_count
+            ),
         )
+
+    def _clear_retry(self, attempt_id: str) -> None:
+        self._retry_count_by_attempt.pop(attempt_id, None)
+
+    def _schedule_stop_lease_retry(
+        self,
+        record: ExecutionPendingRun,
+        *,
+        now: datetime,
+        grace_deadline: datetime,
+        error: Exception,
+    ) -> bool:
+        """Schedule one safe retry only while no physical start can yet occur."""
+        if now >= grace_deadline:
+            return False
+        retry_at = min(
+            now + timedelta(seconds=STOP_LEASE_RETRY_SECONDS),
+            grace_deadline,
+        )
+        if retry_at <= now:
+            return False
+        count = self._retry_count_by_attempt.get(record.attempt_id, 0) + 1
+        self._retry_count_by_attempt[record.attempt_id] = count
+        self._schedule_timer(record, retry_at)
+        self._set_status(
+            record,
+            status=STATUS_RETRYING_STOP_LEASE,
+            now=now,
+            next_wake_at=retry_at.astimezone(timezone.utc).isoformat(),
+            timer_active=True,
+            last_error=str(error),
+            lifecycle_prepared=True,
+            stop_lease_prepared=False,
+            retry_count=count,
+        )
+        return True
 
     async def _async_process(self, attempt_id: str, now: datetime) -> None:
         if not self._started:
@@ -226,6 +276,7 @@ class ExecutionPendingRunScheduler:
             ).async_get_by_attempt_id(attempt_id)
             if record is None:
                 self._status_by_attempt.pop(attempt_id, None)
+                self._clear_retry(attempt_id)
                 return
             dependencies_ready, dependency_error = self._dependencies_ready()
             if not dependencies_ready:
@@ -255,6 +306,7 @@ class ExecutionPendingRunScheduler:
                 lifecycle = await lifecycle_repository(
                     self._hass, self._entry_id
                 ).async_get_by_attempt_id(attempt_id)
+                self._clear_retry(attempt_id)
                 if lifecycle is None:
                     self._set_status(
                         record,
@@ -288,6 +340,7 @@ class ExecutionPendingRunScheduler:
                 if lifecycle is None:
                     raise RuntimeError("lifecycle prepare returned without durable lifecycle")
                 if lifecycle.state in _TERMINAL_LIFECYCLE_STATES:
+                    self._clear_retry(attempt_id)
                     self._set_status(
                         record,
                         status=STATUS_EXISTING_LIFECYCLE,
@@ -296,6 +349,7 @@ class ExecutionPendingRunScheduler:
                     )
                     return
                 if lifecycle.state != STATE_PREPARED:
+                    self._clear_retry(attempt_id)
                     self._set_status(
                         record,
                         status=STATUS_BLOCKED,
@@ -315,6 +369,7 @@ class ExecutionPendingRunScheduler:
                 if stop_result.get("service_call_performed") is not False:
                     raise RuntimeError("stop lease preparation unexpectedly reported service call")
 
+                self._clear_retry(attempt_id)
                 final_lifecycle = await lifecycles.async_get_by_attempt_id(attempt_id)
                 if final_lifecycle is not None and final_lifecycle.state == STATE_PREPARED:
                     status = STATUS_PREPARED_WITH_STOP_LEASE
@@ -326,14 +381,34 @@ class ExecutionPendingRunScheduler:
                     now=now,
                     lifecycle_prepared=True,
                     stop_lease_prepared=True,
+                    retry_count=0,
                 )
             except Exception as err:
+                # Only a still-prepared lifecycle is eligible for a retry. If a
+                # start crossed into dispatching/dispatched/recovery/verified,
+                # this scheduler must never infer that repeating anything is safe.
+                try:
+                    latest = await lifecycles.async_get_by_attempt_id(attempt_id)
+                except Exception:
+                    latest = None
+                if (
+                    latest is not None
+                    and latest.state == STATE_PREPARED
+                    and self._schedule_stop_lease_retry(
+                        record,
+                        now=now,
+                        grace_deadline=grace_deadline,
+                        error=err,
+                    )
+                ):
+                    return
+                self._clear_retry(attempt_id)
                 self._set_status(
                     record,
                     status=STATUS_ERROR,
                     now=now,
                     last_error=str(err),
-                    lifecycle_prepared=(lifecycle is not None and lifecycle.state == STATE_PREPARED),
+                    lifecycle_prepared=(latest is not None and latest.state == STATE_PREPARED),
                 )
 
     async def async_refresh(self, *, now: datetime | None = None) -> None:
@@ -357,6 +432,10 @@ class ExecutionPendingRunScheduler:
             records = await pending_run_repository(self._hass, self._entry_id).async_list()
             self._status_by_attempt = {}
             lifecycles = lifecycle_repository(self._hass, self._entry_id)
+            live_attempts = {record.attempt_id for record in records}
+            for attempt_id in tuple(self._retry_count_by_attempt):
+                if attempt_id not in live_attempts:
+                    self._clear_retry(attempt_id)
 
             for record in records:
                 if not self._started:
@@ -366,6 +445,7 @@ class ExecutionPendingRunScheduler:
                 grace_deadline = self._grace_deadline(record)
 
                 if lifecycle is not None and lifecycle.state in _TERMINAL_LIFECYCLE_STATES:
+                    self._clear_retry(record.attempt_id)
                     self._set_status(
                         record,
                         status=STATUS_EXISTING_LIFECYCLE,
@@ -375,6 +455,7 @@ class ExecutionPendingRunScheduler:
                     continue
 
                 if current > grace_deadline:
+                    self._clear_retry(record.attempt_id)
                     self._set_status(
                         record,
                         status=(STATUS_EXISTING_LIFECYCLE if lifecycle is not None else STATUS_MISSED),
