@@ -235,6 +235,21 @@ class PendingRunRecordResult:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class PendingRunRemoveResult:
+    removed: tuple[ExecutionPendingRun, ...]
+    changed: bool
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "removed": [record.as_dict() for record in self.removed],
+            "removed_count": len(self.removed),
+            "changed": self.changed,
+            "service_call_performed": False,
+            "execution_performed": False,
+        }
+
+
 class ExecutionPendingRunLedger:
     def __init__(self, records: tuple[ExecutionPendingRun, ...] = ()) -> None:
         self._by_attempt: dict[str, ExecutionPendingRun] = {}
@@ -276,6 +291,19 @@ class ExecutionPendingRunLedger:
         self._by_attempt[candidate.attempt_id] = candidate
         self._by_id[candidate.pending_run_id] = candidate
         return PendingRunRecordResult(candidate, created=True, idempotent_replay=False)
+
+    def remove_attempt_ids(self, attempt_ids: set[str]) -> PendingRunRemoveResult:
+        if not attempt_ids:
+            return PendingRunRemoveResult(removed=(), changed=False)
+        removed = tuple(
+            record for record in self.records if record.attempt_id in attempt_ids
+        )
+        if not removed:
+            return PendingRunRemoveResult(removed=(), changed=False)
+        for record in removed:
+            self._by_attempt.pop(record.attempt_id, None)
+            self._by_id.pop(record.pending_run_id, None)
+        return PendingRunRemoveResult(removed=removed, changed=True)
 
     def as_storage(self) -> dict[str, Any]:
         return {
@@ -324,6 +352,20 @@ class ExecutionPendingRunRepository:
             candidate = ExecutionPendingRunLedger(current.records)
             result = candidate.record(pending_run)
             if result.created:
+                await self._store.async_save(candidate.as_storage())
+                self._ledger = candidate
+            return result
+
+    async def async_remove_attempt_ids(
+        self,
+        attempt_ids: set[str],
+    ) -> PendingRunRemoveResult:
+        """Transactionally remove only explicitly selected immutable audit records."""
+        async with self._lock:
+            current = await self._async_ledger()
+            candidate = ExecutionPendingRunLedger(current.records)
+            result = candidate.remove_attempt_ids(set(attempt_ids))
+            if result.changed:
                 await self._store.async_save(candidate.as_storage())
                 self._ledger = candidate
             return result

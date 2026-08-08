@@ -27,6 +27,7 @@ from .load_execution_lifecycle_recovery import async_initialize_lifecycle_recove
 from .load_execution_lifecycle_recovery_ws_api import async_register_load_execution_lifecycle_recovery_websocket
 from .load_execution_lifecycle_ws_api import async_register_load_execution_lifecycle_websocket
 from .load_execution_noop_completion_ws_api import async_register_load_execution_noop_completion_websocket
+from .load_execution_pending_run_retention_runtime import async_run_pending_run_retention_best_effort
 from .load_execution_pending_run_scheduler import async_start_pending_run_scheduler, async_stop_pending_run_scheduler
 from .load_execution_pending_run_scheduler_ws_api import async_register_load_execution_pending_run_scheduler_websocket
 from .load_execution_pending_run_ws_api import async_register_load_execution_pending_run_websocket
@@ -95,6 +96,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await async_initialize_stop_recovery(hass, entry_id=entry.entry_id)
     await async_start_stop_scheduler(hass, entry.entry_id)
     await async_start_start_scheduler(hass, entry.entry_id)
+    # Housekeeping is deliberately best-effort and cannot block execution setup.
+    await async_run_pending_run_retention_best_effort(hass, entry_id=entry.entry_id)
     await async_start_pending_run_scheduler(hass, entry.entry_id)
     async_register_entity_discovery_websocket(hass, runtime_registry)
     async_register_technology_profile_websocket(hass)

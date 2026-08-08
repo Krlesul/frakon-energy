@@ -23,6 +23,7 @@ from .load_execution_pending_run import (
     PendingRunConflictError,
     PendingRunError,
 )
+from .load_execution_pending_run_retention_runtime import async_run_pending_run_retention_best_effort
 from .load_execution_pending_run_runtime import pending_run_repository
 from .load_execution_readiness import (
     ExecutionReadinessDecision,
@@ -136,6 +137,15 @@ async def async_create_pending_run(
         created_at=int(current.timestamp()),
     )
     result = await repository.async_record(record)
+
+    # Housekeeping cannot make a successful scheduling mutation fail. The new
+    # record is necessarily young, so retention can only remove unrelated old
+    # redundant pending-run copies.
+    await async_run_pending_run_retention_best_effort(
+        hass,
+        entry_id=entry_id,
+        now=current,
+    )
 
     from .load_execution_pending_run_scheduler import (  # noqa: PLC0415
         async_refresh_pending_run_scheduler_if_started,
