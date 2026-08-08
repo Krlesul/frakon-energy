@@ -7,6 +7,7 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant
 
+from .load_execution_arm import async_execution_arm_status
 from .load_execution_lifecycle import (
     STATE_DISPATCHED,
     STATE_DISPATCHING,
@@ -106,6 +107,7 @@ async def async_execution_safety_status(
     stop_recovery = stop_recovery_summary(hass, entry_id)
     stop_runtime = stop_scheduler(hass, entry_id)
     start_runtime = start_scheduler(hass, entry_id)
+    arm_status = await async_execution_arm_status(hass, entry_id)
     stop_scheduler_statuses = stop_runtime.statuses()
     scheduler_status_by_start = {
         status.start_lifecycle_id: status.status for status in stop_scheduler_statuses
@@ -133,8 +135,15 @@ async def async_execution_safety_status(
         and start_runtime.started
         and start_runtime.healthy
     )
+    execution_armed = bool(
+        arm_status.get("storage_healthy") and arm_status.get("armed")
+    )
+    explicit_start_executor_available = (
+        start_recovery_ready and stop_runtime_ready and execution_armed
+    )
     return {
         "entry_id": entry_id,
+        "execution_arm": arm_status,
         "start_recovery": start_recovery.as_dict(),
         "stop_recovery": stop_recovery.as_dict(),
         "stop_scheduler": {
@@ -152,10 +161,11 @@ async def async_execution_safety_status(
         "start_runtime_ready": start_recovery_ready,
         "stop_runtime_ready": stop_runtime_ready,
         "autonomous_start_runtime_ready": autonomous_start_runtime_ready,
-        "explicit_start_executor_available": True,
+        "execution_armed": execution_armed,
+        "explicit_start_executor_available": explicit_start_executor_available,
         "explicit_stop_executor_available": True,
         "autonomous_stop_enabled": stop_runtime_ready,
-        "autonomous_start_enabled": autonomous_start_runtime_ready,
+        "autonomous_start_enabled": autonomous_start_runtime_ready and execution_armed,
         "unsafe_start_lifecycles": unsafe,
         "items": [item.as_dict() for item in items],
         "read_only": True,
