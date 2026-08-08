@@ -27,6 +27,7 @@ from .load_execution_stop_recovery import STOP_RECOVERY_OK, stop_recovery_summar
 from .load_execution_stop_scheduler import stop_scheduler
 from .site_capacity import (
     STATUS_OVER_LIMIT,
+    STATUS_SOURCE_STALE,
     STATUS_SOURCE_UNAVAILABLE,
     STATUS_TOPOLOGY_NOT_READY,
     build_site_capacity_status,
@@ -110,7 +111,13 @@ def _capacity_guard_summary(capacity: Any) -> dict[str, Any]:
         or (
             capacity.topology_ready
             and capacity.source_available
-            and capacity.status not in {STATUS_TOPOLOGY_NOT_READY, STATUS_SOURCE_UNAVAILABLE}
+            and capacity.source_fresh
+            and capacity.status
+            not in {
+                STATUS_TOPOLOGY_NOT_READY,
+                STATUS_SOURCE_UNAVAILABLE,
+                STATUS_SOURCE_STALE,
+            }
         )
     )
     current_limit_exceeded = configured and capacity.status == STATUS_OVER_LIMIT
@@ -120,6 +127,8 @@ def _capacity_guard_summary(capacity: Any) -> dict[str, Any]:
         blocking_reason = "site_capacity_topology_not_ready"
     elif not capacity.source_available or capacity.status == STATUS_SOURCE_UNAVAILABLE:
         blocking_reason = "site_capacity_source_unavailable"
+    elif not capacity.source_fresh or capacity.status == STATUS_SOURCE_STALE:
+        blocking_reason = "site_capacity_source_stale"
     elif current_limit_exceeded:
         blocking_reason = "site_capacity_already_over_limit"
     else:
@@ -138,6 +147,9 @@ def _capacity_guard_summary(capacity: Any) -> dict[str, Any]:
         "grid_over_limit_kw": capacity.grid_over_limit_kw,
         "utilization_percent": capacity.utilization_percent,
         "source_entity_id": capacity.source_entity_id,
+        "source_fresh": capacity.source_fresh,
+        "source_age_seconds": capacity.source_age_seconds,
+        "max_source_age_seconds": capacity.max_source_age_seconds,
         "plan_specific_headroom_check_required": configured and data_ready and not current_limit_exceeded,
         "read_only": True,
         "service_call_performed": False,
