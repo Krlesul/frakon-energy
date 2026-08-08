@@ -30,6 +30,7 @@ from .load_execution_lifecycle_recovery import RECOVERY_OK, lifecycle_recovery_s
 from .load_execution_lifecycle_runtime import lifecycle_repository
 from .load_execution_lifecycle_ws_api import async_prepare_execution_lifecycle
 from .load_execution_pending_run import ExecutionPendingRun
+from .load_execution_pending_run_cancellation import cancellation_repository
 from .load_execution_pending_run_runtime import pending_run_repository
 from .load_execution_readiness import (
     DEFAULT_START_GRACE_SECONDS,
@@ -49,6 +50,7 @@ STATUS_SCHEDULED = "scheduled"
 STATUS_PREPARING = "preparing"
 STATUS_RETRYING_STOP_LEASE = "retrying_stop_lease"
 STATUS_NO_START_NEEDED = "no_start_needed"
+STATUS_CANCELLED = "cancelled"
 STATUS_PREPARED_WITH_STOP_LEASE = "prepared_with_stop_lease"
 STATUS_DELEGATED = "delegated_to_start_scheduler"
 STATUS_EXISTING_LIFECYCLE = "existing_lifecycle"
@@ -201,6 +203,11 @@ class ExecutionPendingRunScheduler:
         )
         self._unsub_by_attempt[record.attempt_id] = unsubscribe
 
+    def _cancel_timer(self, attempt_id: str) -> None:
+        unsubscribe = self._unsub_by_attempt.pop(attempt_id, None)
+        if unsubscribe is not None:
+            unsubscribe()
+
     def _set_status(
         self,
         record: ExecutionPendingRun,
@@ -236,6 +243,39 @@ class ExecutionPendingRunScheduler:
 
     def _clear_retry(self, attempt_id: str) -> None:
         self._retry_count_by_attempt.pop(attempt_id, None)
+
+    async def _mark_cancelled_if_present(
+        self,
+        record: ExecutionPendingRun,
+        *,
+        now: datetime,
+    ) -> bool:
+        cancellation = await cancellation_repository(
+            self._hass,
+            self._entry_id,
+        ).async_get_by_attempt_id(record.attempt_id)
+        if cancellation is None:
+            return False
+        if cancellation.pending_run_id != record.pending_run_id:
+            self._clear_retry(record.attempt_id)
+            self._cancel_timer(record.attempt_id)
+            self._set_status(
+                record,
+                status=STATUS_BLOCKED,
+                now=now,
+                last_error="cancellation_pending_run_identity_mismatch",
+            )
+            return True
+        self._clear_retry(record.attempt_id)
+        self._cancel_timer(record.attempt_id)
+        self._set_status(
+            record,
+            status=STATUS_CANCELLED,
+            now=now,
+            last_error=f"{cancellation.reason}:{cancellation.cancelled_by or 'administrator'}",
+            retry_count=0,
+        )
+        return True
 
     async def _already_satisfied_after_prepare_rejection(
         self,
@@ -316,6 +356,9 @@ class ExecutionPendingRunScheduler:
                 self._status_by_attempt.pop(attempt_id, None)
                 self._clear_retry(attempt_id)
                 return
+            if await self._mark_cancelled_if_present(record, now=now):
+                return
+
             dependencies_ready, dependency_error = self._dependencies_ready()
             if not dependencies_ready:
                 self._healthy = False
@@ -422,13 +465,12 @@ class ExecutionPendingRunScheduler:
                     retry_count=0,
                 )
             except Exception as err:
-                # Only a still-prepared lifecycle is eligible for a retry. If a
-                # start crossed into dispatching/dispatched/recovery/verified,
-                # this scheduler must never infer that repeating anything is safe.
                 try:
                     latest = await lifecycles.async_get_by_attempt_id(attempt_id)
                 except Exception:
                     latest = None
+                if latest is None and await self._mark_cancelled_if_present(record, now=now):
+                    return
                 if latest is None and await self._already_satisfied_after_prepare_rejection(
                     record,
                     now=now,
@@ -483,9 +525,46 @@ class ExecutionPendingRunScheduler:
             for record in records:
                 if not self._started:
                     return
+                cancellation = await cancellation_repository(
+                    self._hass,
+                    self._entry_id,
+                ).async_get_by_attempt_id(record.attempt_id)
                 lifecycle = await lifecycles.async_get_by_attempt_id(record.attempt_id)
                 starts_at = self._starts_at(record)
                 grace_deadline = self._grace_deadline(record)
+
+                if cancellation is not None:
+                    self._clear_retry(record.attempt_id)
+                    if cancellation.pending_run_id != record.pending_run_id:
+                        self._set_status(
+                            record,
+                            status=STATUS_BLOCKED,
+                            now=current,
+                            last_error="cancellation_pending_run_identity_mismatch",
+                        )
+                    elif lifecycle is not None:
+                        self._set_status(
+                            record,
+                            status=STATUS_EXISTING_LIFECYCLE,
+                            now=current,
+                            last_error=(
+                                "cancellation_tombstone_with_lifecycle:"
+                                f"{lifecycle.state}"
+                            ),
+                            lifecycle_prepared=lifecycle.state == STATE_PREPARED,
+                        )
+                    else:
+                        self._set_status(
+                            record,
+                            status=STATUS_CANCELLED,
+                            now=current,
+                            last_error=(
+                                f"{cancellation.reason}:"
+                                f"{cancellation.cancelled_by or 'administrator'}"
+                            ),
+                            retry_count=0,
+                        )
+                    continue
 
                 if lifecycle is not None and lifecycle.state in _TERMINAL_LIFECYCLE_STATES:
                     self._clear_retry(record.attempt_id)
