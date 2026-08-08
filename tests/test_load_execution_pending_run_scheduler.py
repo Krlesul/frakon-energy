@@ -259,8 +259,9 @@ async def test_restart_inside_start_grace_processes_pending_run_immediately(
         lambda *args, **kwargs: pytest.fail("no future timer expected inside grace"),
     )
     scheduler = ExecutionPendingRunScheduler(_Hass(), "entry-1")  # type: ignore[arg-type]
+    scheduler._started = True
 
-    await scheduler.async_start()
+    await scheduler.async_refresh(now=START + timedelta(seconds=1))
 
     assert scheduler.started is True
     assert scheduler.healthy is True
