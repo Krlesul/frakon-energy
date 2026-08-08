@@ -7,6 +7,7 @@ import pytest
 
 from custom_components.frakon_energy import load_execution_arm as arm
 from custom_components.frakon_energy.load_execution_arm import (
+    ExecutionArmError,
     ExecutionArmRepository,
     ExecutionDisarmedError,
 )
@@ -105,6 +106,36 @@ async def test_failed_arm_save_rolls_back_in_memory_state() -> None:
 
     assert (await repo.async_get()).armed is False
     assert (await repo.async_get()).revision == 0
+
+
+@pytest.mark.asyncio
+async def test_non_boolean_persisted_arm_value_is_rejected_fail_closed() -> None:
+    store = _Store()
+    store.data = {
+        "schema_version": 1,
+        "state": {
+            "armed": "false",
+            "revision": 1,
+            "changed_at": 100,
+            "changed_by": "admin-1",
+        },
+    }
+    repo = ExecutionArmRepository(store)
+
+    with pytest.raises(ExecutionArmError, match="armed must be boolean"):
+        await repo.async_get()
+
+
+@pytest.mark.asyncio
+async def test_non_boolean_arm_mutation_is_rejected() -> None:
+    repo = ExecutionArmRepository(_Store())
+
+    with pytest.raises(ExecutionArmError, match="armed must be boolean"):
+        await repo.async_set(
+            armed="true",  # type: ignore[arg-type]
+            changed_at=100,
+            changed_by="admin-1",
+        )
 
 
 @pytest.mark.asyncio
