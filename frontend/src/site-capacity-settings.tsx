@@ -19,7 +19,32 @@ type SiteCapacityStatus = {
   read_only: true;
   service_call_performed: false;
   execution_performed: false;
-  execution_guard_active: false;
+  execution_guard_active: boolean;
+};
+type CapacityReservation = {
+  lifecycle_id: string;
+  attempt_id: string;
+  power_kw: number;
+  created_at: number;
+  expires_at: number;
+};
+type CapacityReservationSummary = {
+  storage_healthy: boolean;
+  last_error: string | null;
+  active_count: number | null;
+  reserved_power_kw: number | null;
+  next_expiry_at: number | null;
+  reservations: CapacityReservation[];
+};
+type ExecutionSafetyStatus = {
+  site_capacity_guard?: {
+    configured: boolean;
+    guard_active: boolean;
+    data_ready: boolean;
+    currently_blocks_all_new_starts: boolean;
+    blocking_reason: string | null;
+  };
+  site_capacity_reservations?: CapacityReservationSummary;
 };
 
 const PROFILE_CHANGED_EVENT = "frakon-energy-technology-profile-changed";
@@ -32,6 +57,14 @@ function formatKw(value: number | null): string {
 function formatPercent(value: number | null): string {
   if (value === null) return "—";
   return `${value.toLocaleString("cs-CZ", { maximumFractionDigits: 1 })} %`;
+}
+
+function formatExpiry(value: number | null): string {
+  if (value === null) return "—";
+  const remaining = Math.max(0, value - Math.floor(Date.now() / 1000));
+  if (remaining < 60) return `${remaining} s`;
+  const minutes = Math.ceil(remaining / 60);
+  return `${minutes} min`;
 }
 
 async function callWs<T>(hass: HomeAssistant, message: Record<string, unknown>): Promise<T> {
@@ -57,6 +90,8 @@ function statusLabel(status: SiteCapacityStatus["status"]): string {
 export function SiteCapacitySettings({ hass }: { hass?: HomeAssistant }) {
   const [entryId, setEntryId] = useState<string | null>(null);
   const [status, setStatus] = useState<SiteCapacityStatus | null>(null);
+  const [safety, setSafety] = useState<ExecutionSafetyStatus | null>(null);
+  const [safetyError, setSafetyError] = useState<string | null>(null);
   const [limitInput, setLimitInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -75,6 +110,18 @@ export function SiteCapacitySettings({ hass }: { hass?: HomeAssistant }) {
       setStatus(value);
       setLimitInput(value.max_grid_import_kw === null ? "" : String(value.max_grid_import_kw));
       setError(null);
+
+      try {
+        const safetyValue = await callWs<ExecutionSafetyStatus>(hass, {
+          type: "frakon_energy/load_execution/safety_status",
+          entry_id: entry.entry_id,
+        });
+        setSafety(safetyValue);
+        setSafetyError(null);
+      } catch (reason) {
+        setSafety(null);
+        setSafetyError(reason instanceof Error ? reason.message : "Bezpečnostní stav rezervací se nepodařilo načíst.");
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Kapacitu přívodu se nepodařilo načíst.");
     }
@@ -132,12 +179,15 @@ export function SiteCapacitySettings({ hass }: { hass?: HomeAssistant }) {
     }
   };
 
+  const reservations = safety?.site_capacity_reservations;
+  const guard = safety?.site_capacity_guard;
+
   return <article className="chart-card technology-settings site-capacity-settings">
     <div className="technology-settings__header">
       <div><span className="eyebrow">Kapacita přívodu</span><h2>Rezerva odběru ze sítě</h2></div>
-      <span className={`entity-badge ${status?.status === "over_limit" ? "warn" : ""}`}>{status ? statusLabel(status.status) : "Načítám…"}</span>
+      <span className={`entity-badge ${status?.status === "over_limit" || guard?.currently_blocks_all_new_starts ? "warn" : ""}`}>{status ? statusLabel(status.status) : "Načítám…"}</span>
     </div>
-    <p className="settings-copy">Zadej skutečný maximální odběr v kW, který chceš pro dům respektovat. FRAKON ho neodhaduje z jističe ani napětí. Tato hodnota je zatím pouze diagnostická a sama nic nezapíná, nevypíná ani neblokuje.</p>
+    <p className="settings-copy">Zadej skutečný maximální odběr v kW, který má FRAKON při řízených startech respektovat. Hodnota se neodhaduje z jističe ani napětí. Pokud je limit nastavený, execution guard kontroluje živý odběr, rezervuje kapacitu právě startujícím spotřebičům a při nedostatečné rezervě nový start bezpečně zablokuje.</p>
 
     <div className="role-list">
       <div className="role-row">
@@ -160,10 +210,23 @@ export function SiteCapacitySettings({ hass }: { hass?: HomeAssistant }) {
     {status ? <div className="discovery-summary">
       <span>Aktuální odběr <b>{formatKw(status.current_grid_import_kw)}</b></span>
       <span>Nastavený limit <b>{formatKw(status.max_grid_import_kw)}</b></span>
-      <span>Rezerva <b>{formatKw(status.grid_headroom_kw)}</b></span>
+      <span>Rezerva měření <b>{formatKw(status.grid_headroom_kw)}</b></span>
       <span>Překročení <b>{formatKw(status.grid_over_limit_kw)}</b></span>
       <span>Využití <b>{formatPercent(status.utilization_percent)}</b></span>
+      <span>Rezervováno starty <b>{formatKw(reservations?.reserved_power_kw ?? null)}</b></span>
+      <span>Aktivní rezervace <b>{reservations?.active_count ?? "—"}</b></span>
+      <span>Nejbližší expirace <b>{formatExpiry(reservations?.next_expiry_at ?? null)}</b></span>
     </div> : null}
-    {status ? <p className="missing-reason">{status.reason}{status.source_entity_id ? ` Zdroj: ${status.source_entity_id}.` : ""} execution_guard_active={String(status.execution_guard_active)}</p> : null}
+    {reservations && !reservations.storage_healthy ? <div className="settings-error">Stav rezervací není důvěryhodný: {reservations.last_error ?? "neznámá chyba"}</div> : null}
+    {safetyError ? <p className="missing-reason">Rozšířená bezpečnostní diagnostika není dostupná: {safetyError}</p> : null}
+    {status ? <p className="missing-reason">{status.reason}{status.source_entity_id ? ` Zdroj: ${status.source_entity_id}.` : ""} Execution guard: {status.configured ? "aktivní" : "vypnutý"}{guard?.blocking_reason ? ` · blokuje nové starty: ${guard.blocking_reason}` : ""}.</p> : null}
+    {reservations?.reservations?.length ? <div className="role-list">
+      {reservations.reservations.map((reservation) => <div className="role-row" key={reservation.lifecycle_id}>
+        <div className="role-row__label">
+          <b>Rezervace {formatKw(reservation.power_kw)}</b>
+          <small>{reservation.lifecycle_id} · {reservation.attempt_id} · expirace za {formatExpiry(reservation.expires_at)}</small>
+        </div>
+      </div>)}
+    </div> : null}
   </article>;
 }
