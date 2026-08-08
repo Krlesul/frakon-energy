@@ -19,7 +19,7 @@ type SiteCapacityStatus = {
   read_only: true;
   service_call_performed: false;
   execution_performed: false;
-  execution_guard_active: false;
+  execution_guard_active: boolean;
 };
 
 const PROFILE_CHANGED_EVENT = "frakon-energy-technology-profile-changed";
@@ -103,8 +103,27 @@ export function SiteCapacitySettings({ hass }: { hass?: HomeAssistant }) {
     void load();
   }, [load, sourceFingerprint]);
 
-  const saveLimit = async (clear = false) => {
+  const applySettings = async (message: Record<string, unknown>) => {
     if (!hass || !entryId) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const value = await callWs<SiteCapacityStatus>(hass, {
+        type: "frakon_energy/site_capacity/set",
+        entry_id: entryId,
+        ...message,
+      });
+      setStatus(value);
+      setLimitInput(value.max_grid_import_kw === null ? "" : String(value.max_grid_import_kw));
+      window.dispatchEvent(new CustomEvent(PROFILE_CHANGED_EVENT));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Nastavení kapacity přívodu se nepodařilo uložit.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveLimit = async (clear = false) => {
     let parsed: number | null = null;
     if (!clear) {
       const candidate = Number(limitInput.replace(",", "."));
@@ -114,45 +133,36 @@ export function SiteCapacitySettings({ hass }: { hass?: HomeAssistant }) {
       }
       parsed = candidate;
     }
-    setBusy(true);
-    setError(null);
-    try {
-      const value = await callWs<SiteCapacityStatus>(hass, {
-        type: "frakon_energy/site_capacity/set",
-        entry_id: entryId,
-        max_grid_import_kw: parsed,
-      });
-      setStatus(value);
-      setLimitInput(value.max_grid_import_kw === null ? "" : String(value.max_grid_import_kw));
-      window.dispatchEvent(new CustomEvent(PROFILE_CHANGED_EVENT));
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Limit přívodu se nepodařilo uložit.");
-    } finally {
-      setBusy(false);
-    }
+    await applySettings({ max_grid_import_kw: parsed });
   };
 
-  return <article className="chart-card technology-settings site-capacity-settings">
+  const setGuard = async (enabled: boolean) => {
+    if (enabled && !status?.configured) {
+      setError("Nejdřív ulož maximální odběr ze sítě.");
+      return;
+    }
+    await applySettings({ execution_guard_enabled: enabled });
+  };
+
+  const guardActive = status?.execution_guard_active ?? false;
+
+  return <article className={`chart-card technology-settings site-capacity-settings ${guardActive ? "is-guarded" : ""}`}>
     <div className="technology-settings__header">
       <div><span className="eyebrow">Kapacita přívodu</span><h2>Rezerva odběru ze sítě</h2></div>
       <span className={`entity-badge ${status?.status === "over_limit" ? "warn" : ""}`}>{status ? statusLabel(status.status) : "Načítám…"}</span>
     </div>
-    <p className="settings-copy">Zadej skutečný maximální odběr v kW, který chceš pro dům respektovat. FRAKON ho neodhaduje z jističe ani napětí. Tato hodnota je zatím pouze diagnostická a sama nic nezapíná, nevypíná ani neblokuje.</p>
+    <p className="settings-copy">Zadej skutečný maximální odběr v kW. Samotné nastavení limitu je diagnostické. Teprve explicitně zapnutý Execution guard použije tento limit jako fail-closed podmínku pro nové fyzické starty.</p>
 
     <div className="role-list">
       <div className="role-row">
         <div className="role-row__label"><b>Maximální odběr ze sítě · kW</b><small>Musí odpovídat hlavnímu měření celého domu; může obsahovat i vlastní bezpečnostní rezervu.</small></div>
-        <input
-          type="number"
-          min="0.1"
-          step="0.1"
-          value={limitInput}
-          disabled={busy || !hass}
-          placeholder="např. 15.0"
-          onChange={(event) => setLimitInput(event.target.value)}
-          onKeyDown={(event) => { if (event.key === "Enter") void saveLimit(false); }}
-        />
-        <div className="role-actions"><button disabled={busy || !hass} onClick={() => void saveLimit(false)}>Uložit</button>{status?.configured ? <button disabled={busy} onClick={() => void saveLimit(true)}>Zrušit limit</button> : null}</div>
+        <input type="number" min="0.1" step="0.1" value={limitInput} disabled={busy || !hass} placeholder="např. 15.0" onChange={(event) => setLimitInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void saveLimit(false); }} />
+        <div className="role-actions"><button disabled={busy || !hass} onClick={() => void saveLimit(false)}>Uložit</button>{status?.configured ? <button disabled={busy || guardActive} title={guardActive ? "Nejdřív vypni execution guard." : undefined} onClick={() => void saveLimit(true)}>Zrušit limit</button> : null}</div>
+      </div>
+      <div className="role-row">
+        <div className="role-row__label"><b>Execution guard kapacity</b><small>{guardActive ? "Nový turn_on musí projít kapacitní kontrolou. Bezpečnostní stop povinnosti zůstávají nezávislé." : "Vypnuto: limit je pouze diagnostický a nové starty neblokuje."}</small></div>
+        <label className="technology-toggle"><input type="checkbox" checked={guardActive} disabled={busy || !status?.configured} onChange={(event) => void setGuard(event.target.checked)} /><span>{guardActive ? "Aktivní" : "Vypnutý"}</span></label>
+        <div className="role-actions" />
       </div>
     </div>
 
@@ -163,6 +173,7 @@ export function SiteCapacitySettings({ hass }: { hass?: HomeAssistant }) {
       <span>Rezerva <b>{formatKw(status.grid_headroom_kw)}</b></span>
       <span>Překročení <b>{formatKw(status.grid_over_limit_kw)}</b></span>
       <span>Využití <b>{formatPercent(status.utilization_percent)}</b></span>
+      <span>Execution guard <b>{guardActive ? "aktivní" : "vypnutý"}</b></span>
     </div> : null}
     {status ? <p className="missing-reason">{status.reason}{status.source_entity_id ? ` Zdroj: ${status.source_entity_id}.` : ""} execution_guard_active={String(status.execution_guard_active)}</p> : null}
   </article>;
