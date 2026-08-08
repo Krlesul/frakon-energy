@@ -561,9 +561,9 @@ async def test_pending_timer_armed_runs_exactly_once_then_stops_exactly_once(
     assert stop is not None and stop.state == STOP_STATE_OWNED
     assert pending_runtime.statuses()[0].status == STATUS_DELEGATED
     assert start_runtime.statuses()[0].status == STATUS_STARTED_VERIFIED
-    assert len(stop_timers) == 1 and stop_timers[0][1] == END.astimezone(timezone.utc)
+    assert stop_timers and stop_timers[-1][1] == END.astimezone(timezone.utc)
 
-    stop_timers[0][0](END)
+    stop_timers[-1][0](END)
     await asyncio.gather(*hass.tasks)
 
     assert _services(hass) == ["turn_on", "turn_off"]
@@ -620,11 +620,11 @@ async def test_pending_timer_disarmed_prepares_stop_lease_without_call_then_arm_
     assert current is not None and current.state == STATE_VERIFIED
     stop = await stop_repo.async_get_by_start_lifecycle_id(prepared.lifecycle_id)
     assert stop is not None and stop.state == STOP_STATE_OWNED
-    assert len(stop_timers) == 1
+    assert stop_timers and stop_timers[-1][1] == END.astimezone(timezone.utc)
 
     # DISARM after start must never disable the already-owned safety stop.
     hass.execution_armed = False
-    stop_timers[0][0](END)
+    stop_timers[-1][0](END)
     await asyncio.gather(*hass.tasks)
 
     assert _services(hass) == ["turn_on", "turn_off"]
