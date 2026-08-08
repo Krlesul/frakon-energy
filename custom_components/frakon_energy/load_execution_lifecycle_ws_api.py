@@ -30,6 +30,10 @@ from .load_execution_lifecycle_recovery import (
     assert_lifecycle_recovery_ready,
 )
 from .load_execution_lifecycle_runtime import lifecycle_repository
+from .load_execution_pending_run_cancellation import (
+    cancellation_repository,
+    pre_lifecycle_guard,
+)
 from .load_execution_readiness import (
     ExecutionReadinessDecision,
     READINESS_READY,
@@ -94,68 +98,78 @@ async def async_prepare_execution_lifecycle(
     assert_lifecycle_recovery_ready(hass, entry_id)
 
     repository = lifecycle_repository(hass, entry_id)
-    existing = await repository.async_get_by_attempt_id(attempt_id)
-    if existing is not None:
-        if not _idempotent_plan_matches(existing, plan_value):
-            raise ExecutionLifecycleConflictError(
-                "execution attempt already has a lifecycle for a different plan snapshot"
+    async with pre_lifecycle_guard(hass, entry_id):
+        existing = await repository.async_get_by_attempt_id(attempt_id)
+        if existing is not None:
+            if not _idempotent_plan_matches(existing, plan_value):
+                raise ExecutionLifecycleConflictError(
+                    "execution attempt already has a lifecycle for a different plan snapshot"
+                )
+            existing_call = existing.as_dict()["service_call_performed"]
+            payload = {
+                "lifecycle": existing.as_dict(),
+                "created": False,
+                "idempotent_replay": True,
+                "prepared_only": existing.state == STATE_PREPARED,
+                "execution_performed": existing_call is True,
+                "service_call_performed": existing_call,
+                "executor_available": False,
+            }
+        else:
+            cancellation = await cancellation_repository(
+                hass,
+                entry_id,
+            ).async_get_by_attempt_id(attempt_id)
+            if cancellation is not None:
+                raise LifecyclePrepareError(
+                    "execution attempt was durably cancelled before lifecycle preparation"
+                )
+
+            readiness_payload = await readiness_ws.async_execution_readiness(
+                hass,
+                entry_id=entry_id,
+                attempt_id=attempt_id,
+                plan_value=plan_value,
+                now=current,
             )
-        existing_call = existing.as_dict()["service_call_performed"]
-        payload = {
-            "lifecycle": existing.as_dict(),
-            "created": False,
-            "idempotent_replay": True,
-            "prepared_only": existing.state == STATE_PREPARED,
-            "execution_performed": existing_call is True,
-            "service_call_performed": existing_call,
-            "executor_available": False,
-        }
-        await async_refresh_start_scheduler_if_started(hass, entry_id)
-        return payload
+            readiness_value = readiness_payload.get("readiness")
+            if not isinstance(readiness_value, dict):
+                raise LifecyclePrepareError("readiness response is invalid")
+            try:
+                readiness = ExecutionReadinessDecision(**readiness_value)
+            except (TypeError, ValueError) as err:
+                raise LifecyclePrepareError("readiness response is invalid") from err
+            if readiness.status != READINESS_READY or not readiness.action_required:
+                raise LifecyclePrepareError(
+                    f"execution is not ready for preparation: {readiness.status}/{readiness.reason}"
+                )
 
-    readiness_payload = await readiness_ws.async_execution_readiness(
-        hass,
-        entry_id=entry_id,
-        attempt_id=attempt_id,
-        plan_value=plan_value,
-        now=current,
-    )
-    readiness_value = readiness_payload.get("readiness")
-    if not isinstance(readiness_value, dict):
-        raise LifecyclePrepareError("readiness response is invalid")
-    try:
-        readiness = ExecutionReadinessDecision(**readiness_value)
-    except (TypeError, ValueError) as err:
-        raise LifecyclePrepareError("readiness response is invalid") from err
-    if readiness.status != READINESS_READY or not readiness.action_required:
-        raise LifecyclePrepareError(
-            f"execution is not ready for preparation: {readiness.status}/{readiness.reason}"
-        )
+            attempt_value = readiness_payload.get("attempt")
+            snapshot_value = readiness_payload.get("action_snapshot")
+            if not isinstance(attempt_value, dict) or not isinstance(snapshot_value, dict):
+                raise LifecyclePrepareError("readiness audit records are invalid")
+            attempt = ExecutionAttempt.from_dict(attempt_value)
+            action_snapshot = ExecutionActionSnapshot.from_dict(snapshot_value)
+            plan = _plan_from_result(readiness_payload.get("plan"))
 
-    attempt_value = readiness_payload.get("attempt")
-    snapshot_value = readiness_payload.get("action_snapshot")
-    if not isinstance(attempt_value, dict) or not isinstance(snapshot_value, dict):
-        raise LifecyclePrepareError("readiness audit records are invalid")
-    attempt = ExecutionAttempt.from_dict(attempt_value)
-    action_snapshot = ExecutionActionSnapshot.from_dict(snapshot_value)
-    plan = _plan_from_result(readiness_payload.get("plan"))
+            record = ExecutionLifecycleRecord.prepared(
+                attempt=attempt,
+                action_snapshot=action_snapshot,
+                plan=plan,
+                readiness=readiness,
+                created_at=int(current.timestamp()),
+            )
+            result = await repository.async_prepare(record)
+            payload = {
+                **result.as_dict(),
+                "prepared_only": True,
+                "execution_performed": False,
+                "service_call_performed": False,
+                "executor_available": False,
+            }
 
-    record = ExecutionLifecycleRecord.prepared(
-        attempt=attempt,
-        action_snapshot=action_snapshot,
-        plan=plan,
-        readiness=readiness,
-        created_at=int(current.timestamp()),
-    )
-    result = await repository.async_prepare(record)
     await async_refresh_start_scheduler_if_started(hass, entry_id)
-    return {
-        **result.as_dict(),
-        "prepared_only": True,
-        "execution_performed": False,
-        "service_call_performed": False,
-        "executor_available": False,
-    }
+    return payload
 
 
 async def async_list_execution_lifecycles(
