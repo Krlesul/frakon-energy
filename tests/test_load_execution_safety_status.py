@@ -87,6 +87,39 @@ class _StartScheduler:
         return ()
 
 
+class _PendingStatus:
+    def __init__(self, status: str = "scheduled") -> None:
+        self.status = status
+        self.attempt_id = "attempt-1"
+        self.pending_run_id = "pending-1"
+        self.entity_id = "switch.enyaq_charging"
+        self.starts_at = "2026-08-08T14:00:00+00:00"
+        self.ends_at = "2026-08-08T15:00:00+00:00"
+        self.next_wake_at = "2026-08-08T14:00:00+00:00"
+        self.last_processed_at = None
+        self.last_error = None
+        self.timer_active = True
+        self.lifecycle_prepared = False
+        self.stop_lease_prepared = False
+        self.service_call_performed = False
+        self.execution_performed = False
+        self.executor_available = False
+
+    def as_dict(self):
+        return self.__dict__.copy()
+
+
+class _PendingScheduler:
+    def __init__(self, *, started=True, healthy=True):
+        self.started = started
+        self.healthy = healthy
+        self.last_error = None if healthy else "pending scheduler failed"
+        self._statuses = (_PendingStatus(),)
+
+    def statuses(self):
+        return self._statuses
+
+
 def _proof(ready: bool, reason: str):
     return SimpleNamespace(
         ownership_ready=ready,
@@ -101,6 +134,7 @@ def _wire(
     ownership_ready: bool,
     scheduler_healthy: bool = True,
     start_scheduler_healthy: bool = True,
+    pending_scheduler_healthy: bool = True,
     armed: bool = True,
     arm_storage_healthy: bool = True,
 ):
@@ -136,6 +170,11 @@ def _wire(
         safety,
         "start_scheduler",
         lambda hass, entry_id: _StartScheduler(healthy=start_scheduler_healthy),
+    )
+    monkeypatch.setattr(
+        safety,
+        "pending_run_scheduler",
+        lambda hass, entry_id: _PendingScheduler(healthy=pending_scheduler_healthy),
     )
 
     async def arm_status(hass, entry_id):
@@ -185,6 +224,10 @@ async def test_prepared_start_without_stop_ownership_is_not_unsafe(
     assert result["unsafe_start_lifecycles"] == []
     assert result["execution_armed"] is True
     assert result["autonomous_start_enabled"] is True
+    assert result["pending_run_runtime_ready"] is True
+    assert result["autonomous_pending_run_enabled"] is True
+    assert result["pending_run_scheduler"]["statuses"][0]["status"] == "scheduled"
+    assert result["pending_run_scheduler"]["calls_home_assistant_services_directly"] is False
 
 
 @pytest.mark.asyncio
@@ -234,7 +277,7 @@ async def test_recovered_start_with_matching_stop_ownership_is_safe(
 
 
 @pytest.mark.asyncio
-async def test_disarmed_interlock_disables_new_start_without_disabling_stop(
+async def test_disarmed_interlock_disables_new_start_without_disabling_stop_or_scheduling(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _wire(
@@ -254,6 +297,7 @@ async def test_disarmed_interlock_disables_new_start_without_disabling_stop(
     assert result["explicit_start_executor_available"] is False
     assert result["autonomous_start_enabled"] is False
     assert result["autonomous_stop_enabled"] is True
+    assert result["autonomous_pending_run_enabled"] is True
     assert result["explicit_stop_executor_available"] is True
 
 
@@ -279,6 +323,7 @@ async def test_arm_storage_failure_is_fail_closed_in_global_status(
     assert result["explicit_start_executor_available"] is False
     assert result["autonomous_start_enabled"] is False
     assert result["autonomous_stop_enabled"] is True
+    assert result["autonomous_pending_run_enabled"] is True
 
 
 @pytest.mark.asyncio
@@ -300,9 +345,34 @@ async def test_unhealthy_stop_scheduler_is_visible_in_global_runtime_status(
     assert result["start_runtime_ready"] is True
     assert result["stop_runtime_ready"] is False
     assert result["autonomous_stop_enabled"] is False
+    assert result["autonomous_pending_run_enabled"] is False
     assert result["stop_scheduler"]["healthy"] is False
     assert result["explicit_start_executor_available"] is False
     assert result["read_only"] is True
     assert result["state_transition_performed"] is False
     assert result["service_call_performed"] is False
     assert result["execution_performed"] is False
+
+
+@pytest.mark.asyncio
+async def test_unhealthy_pending_scheduler_is_visible_without_disabling_existing_start_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _wire(
+        monkeypatch,
+        record_state="prepared",
+        ownership_ready=False,
+        pending_scheduler_healthy=False,
+    )
+
+    result = await safety.async_execution_safety_status(
+        _Hass("off"),  # type: ignore[arg-type]
+        entry_id="entry-1",
+    )
+
+    assert result["autonomous_start_runtime_ready"] is True
+    assert result["autonomous_start_enabled"] is True
+    assert result["pending_run_runtime_ready"] is False
+    assert result["autonomous_pending_run_enabled"] is False
+    assert result["pending_run_scheduler"]["healthy"] is False
+    assert result["pending_run_scheduler"]["last_error"] == "pending scheduler failed"
