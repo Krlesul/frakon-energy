@@ -11,6 +11,8 @@ from homeassistant.core import HomeAssistant, callback
 
 from .const import DOMAIN
 from .load_profiles import (
+    PHASE_TOPOLOGIES,
+    PHASE_TOPOLOGY_UNKNOWN,
     PROFILE_KINDS,
     LoadProfile,
     delete_profile,
@@ -37,6 +39,8 @@ def _payload(entry: ConfigEntry) -> dict[str, Any]:
         "entry_id": entry.entry_id,
         "profiles": [profile.as_dict() for profile in profiles],
         "kinds": list(PROFILE_KINDS),
+        "phase_topologies": list(PHASE_TOPOLOGIES),
+        "phase_model_execution_active": False,
         "read_only_execution": True,
     }
 
@@ -76,6 +80,10 @@ def async_register_load_profiles_websocket(hass: HomeAssistant) -> None:
             vol.Required("power_kw"): vol.All(vol.Coerce(float), vol.Range(min=0.001)),
             vol.Optional("enabled", default=True): bool,
             vol.Optional("entity_id"): str,
+            vol.Optional("phase_topology", default=PHASE_TOPOLOGY_UNKNOWN): vol.In(PHASE_TOPOLOGIES),
+            vol.Optional("phase_current_l1_a"): vol.Any(None, vol.Coerce(float)),
+            vol.Optional("phase_current_l2_a"): vol.Any(None, vol.Coerce(float)),
+            vol.Optional("phase_current_l3_a"): vol.Any(None, vol.Coerce(float)),
         }
     )
     @websocket_api.async_response
@@ -94,6 +102,10 @@ def async_register_load_profiles_websocket(hass: HomeAssistant) -> None:
                 power_kw=msg["power_kw"],
                 enabled=msg["enabled"],
                 entity_id=(msg.get("entity_id") or "").strip() or None,
+                phase_topology=msg["phase_topology"],
+                phase_current_l1_a=msg.get("phase_current_l1_a"),
+                phase_current_l2_a=msg.get("phase_current_l2_a"),
+                phase_current_l3_a=msg.get("phase_current_l3_a"),
             ).validated()
             options = upsert_profile(entry.options, profile)
             hass.config_entries.async_update_entry(entry, options=options)
