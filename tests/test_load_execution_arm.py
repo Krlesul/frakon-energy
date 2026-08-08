@@ -9,7 +9,11 @@ from custom_components.frakon_energy import load_execution_arm as arm
 from custom_components.frakon_energy.load_execution_arm import (
     ExecutionArmError,
     ExecutionArmRepository,
+    ExecutionCapacityBlockedError,
     ExecutionDisarmedError,
+)
+from custom_components.frakon_energy.load_execution_final_capacity_recheck import (
+    FinalCapacityRecheckError,
 )
 
 
@@ -151,6 +155,51 @@ async def test_require_execution_armed_rejects_disarmed_state(
     await repo.async_set(armed=True, changed_at=100, changed_by="admin")
     state = await arm.async_require_execution_armed(_Hass(), "entry-1")  # type: ignore[arg-type]
     assert state.armed is True
+
+
+@pytest.mark.asyncio
+async def test_final_capacity_recheck_runs_only_inside_physical_boundary_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hass = _Hass()
+    repo = ExecutionArmRepository(_Store())
+    await repo.async_set(armed=True, changed_at=100, changed_by="admin")
+    monkeypatch.setattr(arm, "execution_arm_repository", lambda hass, entry_id: repo)
+    calls: list[str] = []
+
+    async def final_recheck(hass: Any, *, entry_id: str) -> object:
+        calls.append(entry_id)
+        return object()
+
+    monkeypatch.setattr(arm, "async_require_final_capacity_recheck", final_recheck)
+
+    await arm.async_require_execution_armed(hass, "entry-1")  # type: ignore[arg-type]
+    assert calls == []
+
+    async with arm.execution_arm_guard(hass, "entry-1"):  # type: ignore[arg-type]
+        state = await arm.async_require_execution_armed(hass, "entry-1")  # type: ignore[arg-type]
+
+    assert state.armed is True
+    assert calls == ["entry-1"]
+
+
+@pytest.mark.asyncio
+async def test_final_capacity_recheck_blocks_armed_physical_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hass = _Hass()
+    repo = ExecutionArmRepository(_Store())
+    await repo.async_set(armed=True, changed_at=100, changed_by="admin")
+    monkeypatch.setattr(arm, "execution_arm_repository", lambda hass, entry_id: repo)
+
+    async def blocked(hass: Any, *, entry_id: str) -> object:
+        raise FinalCapacityRecheckError("site_capacity_headroom_insufficient")
+
+    monkeypatch.setattr(arm, "async_require_final_capacity_recheck", blocked)
+
+    async with arm.execution_arm_guard(hass, "entry-1"):  # type: ignore[arg-type]
+        with pytest.raises(ExecutionCapacityBlockedError, match="headroom_insufficient"):
+            await arm.async_require_execution_armed(hass, "entry-1")  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio
