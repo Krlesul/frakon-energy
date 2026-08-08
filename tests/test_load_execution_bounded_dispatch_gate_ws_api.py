@@ -15,6 +15,13 @@ from custom_components.frakon_energy.load_execution_bounded_dispatch_gate import
     BOUNDED_GATE_READY,
     REASON_STOP_LEASE_REQUIRED,
 )
+from custom_components.frakon_energy.load_execution_capacity_guard import (
+    GUARD_BLOCKED,
+    GUARD_DISABLED,
+    REASON_DISABLED,
+    REASON_INSUFFICIENT_HEADROOM,
+    SiteCapacityStartDecision,
+)
 from custom_components.frakon_energy.load_execution_dispatch_gate import evaluate_dispatch_gate
 from custom_components.frakon_energy.load_execution_lifecycle import ExecutionLifecycleRecord
 from custom_components.frakon_energy.load_execution_policy import (
@@ -142,6 +149,50 @@ def _evidence(current_state: str = "off"):
     return lifecycle, dispatch_gate
 
 
+def _capacity_decision(*, blocked: bool = False) -> SiteCapacityStartDecision:
+    if blocked:
+        return SiteCapacityStartDecision(
+            status=GUARD_BLOCKED,
+            reason=REASON_INSUFFICIENT_HEADROOM,
+            entry_id="entry-1",
+            guard_enabled=True,
+            guard_applies=True,
+            additional_power_kw=11.0,
+            max_grid_import_kw=12.0,
+            current_grid_import_kw=5.0,
+            projected_grid_import_kw=16.0,
+            headroom_before_kw=7.0,
+            headroom_after_kw=0.0,
+            projected_over_limit_kw=4.0,
+            source_entity_id="sensor.grid_in",
+            can_start=False,
+        )
+    return SiteCapacityStartDecision(
+        status=GUARD_DISABLED,
+        reason=REASON_DISABLED,
+        entry_id="entry-1",
+        guard_enabled=False,
+        guard_applies=False,
+        additional_power_kw=11.0,
+        max_grid_import_kw=None,
+        current_grid_import_kw=None,
+        projected_grid_import_kw=None,
+        headroom_before_kw=None,
+        headroom_after_kw=None,
+        projected_over_limit_kw=None,
+        source_entity_id=None,
+        can_start=True,
+    )
+
+
+def _patch_capacity(monkeypatch: pytest.MonkeyPatch, *, blocked: bool = False) -> None:
+    monkeypatch.setattr(
+        gate_ws,
+        "evaluate_site_capacity_start",
+        lambda *args, **kwargs: _capacity_decision(blocked=blocked),
+    )
+
+
 @pytest.mark.asyncio
 async def test_endpoint_requires_matching_persisted_stop_lease_without_mutation(
     monkeypatch: pytest.MonkeyPatch,
@@ -168,6 +219,7 @@ async def test_endpoint_requires_matching_persisted_stop_lease_without_mutation(
         "stop_lease_repository",
         lambda hass, entry_id: repository,
     )
+    _patch_capacity(monkeypatch)
 
     result = await gate_ws.async_bounded_dispatch_gate(
         SimpleNamespace(),  # type: ignore[arg-type]
@@ -178,6 +230,7 @@ async def test_endpoint_requires_matching_persisted_stop_lease_without_mutation(
 
     assert result["bounded_dispatch_gate"]["status"] == BOUNDED_GATE_READY
     assert result["bounded_dispatch_gate"]["can_start"] is True
+    assert result["site_capacity_guard"]["status"] == GUARD_DISABLED
     assert result["stop_lease"] == lease.as_dict()
     assert result["read_only"] is True
     assert result["state_transition_performed"] is False
@@ -206,6 +259,7 @@ async def test_endpoint_blocks_ready_dispatch_when_stop_lease_missing(
         "stop_lease_repository",
         lambda hass, entry_id: repository,
     )
+    _patch_capacity(monkeypatch)
 
     result = await gate_ws.async_bounded_dispatch_gate(
         SimpleNamespace(),  # type: ignore[arg-type]
@@ -218,3 +272,40 @@ async def test_endpoint_blocks_ready_dispatch_when_stop_lease_missing(
     assert result["bounded_dispatch_gate"]["reason"] == REASON_STOP_LEASE_REQUIRED
     assert result["bounded_dispatch_gate"]["can_start"] is False
     assert result["stop_lease"] is None
+
+
+@pytest.mark.asyncio
+async def test_capacity_guard_can_block_an_otherwise_ready_bounded_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lifecycle, dispatch_gate = _evidence()
+    repository = ExecutionStopLeaseRepository(_FakeStore())
+    lease = ExecutionStopLease.from_prepared_lifecycle(
+        lifecycle,
+        created_at=lifecycle.created_at,
+    )
+    await repository.async_record(lease)
+
+    async def dispatch_gate_call(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "lifecycle": lifecycle.as_dict(),
+            "dispatch_gate": dispatch_gate.as_dict(),
+        }
+
+    monkeypatch.setattr(gate_ws, "async_execution_dispatch_gate", dispatch_gate_call)
+    monkeypatch.setattr(gate_ws, "stop_lease_repository", lambda hass, entry_id: repository)
+    _patch_capacity(monkeypatch, blocked=True)
+
+    result = await gate_ws.async_bounded_dispatch_gate(
+        SimpleNamespace(),  # type: ignore[arg-type]
+        entry_id="entry-1",
+        attempt_id="attempt-1",
+        now=START,
+    )
+
+    assert result["site_capacity_guard"]["status"] == GUARD_BLOCKED
+    assert result["site_capacity_guard"]["reason"] == REASON_INSUFFICIENT_HEADROOM
+    assert result["bounded_dispatch_gate"]["status"] == BOUNDED_GATE_BLOCKED
+    assert result["bounded_dispatch_gate"]["reason"] == "site_capacity:capacity_insufficient_headroom"
+    assert result["bounded_dispatch_gate"]["can_start"] is False
+    assert result["service_call_performed"] is False
