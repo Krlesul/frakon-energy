@@ -9,9 +9,11 @@ from homeassistant.core import HomeAssistant, callback
 
 from .const import DOMAIN
 from .site_capacity import (
+    CONF_EXECUTION_GUARD_ENABLED,
     CONF_MAX_GRID_IMPORT_KW,
+    SiteCapacitySettings,
     build_site_capacity_status,
-    update_site_capacity_limit,
+    update_site_capacity_settings,
 )
 
 COMMAND_SITE_CAPACITY_STATUS = f"{DOMAIN}/site_capacity/status"
@@ -51,7 +53,7 @@ async def async_site_capacity_status(
 
 @callback
 def async_register_site_capacity_websocket(hass: HomeAssistant) -> None:
-    """Register admin-only read-only capacity status and explicit limit setting."""
+    """Register admin-only capacity status and explicit limit/enforcement settings."""
     domain_data = hass.data.setdefault(DOMAIN, {})
     if domain_data.get(_REGISTERED_KEY):
         return
@@ -84,6 +86,7 @@ def async_register_site_capacity_websocket(hass: HomeAssistant) -> None:
             vol.Required("type"): COMMAND_SITE_CAPACITY_SET,
             vol.Required("entry_id"): str,
             vol.Required(CONF_MAX_GRID_IMPORT_KW): vol.Any(None, _finite_positive_kw),
+            vol.Optional(CONF_EXECUTION_GUARD_ENABLED): bool,
         }
     )
     @websocket_api.async_response
@@ -97,7 +100,20 @@ def async_register_site_capacity_websocket(hass: HomeAssistant) -> None:
             entry = _entry(hass, msg["entry_id"])
             value = msg[CONF_MAX_GRID_IMPORT_KW]
             limit = None if value is None else float(value)
-            options = update_site_capacity_limit(entry.options, limit)
+            current = SiteCapacitySettings.from_options(entry.options)
+            if CONF_EXECUTION_GUARD_ENABLED in msg:
+                guard_enabled = bool(msg[CONF_EXECUTION_GUARD_ENABLED])
+            elif current.max_grid_import_kw is not None:
+                guard_enabled = current.execution_guard_enabled
+            else:
+                guard_enabled = False
+            if limit is None:
+                guard_enabled = False
+            options = update_site_capacity_settings(
+                entry.options,
+                max_grid_import_kw=limit,
+                execution_guard_enabled=guard_enabled,
+            )
             hass.config_entries.async_update_entry(entry, options=options)
             result = build_site_capacity_status(
                 hass,
