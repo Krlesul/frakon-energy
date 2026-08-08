@@ -16,6 +16,10 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
 from .const import DOMAIN
+from .load_execution_final_capacity_recheck import (
+    FinalCapacityRecheckError,
+    async_require_final_capacity_recheck,
+)
 
 EXECUTION_ARM_STORAGE_VERSION = 1
 EXECUTION_ARM_SCHEMA_VERSION = 1
@@ -31,6 +35,10 @@ class ExecutionArmError(RuntimeError):
 
 class ExecutionDisarmedError(ExecutionArmError):
     """Raised when a new physical start is blocked by DISARM."""
+
+
+class ExecutionCapacityBlockedError(ExecutionArmError):
+    """Raised when the final physical-boundary capacity recheck blocks start."""
 
 
 class ExecutionArmStore(Protocol):
@@ -218,13 +226,27 @@ async def async_require_execution_armed(
     hass: HomeAssistant,
     entry_id: str,
 ) -> ExecutionArmState:
-    """Fail closed unless the durable interlock explicitly says ARMED."""
+    """Fail closed unless ARM and the final physical-boundary guards allow start."""
     try:
         state = await execution_arm_repository(hass, entry_id).async_get()
     except Exception as err:
         raise ExecutionArmError(f"execution arm state unavailable: {err}") from err
     if not state.armed:
         raise ExecutionDisarmedError("physical start execution is DISARMED")
+
+    # The dispatcher calls this once as a preliminary check and once again while
+    # holding the exact ARM/service-call boundary lock. Only the latter must
+    # perform the final live capacity recheck, after the lifecycle is already
+    # durably `dispatching` and immediately before the physical service call.
+    if execution_arm_guard(hass, entry_id).locked():
+        try:
+            await async_require_final_capacity_recheck(hass, entry_id=entry_id)
+        except FinalCapacityRecheckError as err:
+            raise ExecutionCapacityBlockedError(str(err)) from err
+        except Exception as err:
+            raise ExecutionCapacityBlockedError(
+                f"final site capacity recheck unavailable: {err}"
+            ) from err
     return state
 
 
