@@ -6,7 +6,7 @@ type PendingRunSchedulerItem = {
   pending_run_id: string;
   attempt_id: string;
   entity_id: string;
-  status: "scheduled" | "preparing" | "prepared_with_stop_lease" | "delegated_to_start_scheduler" | "existing_lifecycle" | "missed_start_window" | "blocked" | "error" | string;
+  status: "scheduled" | "preparing" | "retrying_stop_lease" | "prepared_with_stop_lease" | "delegated_to_start_scheduler" | "existing_lifecycle" | "missed_start_window" | "blocked" | "error" | string;
   starts_at: string;
   ends_at: string;
   next_wake_at: string | null;
@@ -15,6 +15,7 @@ type PendingRunSchedulerItem = {
   timer_active: boolean;
   lifecycle_prepared: boolean;
   stop_lease_prepared: boolean;
+  retry_count: number;
   service_call_performed: false;
   execution_performed: false;
   executor_available: false;
@@ -38,6 +39,7 @@ type PendingRunSchedulerResponse = {
 const STATUS_LABELS: Record<string, string> = {
   scheduled: "Čeká na start",
   preparing: "Připravuji bezpečný lifecycle",
+  retrying_stop_lease: "Opakuji pouze stop lease",
   prepared_with_stop_lease: "Prepared + stop lease",
   delegated_to_start_scheduler: "Předáno start scheduleru",
   existing_lifecycle: "Lifecycle už existuje",
@@ -63,7 +65,7 @@ function formatIso(value: string | null): string {
 function statusTone(status: string): string {
   if (["prepared_with_stop_lease", "delegated_to_start_scheduler"].includes(status)) return "ok";
   if (["missed_start_window", "blocked", "error"].includes(status)) return "danger";
-  if (status === "preparing") return "working";
+  if (["preparing", "retrying_stop_lease"].includes(status)) return "working";
   return "waiting";
 }
 
@@ -122,7 +124,7 @@ export function LoadExecutionPendingRunPanel({ hass, entryId }: { hass?: HomeAss
         <div><span>Stop</span><b>{formatIso(item.ends_at)}</b></div>
         <div><span>Next wake</span><b>{item.timer_active ? formatIso(item.next_wake_at) : "bez aktivního timeru"}</b></div>
         <div><span>Lifecycle</span><b>{item.lifecycle_prepared ? "prepared" : "zatím ne"}</b></div>
-        <div><span>Stop lease</span><b>{item.stop_lease_prepared ? "prepared" : "zatím ne"}</b></div>
+        <div><span>Stop lease</span><b>{item.stop_lease_prepared ? "prepared" : item.retry_count > 0 ? `retry ${item.retry_count}` : "zatím ne"}</b></div>
         {item.last_error ? <small>{item.last_error}</small> : null}
       </article>)}
     </div>
