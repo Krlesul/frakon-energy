@@ -1,4 +1,4 @@
-"""Read-only execution gate for configured whole-site grid import capacity."""
+"""Read-only execution gate for explicitly enabled whole-site grid capacity."""
 
 from __future__ import annotations
 
@@ -14,11 +14,12 @@ from .site_capacity import (
     SiteCapacityStatus,
 )
 
-CAPACITY_GATE_BYPASSED = "bypassed_not_configured"
+CAPACITY_GATE_BYPASSED = "bypassed_guard_disabled"
 CAPACITY_GATE_READY = "ready"
 CAPACITY_GATE_BLOCKED = "blocked"
 
-REASON_NOT_CONFIGURED = "site_capacity_limit_not_configured"
+REASON_GUARD_DISABLED = "site_capacity_guard_disabled"
+REASON_LIMIT_MISSING = "site_capacity_limit_not_configured"
 REASON_READY = "site_capacity_headroom_sufficient"
 REASON_TOPOLOGY = "site_capacity_topology_not_ready"
 REASON_SOURCE = "site_capacity_source_unavailable"
@@ -55,7 +56,7 @@ def evaluate_site_capacity_execution_gate(
     capacity: SiteCapacityStatus,
     planned_power_kw: float,
 ) -> SiteCapacityGateDecision:
-    """Fail closed for configured capacity limits without executing anything."""
+    """Fail closed only when the persisted capacity guard is explicitly enabled."""
     if isinstance(planned_power_kw, bool) or not math.isfinite(planned_power_kw) or planned_power_kw <= 0:
         return SiteCapacityGateDecision(
             status=CAPACITY_GATE_BLOCKED,
@@ -69,7 +70,7 @@ def evaluate_site_capacity_execution_gate(
             projected_grid_import_kw=None,
             projected_over_limit_kw=None,
             can_start=False,
-            guard_active=capacity.configured,
+            guard_active=capacity.execution_guard_active,
         )
 
     base = dict(
@@ -79,16 +80,30 @@ def evaluate_site_capacity_execution_gate(
         current_grid_import_kw=capacity.current_grid_import_kw,
         max_grid_import_kw=capacity.max_grid_import_kw,
         grid_headroom_kw=capacity.grid_headroom_kw,
+        guard_active=capacity.execution_guard_active,
     )
+
+    if not capacity.execution_guard_active:
+        return SiteCapacityGateDecision(
+            status=CAPACITY_GATE_BYPASSED,
+            reason=REASON_GUARD_DISABLED,
+            projected_grid_import_kw=(
+                capacity.current_grid_import_kw + planned_power_kw
+                if capacity.current_grid_import_kw is not None
+                else None
+            ),
+            projected_over_limit_kw=None,
+            can_start=True,
+            **base,
+        )
 
     if capacity.status == STATUS_NOT_CONFIGURED or not capacity.configured:
         return SiteCapacityGateDecision(
-            status=CAPACITY_GATE_BYPASSED,
-            reason=REASON_NOT_CONFIGURED,
+            status=CAPACITY_GATE_BLOCKED,
+            reason=REASON_LIMIT_MISSING,
             projected_grid_import_kw=None,
             projected_over_limit_kw=None,
-            can_start=True,
-            guard_active=False,
+            can_start=False,
             **base,
         )
 
@@ -99,7 +114,6 @@ def evaluate_site_capacity_execution_gate(
             projected_grid_import_kw=None,
             projected_over_limit_kw=None,
             can_start=False,
-            guard_active=True,
             **base,
         )
 
@@ -110,7 +124,6 @@ def evaluate_site_capacity_execution_gate(
             projected_grid_import_kw=None,
             projected_over_limit_kw=None,
             can_start=False,
-            guard_active=True,
             **base,
         )
 
@@ -121,7 +134,6 @@ def evaluate_site_capacity_execution_gate(
             projected_grid_import_kw=capacity.current_grid_import_kw,
             projected_over_limit_kw=capacity.grid_over_limit_kw,
             can_start=False,
-            guard_active=True,
             **base,
         )
 
@@ -137,7 +149,6 @@ def evaluate_site_capacity_execution_gate(
             projected_grid_import_kw=None,
             projected_over_limit_kw=None,
             can_start=False,
-            guard_active=True,
             **base,
         )
 
@@ -150,7 +161,6 @@ def evaluate_site_capacity_execution_gate(
             projected_grid_import_kw=projected,
             projected_over_limit_kw=projected_over,
             can_start=False,
-            guard_active=True,
             **base,
         )
 
@@ -160,6 +170,5 @@ def evaluate_site_capacity_execution_gate(
         projected_grid_import_kw=projected,
         projected_over_limit_kw=0.0,
         can_start=True,
-        guard_active=True,
         **base,
     )
