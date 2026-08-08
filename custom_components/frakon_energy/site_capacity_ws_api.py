@@ -9,8 +9,10 @@ from homeassistant.core import HomeAssistant, callback
 
 from .const import DOMAIN
 from .site_capacity import (
+    CONF_EXECUTION_GUARD_ENABLED,
     CONF_MAX_GRID_IMPORT_KW,
     build_site_capacity_status,
+    update_site_capacity_guard,
     update_site_capacity_limit,
 )
 
@@ -42,74 +44,56 @@ async def async_site_capacity_status(
     entry_id: str,
 ) -> dict[str, Any]:
     entry = _entry(hass, entry_id)
-    return build_site_capacity_status(
-        hass,
-        entry_id=entry_id,
-        options=entry.options,
-    ).as_dict()
+    return build_site_capacity_status(hass, entry_id=entry_id, options=entry.options).as_dict()
 
 
 @callback
 def async_register_site_capacity_websocket(hass: HomeAssistant) -> None:
-    """Register admin-only read-only capacity status and explicit limit setting."""
     domain_data = hass.data.setdefault(DOMAIN, {})
     if domain_data.get(_REGISTERED_KEY):
         return
 
-    @websocket_api.websocket_command(
-        {
-            vol.Required("type"): COMMAND_SITE_CAPACITY_STATUS,
-            vol.Required("entry_id"): str,
-        }
-    )
+    @websocket_api.websocket_command({vol.Required("type"): COMMAND_SITE_CAPACITY_STATUS, vol.Required("entry_id"): str})
     @websocket_api.async_response
-    async def websocket_status(
-        hass: HomeAssistant,
-        connection: websocket_api.ActiveConnection,
-        msg: dict[str, Any],
-    ) -> None:
+    async def websocket_status(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
         connection.require_admin()
         try:
             result = await async_site_capacity_status(hass, entry_id=msg["entry_id"])
         except ValueError as err:
-            connection.send_error(msg["id"], "site_capacity_status_rejected", str(err))
-            return
+            connection.send_error(msg["id"], "site_capacity_status_rejected", str(err)); return
         except Exception as err:
-            connection.send_error(msg["id"], "site_capacity_status_unavailable", str(err))
-            return
+            connection.send_error(msg["id"], "site_capacity_status_unavailable", str(err)); return
         connection.send_result(msg["id"], result)
 
     @websocket_api.websocket_command(
         {
             vol.Required("type"): COMMAND_SITE_CAPACITY_SET,
             vol.Required("entry_id"): str,
-            vol.Required(CONF_MAX_GRID_IMPORT_KW): vol.Any(None, _finite_positive_kw),
+            vol.Optional(CONF_MAX_GRID_IMPORT_KW): vol.Any(None, _finite_positive_kw),
+            vol.Optional(CONF_EXECUTION_GUARD_ENABLED): bool,
         }
     )
     @websocket_api.async_response
-    async def websocket_set(
-        hass: HomeAssistant,
-        connection: websocket_api.ActiveConnection,
-        msg: dict[str, Any],
-    ) -> None:
+    async def websocket_set(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
         connection.require_admin()
         try:
+            if CONF_MAX_GRID_IMPORT_KW not in msg and CONF_EXECUTION_GUARD_ENABLED not in msg:
+                raise ValueError("at least one site capacity setting must be supplied")
             entry = _entry(hass, msg["entry_id"])
-            value = msg[CONF_MAX_GRID_IMPORT_KW]
-            limit = None if value is None else float(value)
-            options = update_site_capacity_limit(entry.options, limit)
+            options = dict(entry.options)
+            if msg.get(CONF_EXECUTION_GUARD_ENABLED) is False:
+                options = update_site_capacity_guard(options, False)
+            if CONF_MAX_GRID_IMPORT_KW in msg:
+                value = msg[CONF_MAX_GRID_IMPORT_KW]
+                options = update_site_capacity_limit(options, None if value is None else float(value))
+            if msg.get(CONF_EXECUTION_GUARD_ENABLED) is True:
+                options = update_site_capacity_guard(options, True)
             hass.config_entries.async_update_entry(entry, options=options)
-            result = build_site_capacity_status(
-                hass,
-                entry_id=entry.entry_id,
-                options=options,
-            ).as_dict()
+            result = build_site_capacity_status(hass, entry_id=entry.entry_id, options=options).as_dict()
         except ValueError as err:
-            connection.send_error(msg["id"], "site_capacity_set_rejected", str(err))
-            return
+            connection.send_error(msg["id"], "site_capacity_set_rejected", str(err)); return
         except Exception as err:
-            connection.send_error(msg["id"], "site_capacity_set_unavailable", str(err))
-            return
+            connection.send_error(msg["id"], "site_capacity_set_unavailable", str(err)); return
         connection.send_result(msg["id"], result)
 
     websocket_api.async_register_command(hass, websocket_status)
