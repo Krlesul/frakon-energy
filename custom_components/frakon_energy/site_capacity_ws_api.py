@@ -9,8 +9,10 @@ from homeassistant.core import HomeAssistant, callback
 
 from .const import DOMAIN
 from .site_capacity import (
+    CONF_EXECUTION_GUARD_ENABLED,
     CONF_MAX_GRID_IMPORT_KW,
     build_site_capacity_status,
+    update_site_capacity_guard,
     update_site_capacity_limit,
 )
 
@@ -51,7 +53,7 @@ async def async_site_capacity_status(
 
 @callback
 def async_register_site_capacity_websocket(hass: HomeAssistant) -> None:
-    """Register admin-only read-only capacity status and explicit limit setting."""
+    """Register admin-only capacity status and explicit settings mutations."""
     domain_data = hass.data.setdefault(DOMAIN, {})
     if domain_data.get(_REGISTERED_KEY):
         return
@@ -83,7 +85,8 @@ def async_register_site_capacity_websocket(hass: HomeAssistant) -> None:
         {
             vol.Required("type"): COMMAND_SITE_CAPACITY_SET,
             vol.Required("entry_id"): str,
-            vol.Required(CONF_MAX_GRID_IMPORT_KW): vol.Any(None, _finite_positive_kw),
+            vol.Optional(CONF_MAX_GRID_IMPORT_KW): vol.Any(None, _finite_positive_kw),
+            vol.Optional(CONF_EXECUTION_GUARD_ENABLED): bool,
         }
     )
     @websocket_api.async_response
@@ -94,10 +97,24 @@ def async_register_site_capacity_websocket(hass: HomeAssistant) -> None:
     ) -> None:
         connection.require_admin()
         try:
+            if CONF_MAX_GRID_IMPORT_KW not in msg and CONF_EXECUTION_GUARD_ENABLED not in msg:
+                raise ValueError("at least one site capacity setting must be supplied")
             entry = _entry(hass, msg["entry_id"])
-            value = msg[CONF_MAX_GRID_IMPORT_KW]
-            limit = None if value is None else float(value)
-            options = update_site_capacity_limit(entry.options, limit)
+            options = dict(entry.options)
+
+            # Disable first so one atomic request may safely disable + clear.
+            if msg.get(CONF_EXECUTION_GUARD_ENABLED) is False:
+                options = update_site_capacity_guard(options, False)
+
+            if CONF_MAX_GRID_IMPORT_KW in msg:
+                value = msg[CONF_MAX_GRID_IMPORT_KW]
+                limit = None if value is None else float(value)
+                options = update_site_capacity_limit(options, limit)
+
+            # Enable last so one atomic request may safely set + enable.
+            if msg.get(CONF_EXECUTION_GUARD_ENABLED) is True:
+                options = update_site_capacity_guard(options, True)
+
             hass.config_entries.async_update_entry(entry, options=options)
             result = build_site_capacity_status(
                 hass,
