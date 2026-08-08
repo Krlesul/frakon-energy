@@ -57,6 +57,36 @@ async def test_reservation_survives_repository_reconstruction_and_is_idempotent(
 
 
 @pytest.mark.asyncio
+async def test_read_only_snapshot_filters_expired_without_compacting_storage() -> None:
+    store = _Store()
+    repository = CapacityReservationRepository(store)
+    active, _ = await repository.async_reserve(
+        lifecycle_id="life-active",
+        attempt_id="attempt-active",
+        power_kw=7.0,
+        now=100,
+        ttl_seconds=300,
+    )
+    await repository.async_reserve(
+        lifecycle_id="life-expired",
+        attempt_id="attempt-expired",
+        power_kw=4.0,
+        now=100,
+        ttl_seconds=10,
+    )
+    saves_before = store.saves
+    persisted_before = store.data
+
+    snapshot = await repository.async_snapshot(now=150)
+
+    assert snapshot == (active,)
+    assert store.saves == saves_before
+    assert store.data == persisted_before
+    assert store.data is not None
+    assert len(store.data["reservations"]) == 2
+
+
+@pytest.mark.asyncio
 async def test_expired_reservation_is_ignored_and_compacted() -> None:
     store = _Store()
     repository = CapacityReservationRepository(store)

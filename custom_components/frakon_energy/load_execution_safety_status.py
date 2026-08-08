@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import time
 from typing import Any
 
 from homeassistant.core import HomeAssistant
 
 from .load_execution_arm import async_execution_arm_status
+from .load_execution_capacity_reservation import capacity_reservation_repository
 from .load_execution_lifecycle import (
     STATE_DISPATCHED,
     STATE_DISPATCHING,
@@ -143,6 +145,47 @@ def _capacity_guard_summary(capacity: Any) -> dict[str, Any]:
     }
 
 
+async def _capacity_reservation_summary(
+    hass: HomeAssistant,
+    *,
+    entry_id: str,
+) -> dict[str, Any]:
+    now_ts = int(time.time())
+    try:
+        reservations = await capacity_reservation_repository(
+            hass,
+            entry_id,
+        ).async_snapshot(now=now_ts)
+    except Exception as err:
+        return {
+            "storage_healthy": False,
+            "last_error": str(err),
+            "active_count": None,
+            "reserved_power_kw": None,
+            "next_expiry_at": None,
+            "reservations": [],
+            "read_only": True,
+            "state_transition_performed": False,
+            "service_call_performed": False,
+            "execution_performed": False,
+        }
+
+    total_kw = sum(item.power_kw for item in reservations)
+    next_expiry = min((item.expires_at for item in reservations), default=None)
+    return {
+        "storage_healthy": True,
+        "last_error": None,
+        "active_count": len(reservations),
+        "reserved_power_kw": total_kw,
+        "next_expiry_at": next_expiry,
+        "reservations": [item.as_dict() for item in reservations],
+        "read_only": True,
+        "state_transition_performed": False,
+        "service_call_performed": False,
+        "execution_performed": False,
+    }
+
+
 async def async_execution_safety_status(
     hass: HomeAssistant,
     *,
@@ -161,6 +204,10 @@ async def async_execution_safety_status(
         options=entry.options,
     )
     capacity_guard = _capacity_guard_summary(capacity)
+    capacity_reservations = await _capacity_reservation_summary(
+        hass,
+        entry_id=entry_id,
+    )
 
     start_recovery = lifecycle_recovery_summary(hass, entry_id)
     stop_recovery = stop_recovery_summary(hass, entry_id)
@@ -213,6 +260,7 @@ async def async_execution_safety_status(
         "execution_arm": arm_status,
         "site_capacity": capacity.as_dict(),
         "site_capacity_guard": capacity_guard,
+        "site_capacity_reservations": capacity_reservations,
         "start_recovery": start_recovery.as_dict(),
         "stop_recovery": stop_recovery.as_dict(),
         "stop_scheduler": {

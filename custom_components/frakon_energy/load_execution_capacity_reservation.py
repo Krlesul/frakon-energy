@@ -120,6 +120,23 @@ class CapacityReservationRepository:
             }
         )
 
+    async def async_snapshot(self, *, now: int) -> tuple[CapacityReservation, ...]:
+        """Return active reservations without mutating or compacting durable state."""
+        if now <= 0:
+            raise CapacityReservationError("now must be positive")
+        async with self._lock:
+            await self._async_load()
+            return tuple(
+                sorted(
+                    (
+                        value
+                        for value in self._reservations.values()
+                        if value.expires_at > now
+                    ),
+                    key=lambda value: value.lifecycle_id,
+                )
+            )
+
     async def async_active(self, *, now: int) -> tuple[CapacityReservation, ...]:
         if now <= 0:
             raise CapacityReservationError("now must be positive")
