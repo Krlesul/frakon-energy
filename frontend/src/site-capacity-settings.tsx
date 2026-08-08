@@ -93,6 +93,7 @@ export function SiteCapacitySettings({ hass }: { hass?: HomeAssistant }) {
   const [safety, setSafety] = useState<ExecutionSafetyStatus | null>(null);
   const [safetyError, setSafetyError] = useState<string | null>(null);
   const [limitInput, setLimitInput] = useState("");
+  const [guardEnabled, setGuardEnabled] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const lastSourceFingerprint = useRef<string | null>(null);
@@ -109,6 +110,7 @@ export function SiteCapacitySettings({ hass }: { hass?: HomeAssistant }) {
       setEntryId(entry.entry_id);
       setStatus(value);
       setLimitInput(value.max_grid_import_kw === null ? "" : String(value.max_grid_import_kw));
+      setGuardEnabled(value.execution_guard_active);
       setError(null);
 
       try {
@@ -168,12 +170,14 @@ export function SiteCapacitySettings({ hass }: { hass?: HomeAssistant }) {
         type: "frakon_energy/site_capacity/set",
         entry_id: entryId,
         max_grid_import_kw: parsed,
+        execution_guard_enabled: clear ? false : guardEnabled,
       });
       setStatus(value);
       setLimitInput(value.max_grid_import_kw === null ? "" : String(value.max_grid_import_kw));
+      setGuardEnabled(value.execution_guard_active);
       window.dispatchEvent(new CustomEvent(PROFILE_CHANGED_EVENT));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Limit přívodu se nepodařilo uložit.");
+      setError(reason instanceof Error ? reason.message : "Nastavení kapacity přívodu se nepodařilo uložit.");
     } finally {
       setBusy(false);
     }
@@ -187,7 +191,7 @@ export function SiteCapacitySettings({ hass }: { hass?: HomeAssistant }) {
       <div><span className="eyebrow">Kapacita přívodu</span><h2>Rezerva odběru ze sítě</h2></div>
       <span className={`entity-badge ${status?.status === "over_limit" || guard?.currently_blocks_all_new_starts ? "warn" : ""}`}>{status ? statusLabel(status.status) : "Načítám…"}</span>
     </div>
-    <p className="settings-copy">Zadej skutečný maximální odběr v kW, který má FRAKON při řízených startech respektovat. Hodnota se neodhaduje z jističe ani napětí. Pokud je limit nastavený, execution guard kontroluje živý odběr, rezervuje kapacitu právě startujícím spotřebičům a při nedostatečné rezervě nový start bezpečně zablokuje.</p>
+    <p className="settings-copy">Nastavený limit slouží vždy jako diagnostika rezervy přívodu. Samotné blokování řízených startů je samostatná volba: po zapnutí execution guard kontroluje živý odběr, započítává krátkodobé rezervace právě startujících spotřebičů a při nedostatečné kapacitě nový start bezpečně odmítne.</p>
 
     <div className="role-list">
       <div className="role-row">
@@ -202,6 +206,17 @@ export function SiteCapacitySettings({ hass }: { hass?: HomeAssistant }) {
           onChange={(event) => setLimitInput(event.target.value)}
           onKeyDown={(event) => { if (event.key === "Enter") void saveLimit(false); }}
         />
+      </div>
+      <div className="role-row">
+        <div className="role-row__label"><b>Vynucovat limit při řízených startech</b><small>Zapni pouze tehdy, když je zdroj odběru skutečně hlavní měření celého domu. Existující instalace s dříve aktivním limitem zůstávají po aktualizaci chráněné.</small></div>
+        <label>
+          <input
+            type="checkbox"
+            checked={guardEnabled}
+            disabled={busy || !hass || !limitInput.trim()}
+            onChange={(event) => setGuardEnabled(event.target.checked)}
+          /> {guardEnabled ? "Execution guard aktivní" : "Pouze diagnostika"}
+        </label>
         <div className="role-actions"><button disabled={busy || !hass} onClick={() => void saveLimit(false)}>Uložit</button>{status?.configured ? <button disabled={busy} onClick={() => void saveLimit(true)}>Zrušit limit</button> : null}</div>
       </div>
     </div>
@@ -213,13 +228,14 @@ export function SiteCapacitySettings({ hass }: { hass?: HomeAssistant }) {
       <span>Rezerva měření <b>{formatKw(status.grid_headroom_kw)}</b></span>
       <span>Překročení <b>{formatKw(status.grid_over_limit_kw)}</b></span>
       <span>Využití <b>{formatPercent(status.utilization_percent)}</b></span>
+      <span>Guard <b>{status.execution_guard_active ? "aktivní" : "vypnutý"}</b></span>
       <span>Rezervováno starty <b>{formatKw(reservations?.reserved_power_kw ?? null)}</b></span>
       <span>Aktivní rezervace <b>{reservations?.active_count ?? "—"}</b></span>
       <span>Nejbližší expirace <b>{formatExpiry(reservations?.next_expiry_at ?? null)}</b></span>
     </div> : null}
     {reservations && !reservations.storage_healthy ? <div className="settings-error">Stav rezervací není důvěryhodný: {reservations.last_error ?? "neznámá chyba"}</div> : null}
     {safetyError ? <p className="missing-reason">Rozšířená bezpečnostní diagnostika není dostupná: {safetyError}</p> : null}
-    {status ? <p className="missing-reason">{status.reason}{status.source_entity_id ? ` Zdroj: ${status.source_entity_id}.` : ""} Execution guard: {status.configured ? "aktivní" : "vypnutý"}{guard?.blocking_reason ? ` · blokuje nové starty: ${guard.blocking_reason}` : ""}.</p> : null}
+    {status ? <p className="missing-reason">{status.reason}{status.source_entity_id ? ` Zdroj: ${status.source_entity_id}.` : ""} Execution guard: {status.execution_guard_active ? "aktivní" : "vypnutý"}{guard?.blocking_reason ? ` · blokuje nové starty: ${guard.blocking_reason}` : ""}.</p> : null}
     {reservations?.reservations?.length ? <div className="role-list">
       {reservations.reservations.map((reservation) => <div className="role-row" key={reservation.lifecycle_id}>
         <div className="role-row__label">
