@@ -121,6 +121,14 @@ class _Scheduler:
         self.last_error: str | None = None
 
 
+class _ArmGuard:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
 def _profile() -> LoadProfile:
     return LoadProfile(
         "ev-home",
@@ -279,6 +287,12 @@ def _wire(
     monkeypatch.setattr(dispatcher, "assert_lifecycle_recovery_ready", lambda hass, entry_id: None)
     monkeypatch.setattr(dispatcher, "assert_stop_recovery_ready", lambda hass, entry_id: None)
     monkeypatch.setattr(dispatcher, "stop_scheduler", lambda hass, entry_id: scheduler)
+    monkeypatch.setattr(dispatcher, "execution_arm_guard", lambda hass, entry_id: _ArmGuard())
+
+    async def require_armed(hass_obj, entry_id):
+        return SimpleNamespace(armed=True)
+
+    monkeypatch.setattr(dispatcher, "async_require_execution_armed", require_armed)
 
     async def bounded_gate(hass, *, entry_id, attempt_id, now):
         return _gate_payload(status=gate_status)
@@ -344,6 +358,67 @@ async def test_success_persists_stop_ownership_before_exact_immutable_turn_on_an
     assert result["can_redispatch"] is False
     # prepare + dispatching + confirmed + verified
     assert start_store.saves == 4
+
+
+@pytest.mark.asyncio
+async def test_disarmed_before_start_transition_blocks_without_stop_ownership_or_turn_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, start_repo, _, stop_repo = await _repositories()
+    hass = _Hass("off")
+    _wire(monkeypatch, hass, start_repo, stop_repo, _Scheduler())
+
+    async def disarmed(hass_obj, entry_id):
+        raise dispatcher.ExecutionDisarmedError("physical start execution is DISARMED")
+
+    monkeypatch.setattr(dispatcher, "async_require_execution_armed", disarmed)
+
+    with pytest.raises(dispatcher.StartDispatchError, match="DISARMED"):
+        await dispatcher.async_dispatch_bounded_start(
+            hass,  # type: ignore[arg-type]
+            entry_id="entry-1",
+            attempt_id="attempt-1",
+            now=START,
+        )
+
+    assert hass.services.calls == []
+    assert (await start_repo.async_get_by_attempt_id("attempt-1")) == _prepared()
+    assert await stop_repo.async_list() == ()
+
+
+@pytest.mark.asyncio
+async def test_disarm_after_stop_ownership_aborts_both_before_turn_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, start_repo, _, stop_repo = await _repositories()
+    hass = _Hass("off")
+    _wire(monkeypatch, hass, start_repo, stop_repo, _Scheduler())
+    checks = 0
+
+    async def armed_then_disarmed(hass_obj, entry_id):
+        nonlocal checks
+        checks += 1
+        if checks == 1:
+            return SimpleNamespace(armed=True)
+        raise dispatcher.ExecutionDisarmedError("physical start execution is DISARMED")
+
+    monkeypatch.setattr(dispatcher, "async_require_execution_armed", armed_then_disarmed)
+
+    with pytest.raises(dispatcher.StartDispatchError, match="execution interlock"):
+        await dispatcher.async_dispatch_bounded_start(
+            hass,  # type: ignore[arg-type]
+            entry_id="entry-1",
+            attempt_id="attempt-1",
+            now=START,
+        )
+
+    assert checks == 2
+    assert hass.services.calls == []
+    start = await start_repo.async_get_by_attempt_id("attempt-1")
+    stop = await stop_repo.async_get_by_start_lifecycle_id(_prepared().lifecycle_id)
+    assert start is not None and start.state == STATE_FAILED
+    assert start.service_call_status == CALL_NOT_STARTED
+    assert stop is not None and stop.state == STOP_STATE_FAILED
 
 
 @pytest.mark.asyncio
