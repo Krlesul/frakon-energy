@@ -25,6 +25,7 @@ from .load_execution_lifecycle import ExecutionLifecycleRecord
 from .load_execution_lifecycle_recovery import LifecycleRecoveryBlockedError
 from .load_execution_site_capacity_gate import evaluate_site_capacity_execution_gate
 from .load_execution_stop_lease_runtime import stop_lease_repository
+from .load_phase_readiness import build_load_phase_readiness
 from .site_capacity import build_site_capacity_status
 
 COMMAND_BOUNDED_DISPATCH_GATE = f"{DOMAIN}/load_execution_lifecycle/bounded_dispatch_gate"
@@ -42,7 +43,7 @@ async def async_bounded_dispatch_gate(
     attempt_id: str,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Require dispatch evidence, stop lease and configured site-capacity safety."""
+    """Require dispatch evidence, stop lease and configured capacity safety."""
     if not entry_id or not attempt_id:
         raise BoundedDispatchGateError("entry_id and attempt_id are required")
     current = now or datetime.now(timezone.utc)
@@ -94,6 +95,20 @@ async def async_bounded_dispatch_gate(
             can_start=False,
         )
 
+    phase_readiness = build_load_phase_readiness(
+        hass,
+        entry_id=entry_id,
+        options=entry.options,
+        profile_id=lifecycle.profile_id,
+    )
+    if decision.can_start and not phase_readiness.can_start_phase:
+        decision = replace(
+            decision,
+            status=BOUNDED_GATE_BLOCKED,
+            reason=phase_readiness.reason,
+            can_start=False,
+        )
+
     return {
         "entry_id": entry_id,
         "lifecycle": lifecycle.as_dict(),
@@ -101,6 +116,7 @@ async def async_bounded_dispatch_gate(
         "stop_lease": lease.as_dict() if lease is not None else None,
         "site_capacity": capacity.as_dict(),
         "site_capacity_gate": capacity_gate.as_dict(),
+        "phase_readiness": phase_readiness.as_dict(),
         "bounded_dispatch_gate": decision.as_dict(),
         "read_only": True,
         "state_transition_performed": False,
