@@ -8,6 +8,7 @@ import math
 from .site_capacity import (
     STATUS_NOT_CONFIGURED,
     STATUS_OVER_LIMIT,
+    STATUS_SOURCE_STALE,
     STATUS_SOURCE_UNAVAILABLE,
     STATUS_TOPOLOGY_NOT_READY,
     STATUS_WITHIN_LIMIT,
@@ -22,6 +23,7 @@ REASON_NOT_CONFIGURED = "site_capacity_limit_not_configured"
 REASON_READY = "site_capacity_headroom_sufficient"
 REASON_TOPOLOGY = "site_capacity_topology_not_ready"
 REASON_SOURCE = "site_capacity_source_unavailable"
+REASON_SOURCE_STALE = "site_capacity_source_stale"
 REASON_ALREADY_OVER_LIMIT = "site_capacity_already_over_limit"
 REASON_INSUFFICIENT_HEADROOM = "site_capacity_headroom_insufficient"
 REASON_INVALID_PLAN_POWER = "planned_power_invalid"
@@ -107,6 +109,17 @@ def evaluate_site_capacity_execution_gate(
         return SiteCapacityGateDecision(
             status=CAPACITY_GATE_BLOCKED,
             reason=REASON_SOURCE,
+            projected_grid_import_kw=None,
+            projected_over_limit_kw=None,
+            can_start=False,
+            guard_active=True,
+            **base,
+        )
+
+    if capacity.status == STATUS_SOURCE_STALE or not capacity.source_fresh:
+        return SiteCapacityGateDecision(
+            status=CAPACITY_GATE_BLOCKED,
+            reason=REASON_SOURCE_STALE,
             projected_grid_import_kw=None,
             projected_over_limit_kw=None,
             can_start=False,
