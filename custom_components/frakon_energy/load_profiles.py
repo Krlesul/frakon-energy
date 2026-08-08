@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import math
 import re
 from typing import Any, Mapping
 
@@ -12,7 +13,24 @@ PROFILE_KIND_BOILER = "boiler"
 PROFILE_KIND_BATTERY = "battery"
 PROFILE_KIND_GENERIC = "generic"
 PROFILE_KINDS = (PROFILE_KIND_EV, PROFILE_KIND_BOILER, PROFILE_KIND_BATTERY, PROFILE_KIND_GENERIC)
+
+PHASE_TOPOLOGY_UNKNOWN = "unknown"
+PHASE_TOPOLOGY_SINGLE = "single_phase"
+PHASE_TOPOLOGY_THREE = "three_phase"
+PHASE_TOPOLOGIES = (PHASE_TOPOLOGY_UNKNOWN, PHASE_TOPOLOGY_SINGLE, PHASE_TOPOLOGY_THREE)
+
 _ENTITY_ID_PATTERN = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
+
+
+def _optional_positive_current(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        raise ValueError("phase current must be a finite positive number")
+    current = float(value)
+    if not math.isfinite(current) or current <= 0:
+        raise ValueError("phase current must be a finite positive number")
+    return current
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +44,10 @@ class LoadProfile:
     power_kw: float
     enabled: bool = True
     entity_id: str | None = None
+    phase_topology: str = PHASE_TOPOLOGY_UNKNOWN
+    phase_current_l1_a: float | None = None
+    phase_current_l2_a: float | None = None
+    phase_current_l3_a: float | None = None
 
     def validated(self) -> "LoadProfile":
         if not self.profile_id.strip():
@@ -36,14 +58,42 @@ class LoadProfile:
             raise ValueError(f"unsupported profile kind: {self.kind}")
         if self.duration_minutes <= 0 or self.duration_minutes % 15 != 0:
             raise ValueError("duration_minutes must be a positive multiple of 15")
-        if self.power_kw <= 0:
-            raise ValueError("power_kw must be positive")
+        if not math.isfinite(float(self.power_kw)) or self.power_kw <= 0:
+            raise ValueError("power_kw must be a finite positive number")
         if self.entity_id is not None and not _ENTITY_ID_PATTERN.fullmatch(self.entity_id):
             raise ValueError("entity_id must be a valid Home Assistant entity ID")
+        if self.phase_topology not in PHASE_TOPOLOGIES:
+            raise ValueError(f"unsupported phase topology: {self.phase_topology}")
+
+        currents = (
+            _optional_positive_current(self.phase_current_l1_a),
+            _optional_positive_current(self.phase_current_l2_a),
+            _optional_positive_current(self.phase_current_l3_a),
+        )
+        configured = sum(value is not None for value in currents)
+        if self.phase_topology == PHASE_TOPOLOGY_UNKNOWN and configured:
+            raise ValueError("unknown phase topology cannot contain phase currents")
+        if self.phase_topology == PHASE_TOPOLOGY_SINGLE and configured != 1:
+            raise ValueError("single_phase topology requires exactly one phase current")
+        if self.phase_topology == PHASE_TOPOLOGY_THREE and configured != 3:
+            raise ValueError("three_phase topology requires L1, L2 and L3 phase currents")
         return self
 
+    @property
+    def phase_model_ready(self) -> bool:
+        return self.phase_topology in (PHASE_TOPOLOGY_SINGLE, PHASE_TOPOLOGY_THREE)
+
+    def phase_currents_a(self) -> dict[str, float | None]:
+        return {
+            "L1": self.phase_current_l1_a,
+            "L2": self.phase_current_l2_a,
+            "L3": self.phase_current_l3_a,
+        }
+
     def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        value = asdict(self)
+        value["phase_model_ready"] = self.phase_model_ready
+        return value
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "LoadProfile":
@@ -57,6 +107,10 @@ class LoadProfile:
             power_kw=float(value.get("power_kw", 0)),
             enabled=bool(value.get("enabled", True)),
             entity_id=entity_id or None,
+            phase_topology=str(value.get("phase_topology", PHASE_TOPOLOGY_UNKNOWN)),
+            phase_current_l1_a=_optional_positive_current(value.get("phase_current_l1_a")),
+            phase_current_l2_a=_optional_positive_current(value.get("phase_current_l2_a")),
+            phase_current_l3_a=_optional_positive_current(value.get("phase_current_l3_a")),
         ).validated()
 
 
