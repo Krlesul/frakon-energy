@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 
@@ -29,7 +30,11 @@ class _States:
         if value is None:
             return None
         state, unit = value
-        return SimpleNamespace(state=state, attributes={"unit_of_measurement": unit})
+        return SimpleNamespace(
+            state=state,
+            attributes={"unit_of_measurement": unit},
+            last_updated=datetime.now(timezone.utc),
+        )
 
 
 class _ConfigEntries:
@@ -205,8 +210,9 @@ async def test_second_start_cannot_reuse_capacity_reserved_by_first_start(
     assert first.capacity_gate is not None
     assert first.capacity_gate["projected_grid_import_kw"] == pytest.approx(13.0)
 
-    # Meter is deliberately still stale at 2 kW. A second 7 kW load would look
-    # safe from meter data alone (2 + 7 = 9), but the first 11 kW is reserved.
+    # Meter is deliberately still numerically stale at 2 kW, but its Home
+    # Assistant timestamp is fresh. The durable reservation must still prevent
+    # the second start from reusing the first start's unreflected headroom.
     current[:] = [_dispatching(7.0, lifecycle_id="life-b", attempt_id="attempt-b")]
     second = await async_final_capacity_recheck(
         hass,  # type: ignore[arg-type]

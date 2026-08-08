@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
 
 from custom_components.frakon_energy.site_capacity import (
+    DEFAULT_CAPACITY_SOURCE_MAX_AGE_SECONDS,
     STATUS_NOT_CONFIGURED,
     STATUS_OVER_LIMIT,
+    STATUS_SOURCE_STALE,
     STATUS_SOURCE_UNAVAILABLE,
     STATUS_TOPOLOGY_NOT_READY,
     STATUS_WITHIN_LIMIT,
@@ -15,21 +18,27 @@ from custom_components.frakon_energy.site_capacity import (
     update_site_capacity_limit,
 )
 
+NOW = datetime(2026, 8, 8, 20, 45, tzinfo=timezone.utc)
+
 
 class _States:
-    def __init__(self, values: dict[str, tuple[str, str]]) -> None:
+    def __init__(self, values: dict[str, tuple[str, str, datetime]]) -> None:
         self.values = values
 
     def get(self, entity_id: str):
         value = self.values.get(entity_id)
         if value is None:
             return None
-        state, unit = value
-        return SimpleNamespace(state=state, attributes={"unit_of_measurement": unit})
+        state, unit, last_updated = value
+        return SimpleNamespace(
+            state=state,
+            attributes={"unit_of_measurement": unit},
+            last_updated=last_updated,
+        )
 
 
 class _Hass:
-    def __init__(self, values: dict[str, tuple[str, str]]) -> None:
+    def __init__(self, values: dict[str, tuple[str, str, datetime]]) -> None:
         self.states = _States(values)
 
 
@@ -60,12 +69,22 @@ def _options(*, limit: float | None, grid_scope: str = "whole_house") -> dict:
     return options
 
 
-def _hass(grid_state: str = "5", grid_unit: str = "kW") -> _Hass:
+def _hass(
+    grid_state: str = "5",
+    grid_unit: str = "kW",
+    *,
+    grid_age_seconds: int = 0,
+) -> _Hass:
+    fresh = NOW
     return _Hass(
         {
-            "sensor.pv": ("3", "kW"),
-            "sensor.grid_in": (grid_state, grid_unit),
-            "sensor.grid_out": ("0.5", "kW"),
+            "sensor.pv": ("3", "kW", fresh),
+            "sensor.grid_in": (
+                grid_state,
+                grid_unit,
+                NOW - timedelta(seconds=grid_age_seconds),
+            ),
+            "sensor.grid_out": ("0.5", "kW", fresh),
         }
     )
 
@@ -75,11 +94,14 @@ def test_capacity_not_configured_is_read_only_and_does_not_degrade_flow() -> Non
         _hass(),  # type: ignore[arg-type]
         entry_id="entry-1",
         options=_options(limit=None),
+        now=NOW,
     )
 
     assert result.status == STATUS_NOT_CONFIGURED
     assert result.configured is False
     assert result.current_grid_import_kw == pytest.approx(5.0)
+    assert result.source_fresh is True
+    assert result.source_age_seconds == pytest.approx(0.0)
     assert result.grid_headroom_kw is None
     assert result.grid_over_limit_kw is None
     assert result.execution_guard_active is False
@@ -92,11 +114,13 @@ def test_whole_house_meter_calculates_positive_headroom() -> None:
         _hass(),  # type: ignore[arg-type]
         entry_id="entry-1",
         options=_options(limit=12.0),
+        now=NOW,
     )
 
     assert result.status == STATUS_WITHIN_LIMIT
     assert result.topology_ready is True
     assert result.source_available is True
+    assert result.source_fresh is True
     assert result.max_grid_import_kw == pytest.approx(12.0)
     assert result.current_grid_import_kw == pytest.approx(5.0)
     assert result.grid_headroom_kw == pytest.approx(7.0)
@@ -104,11 +128,44 @@ def test_whole_house_meter_calculates_positive_headroom() -> None:
     assert result.utilization_percent == pytest.approx(100 * 5 / 12)
 
 
+def test_stale_grid_source_blocks_headroom_even_when_numeric_value_exists() -> None:
+    result = build_site_capacity_status(
+        _hass(grid_age_seconds=DEFAULT_CAPACITY_SOURCE_MAX_AGE_SECONDS + 1),  # type: ignore[arg-type]
+        entry_id="entry-1",
+        options=_options(limit=12.0),
+        now=NOW,
+    )
+
+    assert result.status == STATUS_SOURCE_STALE
+    assert result.source_available is True
+    assert result.source_fresh is False
+    assert result.source_age_seconds == pytest.approx(
+        DEFAULT_CAPACITY_SOURCE_MAX_AGE_SECONDS + 1
+    )
+    assert result.current_grid_import_kw == pytest.approx(5.0)
+    assert result.grid_headroom_kw is None
+    assert result.grid_over_limit_kw is None
+    assert str(DEFAULT_CAPACITY_SOURCE_MAX_AGE_SECONDS) in result.reason
+
+
+def test_source_at_exact_max_age_is_still_fresh() -> None:
+    result = build_site_capacity_status(
+        _hass(grid_age_seconds=DEFAULT_CAPACITY_SOURCE_MAX_AGE_SECONDS),  # type: ignore[arg-type]
+        entry_id="entry-1",
+        options=_options(limit=12.0),
+        now=NOW,
+    )
+
+    assert result.status == STATUS_WITHIN_LIMIT
+    assert result.source_fresh is True
+
+
 def test_over_limit_reports_excess_without_negative_headroom() -> None:
     result = build_site_capacity_status(
         _hass(),  # type: ignore[arg-type]
         entry_id="entry-1",
         options=_options(limit=4.0),
+        now=NOW,
     )
 
     assert result.status == STATUS_OVER_LIMIT
@@ -122,6 +179,7 @@ def test_inverter_branch_meter_cannot_be_used_as_site_capacity_guard() -> None:
         _hass(),  # type: ignore[arg-type]
         entry_id="entry-1",
         options=_options(limit=12.0, grid_scope="inverter_branch"),
+        now=NOW,
     )
 
     assert result.status == STATUS_TOPOLOGY_NOT_READY
@@ -136,6 +194,7 @@ def test_unavailable_grid_source_cannot_create_fake_headroom() -> None:
         _hass("unavailable"),  # type: ignore[arg-type]
         entry_id="entry-1",
         options=_options(limit=12.0),
+        now=NOW,
     )
 
     assert result.status == STATUS_SOURCE_UNAVAILABLE

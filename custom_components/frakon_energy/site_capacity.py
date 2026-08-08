@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 import math
 from typing import Any, Mapping
 
@@ -11,10 +12,12 @@ from .energy_flow_settings import CONF_GRID_METER_SCOPE
 
 OPTION_SITE_CAPACITY = "site_capacity"
 CONF_MAX_GRID_IMPORT_KW = "max_grid_import_kw"
+DEFAULT_CAPACITY_SOURCE_MAX_AGE_SECONDS = 300
 
 STATUS_NOT_CONFIGURED = "not_configured"
 STATUS_TOPOLOGY_NOT_READY = "topology_not_ready"
 STATUS_SOURCE_UNAVAILABLE = "source_unavailable"
+STATUS_SOURCE_STALE = "source_stale"
 STATUS_WITHIN_LIMIT = "within_limit"
 STATUS_OVER_LIMIT = "over_limit"
 
@@ -68,6 +71,9 @@ class SiteCapacityStatus:
     configured: bool
     topology_ready: bool
     source_available: bool
+    source_fresh: bool
+    source_age_seconds: float | None
+    max_source_age_seconds: int
     max_grid_import_kw: float | None
     current_grid_import_kw: float | None
     grid_headroom_kw: float | None
@@ -84,21 +90,62 @@ class SiteCapacityStatus:
         return asdict(self)
 
 
+def _aware_now(now: datetime | None) -> datetime:
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None or current.utcoffset() is None:
+        raise ValueError("now must be timezone-aware")
+    return current
+
+
+def _source_freshness(
+    hass: HomeAssistant,
+    *,
+    entity_id: str | None,
+    now: datetime,
+) -> tuple[bool, float | None]:
+    if not entity_id:
+        return False, None
+    state = hass.states.get(entity_id)
+    if state is None:
+        return False, None
+    last_updated = getattr(state, "last_updated", None)
+    if not isinstance(last_updated, datetime):
+        return False, None
+    if last_updated.tzinfo is None or last_updated.utcoffset() is None:
+        return False, None
+    age = max(0.0, (now - last_updated).total_seconds())
+    return age <= DEFAULT_CAPACITY_SOURCE_MAX_AGE_SECONDS, age
+
+
 def build_site_capacity_status(
     hass: HomeAssistant,
     *,
     entry_id: str,
     options: Mapping[str, Any],
+    now: datetime | None = None,
 ) -> SiteCapacityStatus:
     """Evaluate current whole-site grid headroom without authorizing execution."""
+    current_time = _aware_now(now)
     settings = SiteCapacitySettings.from_options(options)
     flow = build_energy_flow_snapshot(hass, entry_id=entry_id, options=options)
     grid = flow.entities["grid_import"]
     limit = settings.max_grid_import_kw
+    source_fresh, source_age = _source_freshness(
+        hass,
+        entity_id=grid.entity_id,
+        now=current_time,
+    )
+
+    common = dict(
+        entry_id=entry_id,
+        source_fresh=source_fresh,
+        source_age_seconds=source_age,
+        max_source_age_seconds=DEFAULT_CAPACITY_SOURCE_MAX_AGE_SECONDS,
+        source_entity_id=grid.entity_id,
+    )
 
     if limit is None:
         return SiteCapacityStatus(
-            entry_id=entry_id,
             status=STATUS_NOT_CONFIGURED,
             configured=False,
             topology_ready=flow.topology.get(CONF_GRID_METER_SCOPE) == "whole_house",
@@ -108,13 +155,12 @@ def build_site_capacity_status(
             grid_headroom_kw=None,
             grid_over_limit_kw=None,
             utilization_percent=None,
-            source_entity_id=grid.entity_id,
             reason="Maximální odběr ze sítě není nastavený.",
+            **common,
         )
 
     if flow.topology.get(CONF_GRID_METER_SCOPE) != "whole_house":
         return SiteCapacityStatus(
-            entry_id=entry_id,
             status=STATUS_TOPOLOGY_NOT_READY,
             configured=True,
             topology_ready=False,
@@ -124,13 +170,12 @@ def build_site_capacity_status(
             grid_headroom_kw=None,
             grid_over_limit_kw=None,
             utilization_percent=None,
-            source_entity_id=grid.entity_id,
             reason="Kapacitní ochrana vyžaduje potvrzené hlavní měření celého domu.",
+            **common,
         )
 
     if grid.value_kw is None:
         return SiteCapacityStatus(
-            entry_id=entry_id,
             status=STATUS_SOURCE_UNAVAILABLE,
             configured=True,
             topology_ready=True,
@@ -140,8 +185,31 @@ def build_site_capacity_status(
             grid_headroom_kw=None,
             grid_over_limit_kw=None,
             utilization_percent=None,
-            source_entity_id=grid.entity_id,
             reason=f"Aktuální odběr ze sítě není použitelný ({grid.reason}).",
+            **common,
+        )
+
+    if not source_fresh:
+        age_label = (
+            f"{source_age:.1f} s"
+            if source_age is not None
+            else "neznámé"
+        )
+        return SiteCapacityStatus(
+            status=STATUS_SOURCE_STALE,
+            configured=True,
+            topology_ready=True,
+            source_available=True,
+            max_grid_import_kw=limit,
+            current_grid_import_kw=abs(grid.value_kw),
+            grid_headroom_kw=None,
+            grid_over_limit_kw=None,
+            utilization_percent=None,
+            reason=(
+                "Měření odběru ze sítě je příliš staré pro bezpečné řízení "
+                f"(stáří {age_label}, maximum {DEFAULT_CAPACITY_SOURCE_MAX_AGE_SECONDS} s)."
+            ),
+            **common,
         )
 
     current = abs(grid.value_kw)
@@ -155,7 +223,6 @@ def build_site_capacity_status(
         else f"Do nastaveného limitu zbývá {headroom:.3f} kW."
     )
     return SiteCapacityStatus(
-        entry_id=entry_id,
         status=status,
         configured=True,
         topology_ready=True,
@@ -165,6 +232,6 @@ def build_site_capacity_status(
         grid_headroom_kw=headroom,
         grid_over_limit_kw=over,
         utilization_percent=utilization,
-        source_entity_id=grid.entity_id,
         reason=reason,
+        **common,
     )
