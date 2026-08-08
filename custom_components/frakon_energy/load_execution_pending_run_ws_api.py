@@ -1,4 +1,4 @@
-"""Administrator-only durable pending-run preparation and audit API."""
+"""Administrator-only durable pending-run preparation, cancellation and audit API."""
 
 from __future__ import annotations
 
@@ -23,6 +23,12 @@ from .load_execution_pending_run import (
     PendingRunConflictError,
     PendingRunError,
 )
+from .load_execution_pending_run_cancellation import (
+    PendingRunCancellationConflictError,
+    PendingRunCancellationError,
+    async_cancel_pending_run_before_lifecycle,
+    cancellation_repository,
+)
 from .load_execution_pending_run_retention_runtime import async_run_pending_run_retention_best_effort
 from .load_execution_pending_run_runtime import pending_run_repository
 from .load_execution_readiness import (
@@ -33,7 +39,9 @@ from .load_execution_readiness import (
 from .load_execution_readiness_ws_api import async_execution_readiness
 
 COMMAND_CREATE_PENDING_RUN = f"{DOMAIN}/load_execution_pending_run/create"
+COMMAND_CANCEL_PENDING_RUN = f"{DOMAIN}/load_execution_pending_run/cancel"
 COMMAND_LIST_PENDING_RUNS = f"{DOMAIN}/load_execution_pending_run/list"
+PENDING_RUN_CANCEL_CONFIRMATION = "CANCEL"
 _REGISTERED_KEY = "load_execution_pending_run_websocket_registered"
 
 
@@ -66,6 +74,15 @@ async def async_create_pending_run(
         raise PendingRunPrepareError("now must be timezone-aware")
     candidate_plan = _candidate_plan(plan_value)
     assert_lifecycle_recovery_ready(hass, entry_id)
+
+    cancellation = await cancellation_repository(hass, entry_id).async_get_by_attempt_id(
+        attempt_id
+    )
+    if cancellation is not None:
+        raise PendingRunPrepareError(
+            "execution attempt was durably cancelled and cannot be rescheduled; "
+            "create a new approval/attempt instead"
+        )
 
     repository = pending_run_repository(hass, entry_id)
     existing = await repository.async_get_by_attempt_id(attempt_id)
@@ -159,6 +176,47 @@ async def async_create_pending_run(
     }
 
 
+async def async_cancel_pending_run(
+    hass: HomeAssistant,
+    *,
+    entry_id: str,
+    attempt_id: str,
+    cancelled_by: str | None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Durably revoke one pending run only before any lifecycle exists."""
+    result = await async_cancel_pending_run_before_lifecycle(
+        hass,
+        entry_id=entry_id,
+        attempt_id=attempt_id,
+        cancelled_by=cancelled_by,
+        now=now,
+    )
+
+    refresh_error: str | None = None
+    try:
+        from .load_execution_pending_run_scheduler import (  # noqa: PLC0415
+            async_refresh_pending_run_scheduler_if_started,
+        )
+
+        await async_refresh_pending_run_scheduler_if_started(hass, entry_id)
+    except Exception as err:
+        # The durable tombstone is already authoritative. A runtime refresh
+        # failure must not make cancellation appear rolled back.
+        refresh_error = str(err)
+
+    return {
+        **result.as_dict(),
+        "cancelled": True,
+        "terminal_for_attempt": True,
+        "new_lifecycle_allowed": False,
+        "runtime_refresh_error": refresh_error,
+        "service_call_performed": False,
+        "execution_performed": False,
+        "executor_available": False,
+    }
+
+
 async def async_list_pending_runs(
     hass: HomeAssistant,
     *,
@@ -167,9 +225,11 @@ async def async_list_pending_runs(
     if not entry_id:
         raise PendingRunPrepareError("entry_id is required")
     records = await pending_run_repository(hass, entry_id).async_list()
+    cancellations = await cancellation_repository(hass, entry_id).async_list()
     return {
         "entry_id": entry_id,
         "pending_runs": [record.as_dict() for record in records],
+        "cancellations": [record.as_dict() for record in cancellations],
         "read_only": True,
         "service_call_performed": False,
         "execution_performed": False,
@@ -177,9 +237,13 @@ async def async_list_pending_runs(
     }
 
 
+def _actor(connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> str | None:
+    return connection.context(msg).user_id
+
+
 @callback
 def async_register_load_execution_pending_run_websocket(hass: HomeAssistant) -> None:
-    """Register pending-run create/list commands once."""
+    """Register pending-run create/cancel/list commands once."""
     domain_data = hass.data.setdefault(DOMAIN, {})
     if domain_data.get(_REGISTERED_KEY):
         return
@@ -228,6 +292,51 @@ def async_register_load_execution_pending_run_websocket(hass: HomeAssistant) -> 
     @websocket_api.async_response
     @websocket_api.websocket_command(
         {
+            vol.Required("type"): COMMAND_CANCEL_PENDING_RUN,
+            vol.Required("entry_id"): str,
+            vol.Required("attempt_id"): str,
+            vol.Required("confirmation"): vol.In((PENDING_RUN_CANCEL_CONFIRMATION,)),
+        }
+    )
+    async def websocket_cancel_pending_run(
+        hass: HomeAssistant,
+        connection: websocket_api.ActiveConnection,
+        msg: dict[str, Any],
+    ) -> None:
+        try:
+            result = await async_cancel_pending_run(
+                hass,
+                entry_id=msg["entry_id"],
+                attempt_id=msg["attempt_id"],
+                cancelled_by=_actor(connection, msg),
+            )
+        except PendingRunCancellationConflictError as err:
+            connection.send_error(
+                msg["id"],
+                "execution_pending_run_cancel_conflict",
+                str(err),
+            )
+            return
+        except (PendingRunCancellationError, PendingRunError, ValueError) as err:
+            connection.send_error(
+                msg["id"],
+                "execution_pending_run_cancel_rejected",
+                str(err),
+            )
+            return
+        except Exception as err:
+            connection.send_error(
+                msg["id"],
+                "execution_pending_run_cancel_unavailable",
+                str(err),
+            )
+            return
+        connection.send_result(msg["id"], result)
+
+    @websocket_api.require_admin
+    @websocket_api.async_response
+    @websocket_api.websocket_command(
+        {
             vol.Required("type"): COMMAND_LIST_PENDING_RUNS,
             vol.Required("entry_id"): str,
         }
@@ -248,5 +357,6 @@ def async_register_load_execution_pending_run_websocket(hass: HomeAssistant) -> 
         connection.send_result(msg["id"], result)
 
     websocket_api.async_register_command(hass, websocket_create_pending_run)
+    websocket_api.async_register_command(hass, websocket_cancel_pending_run)
     websocket_api.async_register_command(hass, websocket_list_pending_runs)
     domain_data[_REGISTERED_KEY] = True
