@@ -9,6 +9,7 @@ from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 
 from .const import DOMAIN
+from .load_execution_pending_run_retention_runtime import pending_run_retention_status
 from .load_execution_pending_run_scheduler import pending_run_scheduler
 
 COMMAND_PENDING_RUN_SCHEDULER = f"{DOMAIN}/load_execution_pending_run/scheduler"
@@ -23,12 +24,14 @@ async def async_pending_run_scheduler_status(
     if not entry_id:
         raise ValueError("entry_id is required")
     scheduler = pending_run_scheduler(hass, entry_id)
+    retention = pending_run_retention_status(hass, entry_id)
     return {
         "entry_id": entry_id,
         "started": scheduler.started,
         "healthy": scheduler.healthy,
         "last_error": scheduler.last_error,
         "statuses": [status.as_dict() for status in scheduler.statuses()],
+        "retention": retention.as_dict(),
         "creates_authority": False,
         "calls_home_assistant_services_directly": False,
         "delegates_only_to_existing_prepare_flows": True,
