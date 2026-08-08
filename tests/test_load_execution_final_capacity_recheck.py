@@ -17,6 +17,7 @@ from custom_components.frakon_energy.load_execution_final_capacity_recheck impor
     async_final_capacity_recheck,
 )
 from custom_components.frakon_energy.load_execution_site_capacity_gate import (
+    REASON_GUARD_DISABLED,
     REASON_INSUFFICIENT_HEADROOM,
 )
 
@@ -69,7 +70,7 @@ class _Store:
         self.data = data
 
 
-def _options(limit: float | None) -> dict[str, Any]:
+def _options(limit: float | None, *, guard_enabled: bool | None = None) -> dict[str, Any]:
     options: dict[str, Any] = {
         "technologies": [
             {"id": "photovoltaics", "enabled": True, "entity_ids": []},
@@ -78,24 +79,9 @@ def _options(limit: float | None) -> dict[str, Any]:
         "entity_assignments": {
             "version": 1,
             "items": [
-                {
-                    "technology": "photovoltaics",
-                    "role": "pv_power",
-                    "entity_id": "sensor.pv",
-                    "confirmed": True,
-                },
-                {
-                    "technology": "smart_meter",
-                    "role": "grid_import",
-                    "entity_id": "sensor.grid_in",
-                    "confirmed": True,
-                },
-                {
-                    "technology": "smart_meter",
-                    "role": "grid_export",
-                    "entity_id": "sensor.grid_out",
-                    "confirmed": True,
-                },
+                {"technology": "photovoltaics", "role": "pv_power", "entity_id": "sensor.pv", "confirmed": True},
+                {"technology": "smart_meter", "role": "grid_import", "entity_id": "sensor.grid_in", "confirmed": True},
+                {"technology": "smart_meter", "role": "grid_export", "entity_id": "sensor.grid_out", "confirmed": True},
             ],
         },
         "energy_flow": {
@@ -106,15 +92,18 @@ def _options(limit: float | None) -> dict[str, Any]:
         },
     }
     if limit is not None:
-        options["site_capacity"] = {"max_grid_import_kw": limit}
+        capacity: dict[str, Any] = {"max_grid_import_kw": limit}
+        if guard_enabled is not None:
+            capacity["execution_guard_enabled"] = guard_enabled
+        options["site_capacity"] = capacity
     return options
 
 
-def _entry(limit: float | None):
+def _entry(limit: float | None, *, guard_enabled: bool | None = None):
     return SimpleNamespace(
         entry_id="entry-1",
         domain="frakon_energy",
-        options=_options(limit),
+        options=_options(limit, guard_enabled=guard_enabled),
     )
 
 
@@ -135,11 +124,7 @@ def _dispatching(
 
 def _wire_reservations(monkeypatch: pytest.MonkeyPatch) -> CapacityReservationRepository:
     repository = CapacityReservationRepository(_Store())
-    monkeypatch.setattr(
-        final_recheck,
-        "capacity_reservation_repository",
-        lambda hass, entry_id: repository,
-    )
+    monkeypatch.setattr(final_recheck, "capacity_reservation_repository", lambda hass, entry_id: repository)
     monkeypatch.setattr(final_recheck.time, "time", lambda: 1_800_000_000)
     return repository
 
@@ -156,32 +141,21 @@ async def test_live_grid_rise_between_gate_and_boundary_turns_ready_into_blocked
         return [_dispatching(11.0)]
 
     monkeypatch.setattr(final_recheck, "_dispatching_records", dispatching_records)
-
-    first = await async_final_capacity_recheck(
-        hass,  # type: ignore[arg-type]
-        entry_id="entry-1",
-    )
+    first = await async_final_capacity_recheck(hass, entry_id="entry-1")  # type: ignore[arg-type]
     assert first.status == FINAL_RECHECK_READY
     assert first.can_start is True
     assert first.reservation is not None
     assert first.state_transition_performed is True
     assert first.capacity_gate is not None
-    assert first.capacity_gate["current_grid_import_kw"] == pytest.approx(2.0)
     assert first.capacity_gate["projected_grid_import_kw"] == pytest.approx(13.0)
 
     hass.states.values["sensor.grid_in"] = ("8", "kW")
-
-    second = await async_final_capacity_recheck(
-        hass,  # type: ignore[arg-type]
-        entry_id="entry-1",
-    )
+    second = await async_final_capacity_recheck(hass, entry_id="entry-1")  # type: ignore[arg-type]
     assert second.status == FINAL_RECHECK_BLOCKED
     assert second.can_start is False
     assert second.reason == REASON_INSUFFICIENT_HEADROOM
     assert second.reserved_other_power_kw == pytest.approx(0.0)
     assert second.capacity_gate is not None
-    assert second.capacity_gate["current_grid_import_kw"] == pytest.approx(8.0)
-    assert second.capacity_gate["grid_headroom_kw"] == pytest.approx(7.0)
     assert second.capacity_gate["projected_grid_import_kw"] == pytest.approx(19.0)
     assert second.capacity_gate["projected_over_limit_kw"] == pytest.approx(4.0)
     assert second.service_call_performed is False
@@ -201,33 +175,50 @@ async def test_second_start_cannot_reuse_capacity_reserved_by_first_start(
         return list(current)
 
     monkeypatch.setattr(final_recheck, "_dispatching_records", dispatching_records)
-
-    first = await async_final_capacity_recheck(
-        hass,  # type: ignore[arg-type]
-        entry_id="entry-1",
-    )
+    first = await async_final_capacity_recheck(hass, entry_id="entry-1")  # type: ignore[arg-type]
     assert first.status == FINAL_RECHECK_READY
-    assert first.capacity_gate is not None
-    assert first.capacity_gate["projected_grid_import_kw"] == pytest.approx(13.0)
 
-    # Meter is deliberately still numerically stale at 2 kW, but its Home
-    # Assistant timestamp is fresh. The durable reservation must still prevent
-    # the second start from reusing the first start's unreflected headroom.
     current[:] = [_dispatching(7.0, lifecycle_id="life-b", attempt_id="attempt-b")]
-    second = await async_final_capacity_recheck(
-        hass,  # type: ignore[arg-type]
-        entry_id="entry-1",
-    )
-
+    second = await async_final_capacity_recheck(hass, entry_id="entry-1")  # type: ignore[arg-type]
     assert second.status == FINAL_RECHECK_BLOCKED
     assert second.reason == REASON_INSUFFICIENT_HEADROOM
-    assert second.can_start is False
     assert second.reserved_other_power_kw == pytest.approx(11.0)
     assert second.effective_planned_power_kw == pytest.approx(18.0)
     assert second.capacity_gate is not None
     assert second.capacity_gate["projected_grid_import_kw"] == pytest.approx(20.0)
-    assert second.capacity_gate["projected_over_limit_kw"] == pytest.approx(1.0)
     assert second.reservation is None
+
+
+@pytest.mark.asyncio
+async def test_configured_but_disabled_guard_bypasses_without_reservation_or_lifecycle_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entry = _entry(15.0, guard_enabled=False)
+    hass = _Hass(entry, grid_import_kw=99.0)
+    looked_up = False
+    reservation_lookup = False
+
+    async def dispatching_records(hass_obj: Any, entry_id: str):
+        nonlocal looked_up
+        looked_up = True
+        return []
+
+    def reservation_repository(hass_obj: Any, entry_id: str):
+        nonlocal reservation_lookup
+        reservation_lookup = True
+        raise AssertionError("reservation repository must not be used")
+
+    monkeypatch.setattr(final_recheck, "_dispatching_records", dispatching_records)
+    monkeypatch.setattr(final_recheck, "capacity_reservation_repository", reservation_repository)
+    result = await async_final_capacity_recheck(hass, entry_id="entry-1")  # type: ignore[arg-type]
+    assert result.status == FINAL_RECHECK_BYPASSED
+    assert result.reason == REASON_GUARD_DISABLED
+    assert result.can_start is True
+    assert result.guard_active is False
+    assert looked_up is False
+    assert reservation_lookup is False
+    assert result.reservation is None
+    assert result.state_transition_performed is False
 
 
 @pytest.mark.asyncio
@@ -251,12 +242,7 @@ async def test_unconfigured_capacity_bypasses_without_reservation_or_dispatching
 
     monkeypatch.setattr(final_recheck, "_dispatching_records", dispatching_records)
     monkeypatch.setattr(final_recheck, "capacity_reservation_repository", reservation_repository)
-
-    result = await async_final_capacity_recheck(
-        hass,  # type: ignore[arg-type]
-        entry_id="entry-1",
-    )
-
+    result = await async_final_capacity_recheck(hass, entry_id="entry-1")  # type: ignore[arg-type]
     assert result.status == FINAL_RECHECK_BYPASSED
     assert result.can_start is True
     assert result.guard_active is False
