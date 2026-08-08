@@ -55,6 +55,8 @@ class ExecutionArmState:
     changed_by: str | None = None
 
     def validated(self) -> "ExecutionArmState":
+        if not isinstance(self.armed, bool):
+            raise ExecutionArmError("armed must be boolean")
         if self.revision < 0:
             raise ExecutionArmError("revision must be non-negative")
         if self.changed_at < 0:
@@ -74,9 +76,12 @@ class ExecutionArmState:
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "ExecutionArmState":
         try:
+            raw_armed = value["armed"]
+            if not isinstance(raw_armed, bool):
+                raise ExecutionArmError("armed must be boolean")
             raw_changed_by = value.get("changed_by")
             return cls(
-                armed=bool(value["armed"]),
+                armed=raw_armed,
                 revision=int(value["revision"]),
                 changed_at=int(value["changed_at"]),
                 changed_by=(str(raw_changed_by) if raw_changed_by is not None else None),
@@ -137,6 +142,8 @@ class ExecutionArmRepository:
         changed_at: int,
         changed_by: str | None,
     ) -> ExecutionArmUpdateResult:
+        if not isinstance(armed, bool):
+            raise ExecutionArmError("armed must be boolean")
         if changed_at <= 0:
             raise ExecutionArmError("changed_at must be positive")
         async with self._lock:
