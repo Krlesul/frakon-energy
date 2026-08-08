@@ -9,6 +9,9 @@ from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 
 from .const import DOMAIN
+from .load_execution_phase_capacity_reservation_status import (
+    async_phase_capacity_reservation_status,
+)
 from .load_execution_safety_status import async_execution_safety_status
 
 COMMAND_EXECUTION_SAFETY_STATUS = f"{DOMAIN}/load_execution/safety_status"
@@ -38,6 +41,12 @@ def async_register_load_execution_safety_status_websocket(hass: HomeAssistant) -
             result = await async_execution_safety_status(
                 hass,
                 entry_id=msg["entry_id"],
+            )
+            result["site_phase_capacity_reservations"] = (
+                await async_phase_capacity_reservation_status(
+                    hass,
+                    entry_id=msg["entry_id"],
+                )
             )
         except ValueError as err:
             connection.send_error(msg["id"], "execution_safety_status_invalid", str(err))
