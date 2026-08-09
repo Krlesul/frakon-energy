@@ -4,11 +4,11 @@ on:
   push:
     branches:
       - main
-      - feat/frakon-energy-1.0-integration
   pull_request:
     paths:
       - "custom_components/**"
       - "tests/**"
+      - "scripts/release_preflight.py"
       - "hacs.json"
       - "CHANGELOG.md"
       - "VERSION"
@@ -48,13 +48,10 @@ jobs:
           print("OK hacs.json")
           PY
 
-      - name: Validate HACS and release structure
+      - name: Validate required release files
         run: |
           python - <<'PY'
-          import json
-          import re
           from pathlib import Path
-
           required = [
               Path("VERSION"),
               Path("hacs.json"),
@@ -69,22 +66,10 @@ jobs:
           missing = [str(path) for path in required if not path.is_file()]
           if missing:
               raise SystemExit(f"Missing required files: {missing}")
-
-          version = Path("VERSION").read_text(encoding="utf-8").strip()
-          if not re.fullmatch(r"\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+)?", version):
-              raise SystemExit(f"Invalid semantic version: {version}")
-
-          manifest = json.loads(Path("custom_components/frakon_energy/manifest.json").read_text(encoding="utf-8"))
-          frontend = json.loads(Path("frontend/package.json").read_text(encoding="utf-8"))
-          hacs = json.loads(Path("hacs.json").read_text(encoding="utf-8"))
-
-          assert manifest["domain"] == "frakon_energy"
-          assert manifest["config_flow"] is True
-          assert manifest["version"] == version
-          assert frontend["version"] == version
-          assert hacs["name"] == manifest["name"]
-          print(f"Validated {manifest['name']} {version}")
           PY
+
+      - name: Release preflight contract
+        run: python scripts/release_preflight.py
 
       - name: Run backend tests
         run: >-
