@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Any
-
 from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
@@ -20,7 +18,10 @@ def purge_entry_scoped_domain_caches(hass: HomeAssistant, entry_id: str) -> tupl
     if not entry_id:
         raise ValueError("entry_id is required")
 
-    domain_data = hass.data.get(DOMAIN)
+    hass_data = getattr(hass, "data", None)
+    if not isinstance(hass_data, dict):
+        return ()
+    domain_data = hass_data.get(DOMAIN)
     if not isinstance(domain_data, dict):
         return ()
 
