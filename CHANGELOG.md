@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.0.0-rc.2
+
+Druhý release candidate rozšiřuje FRAKON Energy z energetického přehledu na fail-closed řízení zátěží s durable execution lifecycle.
+
+### Přidáno
+
+- Energy Flow a Load Profiles pro řízené spotřebiče.
+- Globální ARM interlock: fyzický start je po prvním použití výchozně zakázaný, dokud není explicitně povolen.
+- Site Capacity a L1/L2/L3 kapacitní kontroly těsně před fyzickým startem.
+- Durable rezervace kapacity a settlement jednotlivých fází.
+- Crash/restart recovery pro rozpracované start/stop lifecycle záznamy.
+- Occurrence-aware idempotency, aby stará dokončená událost neblokovala nový legitimní zásah.
+- One-time WebSocket registration kontrakt pro multi-entry a reload.
+- Retry-safe registrace frontend panelu a statických cest.
+- Bezpečný unload/reload entry cache s procesově stabilními execution lock registry.
+- Commissioning checklist a popis bezpečnostních hranic v README.
+
+### Bezpečnostní principy RC
+
+- Server je autorita; frontend sám neautorizuje fyzickou akci.
+- Kritický stav se zapisuje durable před překročením fyzické service-call hranice.
+- Neznámý výsledek fyzického příkazu se automaticky neopakuje.
+- Kapacita se znovu kontroluje na finální fyzické hranici.
+- Reload nesmí vytvořit druhý mutex pro stejný execution entry.
+
+### Omezení RC
+
+- Před běžným fyzickým řízením je stále nutný commissioning na reálném Home Assistantu a ověření konkrétních entit/spotřebičů.
+- RC není náhradou elektrických ochran, jističů, stykačů, proudových chráničů ani jiných hardwarových bezpečnostních prvků.
+
 ## 1.0.0-rc.1
 
 První instalační kandidát FRAKON Energy.
