@@ -28,28 +28,24 @@ from .load_execution_lifecycle_recovery import async_initialize_lifecycle_recove
 from .load_execution_lifecycle_recovery_ws_api import async_register_load_execution_lifecycle_recovery_websocket
 from .load_execution_lifecycle_ws_api import async_register_load_execution_lifecycle_websocket
 from .load_execution_noop_completion_ws_api import async_register_load_execution_noop_completion_websocket
-from .load_execution_pending_run_retention_runtime import async_run_pending_run_retention_best_effort
-from .load_execution_pending_run_scheduler import async_start_pending_run_scheduler, async_stop_pending_run_scheduler
 from .load_execution_pending_run_scheduler_ws_api import async_register_load_execution_pending_run_scheduler_websocket
 from .load_execution_pending_run_ws_api import async_register_load_execution_pending_run_websocket
-from .load_execution_phase_settlement_runtime import (
-    async_start_phase_settlement_runtime,
-    async_stop_phase_settlement_runtime,
-)
 from .load_execution_policy_ws_api import async_register_load_execution_policy_websocket
 from .load_execution_readiness_ws_api import async_register_load_execution_readiness_websocket
 from .load_execution_recovery_resolution_ws_api import async_register_load_execution_recovery_resolution_websocket
 from .load_execution_recovery_verification_ws_api import async_register_load_execution_recovery_verification_websocket
+from .load_execution_runtime_lifecycle import (
+    async_start_execution_runtimes,
+    async_stop_execution_runtimes,
+)
 from .load_execution_safety_status_ws_api import async_register_load_execution_safety_status_websocket
 from .load_execution_start_dispatcher_ws_api import async_register_load_execution_start_dispatcher_websocket
-from .load_execution_start_scheduler import async_start_start_scheduler, async_stop_start_scheduler
 from .load_execution_start_scheduler_ws_api import async_register_load_execution_start_scheduler_websocket
 from .load_execution_stop_dispatcher_ws_api import async_register_load_execution_stop_dispatcher_websocket
 from .load_execution_stop_due_ws_api import async_register_load_execution_stop_due_websocket
 from .load_execution_stop_lease_ws_api import async_register_load_execution_stop_lease_websocket
 from .load_execution_stop_recovery import async_initialize_stop_recovery
 from .load_execution_stop_resolution_ws_api import async_register_load_execution_stop_resolution_websocket
-from .load_execution_stop_scheduler import async_start_stop_scheduler, async_stop_stop_scheduler
 from .load_execution_stop_scheduler_ws_api import async_register_load_execution_stop_scheduler_websocket
 from .load_plan_ws_api import async_register_load_plan_websocket
 from .load_profiles_ws_api import async_register_load_profiles_websocket
@@ -100,12 +96,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     setup_entity_discovery_runtime(entry_id=entry.entry_id, runtime_registry=runtime_registry, profile_provider=lambda: technology_profile_from_options(entry.options), registry_provider=lambda: _entity_registry_snapshot(hass), options_provider=lambda: entry.options, options_updater=lambda options: _update_entry_options(hass, entry, options))
     await async_initialize_lifecycle_recovery(hass, entry_id=entry.entry_id)
     await async_initialize_stop_recovery(hass, entry_id=entry.entry_id)
-    await async_start_stop_scheduler(hass, entry.entry_id)
-    await async_start_start_scheduler(hass, entry.entry_id)
-    # Housekeeping is deliberately best-effort and cannot block execution setup.
-    await async_run_pending_run_retention_best_effort(hass, entry_id=entry.entry_id)
-    await async_start_pending_run_scheduler(hass, entry.entry_id)
-    await async_start_phase_settlement_runtime(hass, entry.entry_id)
+    await async_start_execution_runtimes(hass, entry.entry_id)
     async_register_entity_discovery_websocket(hass, runtime_registry)
     async_register_technology_profile_websocket(hass)
     async_register_energy_flow_websocket(hass)
@@ -147,10 +138,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unloaded = await hass.config_entries.async_unload_platforms(entry, ["sensor"])
     if unloaded:
-        await async_stop_phase_settlement_runtime(hass, entry.entry_id)
-        await async_stop_pending_run_scheduler(hass, entry.entry_id)
-        await async_stop_start_scheduler(hass, entry.entry_id)
-        await async_stop_stop_scheduler(hass, entry.entry_id)
+        await async_stop_execution_runtimes(hass, entry.entry_id)
         unload_entity_discovery_runtime(entry_id=entry.entry_id, runtime_registry=_runtime_registry(hass))
         hass.data[DOMAIN].pop(entry.entry_id, None)
     return unloaded
