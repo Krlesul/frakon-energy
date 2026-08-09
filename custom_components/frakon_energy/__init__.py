@@ -116,6 +116,37 @@ async def _async_rollback_failed_setup(
         domain_data.pop(entry.entry_id, None)
 
 
+async def _async_cleanup_unloaded_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    *,
+    runtime_registry: EntityDiscoveryRuntimeRegistry,
+) -> None:
+    """Finish local cleanup after Home Assistant platforms are already unloaded."""
+    first_error: Exception | None = None
+
+    try:
+        await async_stop_execution_runtimes(hass, entry.entry_id)
+    except Exception as err:
+        first_error = err
+
+    try:
+        unload_entity_discovery_runtime(
+            entry_id=entry.entry_id,
+            runtime_registry=runtime_registry,
+        )
+    except Exception as err:
+        if first_error is None:
+            first_error = err
+
+    domain_data = hass.data.get(DOMAIN)
+    if isinstance(domain_data, dict):
+        domain_data.pop(entry.entry_id, None)
+
+    if first_error is not None:
+        raise first_error
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     provider = entry.data.get(CONF_PROVIDER, PROVIDER_VISIONQ)
     if provider == PROVIDER_CEZ_HDO:
@@ -191,9 +222,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unloaded = await hass.config_entries.async_unload_platforms(entry, ["sensor"])
     if unloaded:
-        await async_stop_execution_runtimes(hass, entry.entry_id)
-        unload_entity_discovery_runtime(entry_id=entry.entry_id, runtime_registry=_runtime_registry(hass))
-        hass.data[DOMAIN].pop(entry.entry_id, None)
+        await _async_cleanup_unloaded_entry(
+            hass,
+            entry,
+            runtime_registry=_runtime_registry(hass),
+        )
     return unloaded
 
 
