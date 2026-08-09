@@ -152,3 +152,39 @@ async def test_rollback_cleanup_failure_never_masks_original_startup_error(
 
     with pytest.raises(RuntimeError, match="primary startup failure"):
         await lifecycle.async_start_execution_runtimes(_Hass(), "entry-1")  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_stop_attempts_every_runtime_and_reraises_first_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    async def fail_settlement(hass, entry_id):
+        calls.append("stop-settlement")
+        raise RuntimeError("settlement stop failed")
+
+    async def fail_pending(hass, entry_id):
+        calls.append("stop-pending")
+        raise RuntimeError("pending stop failed")
+
+    async def stop_start(hass, entry_id):
+        calls.append("stop-start")
+
+    async def stop_stop(hass, entry_id):
+        calls.append("stop-stop")
+
+    monkeypatch.setattr(lifecycle, "async_stop_phase_settlement_runtime", fail_settlement)
+    monkeypatch.setattr(lifecycle, "async_stop_pending_run_scheduler", fail_pending)
+    monkeypatch.setattr(lifecycle, "async_stop_start_scheduler", stop_start)
+    monkeypatch.setattr(lifecycle, "async_stop_stop_scheduler", stop_stop)
+
+    with pytest.raises(RuntimeError, match="settlement stop failed"):
+        await lifecycle.async_stop_execution_runtimes(_Hass(), "entry-1")  # type: ignore[arg-type]
+
+    assert calls == [
+        "stop-settlement",
+        "stop-pending",
+        "stop-start",
+        "stop-stop",
+    ]
