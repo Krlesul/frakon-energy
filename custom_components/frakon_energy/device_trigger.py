@@ -15,7 +15,6 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
-from homeassistant.helpers.device_automation import TRIGGER_BASE_SCHEMA
 from homeassistant.helpers.typing import ConfigType, TemplateVarsType
 
 from .const import DOMAIN, EVENT_TARIFF_CHANGED
@@ -24,8 +23,14 @@ TRIGGER_LOW_TARIFF_STARTED = "low_tariff_started"
 TRIGGER_LOW_TARIFF_ENDED = "low_tariff_ended"
 TRIGGER_TYPES = {TRIGGER_LOW_TARIFF_STARTED, TRIGGER_LOW_TARIFF_ENDED}
 
-TRIGGER_SCHEMA = TRIGGER_BASE_SCHEMA.extend(
+# Home Assistant 2026.7 removed homeassistant.helpers.device_automation and its
+# TRIGGER_BASE_SCHEMA. Device integrations now compose their trigger schema from
+# the generic config-validation trigger base and explicitly add the device fields.
+TRIGGER_SCHEMA = cv.TRIGGER_BASE_SCHEMA.extend(
     {
+        vol.Required(CONF_PLATFORM): "device",
+        vol.Required(CONF_DOMAIN): DOMAIN,
+        vol.Required(CONF_DEVICE_ID): str,
         vol.Required(CONF_TYPE): vol.In(TRIGGER_TYPES),
     }
 )
