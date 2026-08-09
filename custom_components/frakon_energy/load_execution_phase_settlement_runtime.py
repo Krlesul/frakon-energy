@@ -22,6 +22,9 @@ from .load_execution_phase_capacity_reservation import (
 from .load_execution_phase_settlement_confirmation import (
     async_observe_phase_settlement_confirmation,
 )
+from .load_execution_phase_settlement_evidence import (
+    phase_settlement_evidence_repository,
+)
 from .load_execution_phase_settlement_release import (
     async_release_confirmed_phase_reservation,
 )
@@ -184,6 +187,10 @@ class PhaseSettlementRuntime:
                         last_checked_at=now,
                         last_error=str(err),
                     )
+
+            await phase_settlement_evidence_repository(
+                self._hass, self._entry_id
+            ).async_prune(active_lifecycle_ids=active_ids)
 
 
 def phase_settlement_runtime(hass: HomeAssistant, entry_id: str) -> PhaseSettlementRuntime:
