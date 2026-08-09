@@ -226,8 +226,46 @@ async def test_failed_release_persistence_keeps_reservation_after_restart(
         )
     reservation_store.fail = False
 
-    # A failed durable delete must not publish an in-memory-only release. Both the
-    # live repository and a newly reconstructed repository still consume headroom.
     assert await final_reservation_repo.async_snapshot(now=201) == (reservation,)
     after_failure_restart = PhaseCapacityReservationRepository(reservation_store)
     assert await after_failure_restart.async_snapshot(now=201) == (reservation,)
+
+
+@pytest.mark.asyncio
+async def test_confirmed_settlement_is_not_released_when_final_proof_drops_after_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reservation_store = _Store()
+    confirmation_store = _Store()
+    reservation, confirmed = await _persist_confirmed_settlement(
+        reservation_store,
+        confirmation_store,
+    )
+
+    final_reservation_repo = PhaseCapacityReservationRepository(reservation_store)
+    final_confirmation_repo = PhaseSettlementConfirmationRepository(confirmation_store)
+    assert (await final_confirmation_repo.async_get("life-1")) == confirmed
+    _wire_release(monkeypatch, final_reservation_repo, final_confirmation_repo)
+
+    async def dropped_final_proof(hass, *, entry_id: str, lifecycle_id: str):
+        value = SimpleNamespace(candidate=False, reason="phase_current_dropped_before_release")
+        value.as_dict = lambda: {"candidate": False, "reason": value.reason}
+        return value
+
+    monkeypatch.setattr(release, "async_phase_settlement_proof", dropped_final_proof)
+
+    result = await release.async_release_confirmed_phase_reservation(
+        object(),  # type: ignore[arg-type]
+        entry_id="entry-1",
+        lifecycle_id="life-1",
+    )
+    assert result.status == release.STATUS_RECHECK_NOT_READY
+    assert result.released is False
+    assert result.final_proof is not None
+    assert result.final_proof["candidate"] is False
+
+    # Durable confirmation alone is never enough. If the final telemetry proof
+    # disappears, the reservation must continue consuming headroom across restart.
+    assert await final_reservation_repo.async_snapshot(now=201) == (reservation,)
+    after_blocked_restart = PhaseCapacityReservationRepository(reservation_store)
+    assert await after_blocked_restart.async_snapshot(now=201) == (reservation,)
