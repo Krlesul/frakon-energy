@@ -39,8 +39,11 @@ jobs:
         with:
           node-version: 24
 
-      - name: Install backend test dependencies
-        run: python -m pip install --upgrade pip pytest
+      - name: Install release test dependencies
+        run: >-
+          python -m pip install --upgrade pip
+          pytest pytest-asyncio
+          "homeassistant==2026.7.0"
 
       - name: Verify release identity
         id: version
@@ -79,7 +82,7 @@ jobs:
       - name: Compile integration
         run: python -m compileall -q custom_components/frakon_energy
 
-      - name: Run backend tests
+      - name: Run full backend test suite
         run: python -m pytest -q
 
       - name: Install frontend dependencies
