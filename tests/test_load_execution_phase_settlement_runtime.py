@@ -104,3 +104,62 @@ async def test_runtime_error_is_local_and_keeps_processing_contract_fail_safe(
     status = runtime.statuses()[0]
     assert status.status == runtime_module.STATUS_ERROR
     assert status.last_error == "telemetry unavailable"
+
+
+@pytest.mark.asyncio
+async def test_runtime_prunes_inactive_and_expired_released_statuses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _ReservationRepo(())
+    monkeypatch.setattr(runtime_module, "phase_capacity_reservation_repository", lambda hass, entry_id: repo)
+    monkeypatch.setattr(runtime_module.time, "time", lambda: 5000)
+
+    runtime = runtime_module.PhaseSettlementRuntime(_Hass(), "entry-1")  # type: ignore[arg-type]
+    runtime._status_by_lifecycle = {
+        "released-old": runtime_module.PhaseSettlementRuntimeStatus(
+            lifecycle_id="released-old",
+            status=runtime_module.STATUS_RELEASED,
+            last_checked_at=100,
+        ),
+        "released-recent": runtime_module.PhaseSettlementRuntimeStatus(
+            lifecycle_id="released-recent",
+            status=runtime_module.STATUS_RELEASED,
+            last_checked_at=4900,
+        ),
+        "waiting-gone": runtime_module.PhaseSettlementRuntimeStatus(
+            lifecycle_id="waiting-gone",
+            status=runtime_module.STATUS_WAITING,
+            last_checked_at=4990,
+        ),
+    }
+
+    await runtime.async_process_once()
+
+    statuses = {item.lifecycle_id: item for item in runtime.statuses()}
+    assert set(statuses) == {"released-recent"}
+
+
+@pytest.mark.asyncio
+async def test_runtime_caps_recent_released_history(monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = _ReservationRepo(())
+    monkeypatch.setattr(runtime_module, "phase_capacity_reservation_repository", lambda hass, entry_id: repo)
+    monkeypatch.setattr(runtime_module.time, "time", lambda: 10000)
+
+    runtime = runtime_module.PhaseSettlementRuntime(_Hass(), "entry-1")  # type: ignore[arg-type]
+    total = runtime_module.MAX_RETAINED_RELEASED_STATUSES + 5
+    runtime._status_by_lifecycle = {
+        f"released-{index:03d}": runtime_module.PhaseSettlementRuntimeStatus(
+            lifecycle_id=f"released-{index:03d}",
+            status=runtime_module.STATUS_RELEASED,
+            last_checked_at=9900 + index,
+        )
+        for index in range(total)
+    }
+
+    await runtime.async_process_once()
+
+    statuses = runtime.statuses()
+    assert len(statuses) == runtime_module.MAX_RETAINED_RELEASED_STATUSES
+    ids = {item.lifecycle_id for item in statuses}
+    assert "released-000" not in ids
+    assert f"released-{total - 1:03d}" in ids

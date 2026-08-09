@@ -28,6 +28,8 @@ from .load_execution_phase_settlement_release import (
 
 _RUNTIME_KEY = "load_execution_phase_settlement_runtimes_by_entry"
 DEFAULT_SETTLEMENT_POLL_SECONDS = 5
+SETTLEMENT_STATUS_RETENTION_SECONDS = 3600
+MAX_RETAINED_RELEASED_STATUSES = 100
 
 STATUS_WAITING = "waiting"
 STATUS_CONFIRMED = "confirmed"
@@ -113,6 +115,29 @@ class PhaseSettlementRuntime:
         except asyncio.CancelledError:
             raise
 
+    def _prune_statuses(self, *, now: int, active_ids: set[str]) -> None:
+        """Keep active status plus a bounded recent history of released entries."""
+        for lifecycle_id, status in tuple(self._status_by_lifecycle.items()):
+            if lifecycle_id in active_ids:
+                continue
+            if status.status != STATUS_RELEASED:
+                self._status_by_lifecycle.pop(lifecycle_id, None)
+                continue
+            if now - status.last_checked_at > SETTLEMENT_STATUS_RETENTION_SECONDS:
+                self._status_by_lifecycle.pop(lifecycle_id, None)
+
+        released = sorted(
+            (
+                status
+                for lifecycle_id, status in self._status_by_lifecycle.items()
+                if lifecycle_id not in active_ids and status.status == STATUS_RELEASED
+            ),
+            key=lambda item: (item.last_checked_at, item.lifecycle_id),
+            reverse=True,
+        )
+        for status in released[MAX_RETAINED_RELEASED_STATUSES:]:
+            self._status_by_lifecycle.pop(status.lifecycle_id, None)
+
     async def async_process_once(self) -> None:
         """Advance settlement for active reservations without any physical action."""
         async with self._lock:
@@ -121,9 +146,7 @@ class PhaseSettlementRuntime:
                 self._hass, self._entry_id
             ).async_snapshot(now=now)
             active_ids = {item.lifecycle_id for item in reservations}
-            for lifecycle_id in tuple(self._status_by_lifecycle):
-                if lifecycle_id not in active_ids and self._status_by_lifecycle[lifecycle_id].status != STATUS_RELEASED:
-                    self._status_by_lifecycle.pop(lifecycle_id, None)
+            self._prune_statuses(now=now, active_ids=active_ids)
 
             for reservation in reservations:
                 lifecycle_id = reservation.lifecycle_id
