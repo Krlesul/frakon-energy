@@ -27,6 +27,30 @@ class _Store:
         self.data = data
 
 
+async def _record(
+    repo: PhaseSettlementConfirmationRepository,
+    *,
+    lifecycle_id: str,
+    watermark: float,
+    confirmed_at: int | None = None,
+) -> None:
+    suffix = lifecycle_id.removeprefix("life-")
+    await repo.async_record_first(
+        lifecycle_id=lifecycle_id,
+        attempt_id=f"attempt-{suffix}",
+        watermark=watermark,
+        source_updated_at={"L1": watermark, "L2": watermark, "L3": watermark},
+        current_a={"L1": 18.0, "L2": 7.0, "L3": 9.0},
+    )
+    if confirmed_at is not None:
+        await repo.async_confirm(
+            lifecycle_id=lifecycle_id,
+            attempt_id=f"attempt-{suffix}",
+            watermark=watermark + MIN_CONFIRMATION_INTERVAL_SECONDS,
+            confirmed_at=confirmed_at,
+        )
+
+
 @pytest.mark.asyncio
 async def test_first_observation_is_durable_and_idempotent() -> None:
     store = _Store()
@@ -134,3 +158,60 @@ async def test_failed_first_observation_save_does_not_publish_state() -> None:
 
     store.fail = False
     assert await repo.async_get("life-1") is None
+
+
+@pytest.mark.asyncio
+async def test_prune_preserves_active_and_newest_inactive_confirmations() -> None:
+    store = _Store()
+    repo = PhaseSettlementConfirmationRepository(store)
+    for index in range(1, 7):
+        await _record(
+            repo,
+            lifecycle_id=f"life-{index}",
+            watermark=100.0 + index,
+            confirmed_at=200 + index,
+        )
+
+    removed = await repo.async_prune(
+        active_lifecycle_ids={"life-1", "life-2"},
+        max_inactive=2,
+    )
+
+    assert removed == ("life-3", "life-4")
+    assert await repo.async_get("life-1") is not None
+    assert await repo.async_get("life-2") is not None
+    assert await repo.async_get("life-3") is None
+    assert await repo.async_get("life-4") is None
+    assert await repo.async_get("life-5") is not None
+    assert await repo.async_get("life-6") is not None
+
+    reconstructed = PhaseSettlementConfirmationRepository(store)
+    assert await reconstructed.async_get("life-1") is not None
+    assert await reconstructed.async_get("life-3") is None
+    assert await reconstructed.async_get("life-6") is not None
+
+
+@pytest.mark.asyncio
+async def test_failed_prune_save_does_not_publish_confirmation_cleanup() -> None:
+    store = _Store()
+    repo = PhaseSettlementConfirmationRepository(store)
+    for index in range(1, 4):
+        await _record(
+            repo,
+            lifecycle_id=f"life-{index}",
+            watermark=100.0 + index,
+            confirmed_at=200 + index,
+        )
+
+    store.fail = True
+    with pytest.raises(RuntimeError, match="store unavailable"):
+        await repo.async_prune(active_lifecycle_ids={"life-1"}, max_inactive=1)
+    store.fail = False
+
+    assert await repo.async_get("life-1") is not None
+    assert await repo.async_get("life-2") is not None
+    assert await repo.async_get("life-3") is not None
+    reconstructed = PhaseSettlementConfirmationRepository(store)
+    assert await reconstructed.async_get("life-1") is not None
+    assert await reconstructed.async_get("life-2") is not None
+    assert await reconstructed.async_get("life-3") is not None
