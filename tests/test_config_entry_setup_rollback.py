@@ -121,3 +121,57 @@ async def test_platform_unload_failure_does_not_prevent_other_cleanup(
     with pytest.raises(KeyError):
         registry.get("entry-1")
     assert "entry-1" not in hass.data[DOMAIN]
+
+
+@pytest.mark.asyncio
+async def test_unload_cleanup_removes_discovery_and_coordinator_after_runtime_stop_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hass = _Hass()
+    entry = SimpleNamespace(entry_id="entry-1")
+    registry = _registry_with_entry(entry.entry_id)
+    hass.data[DOMAIN][entry.entry_id] = object()
+
+    async def fail_stop(hass_arg, entry_id: str) -> None:
+        raise RuntimeError("runtime stop failed")
+
+    monkeypatch.setattr(frakon_energy, "async_stop_execution_runtimes", fail_stop)
+
+    with pytest.raises(RuntimeError, match="runtime stop failed"):
+        await frakon_energy._async_cleanup_unloaded_entry(
+            hass,  # type: ignore[arg-type]
+            entry,  # type: ignore[arg-type]
+            runtime_registry=registry,
+        )
+
+    with pytest.raises(KeyError):
+        registry.get("entry-1")
+    assert "entry-1" not in hass.data[DOMAIN]
+
+
+@pytest.mark.asyncio
+async def test_unload_cleanup_preserves_first_error_but_still_removes_coordinator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hass = _Hass()
+    entry = SimpleNamespace(entry_id="entry-1")
+    registry = _registry_with_entry(entry.entry_id)
+    hass.data[DOMAIN][entry.entry_id] = object()
+
+    async def fail_stop(hass_arg, entry_id: str) -> None:
+        raise RuntimeError("first runtime error")
+
+    def fail_discovery(*, entry_id: str, runtime_registry) -> bool:
+        raise RuntimeError("discovery cleanup error")
+
+    monkeypatch.setattr(frakon_energy, "async_stop_execution_runtimes", fail_stop)
+    monkeypatch.setattr(frakon_energy, "unload_entity_discovery_runtime", fail_discovery)
+
+    with pytest.raises(RuntimeError, match="first runtime error"):
+        await frakon_energy._async_cleanup_unloaded_entry(
+            hass,  # type: ignore[arg-type]
+            entry,  # type: ignore[arg-type]
+            runtime_registry=registry,
+        )
+
+    assert "entry-1" not in hass.data[DOMAIN]
