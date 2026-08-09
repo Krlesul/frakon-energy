@@ -27,12 +27,15 @@ class _Store:
     def __init__(self) -> None:
         self.data: dict[str, Any] | None = None
         self.saves = 0
+        self.fail = False
 
     async def async_load(self) -> dict[str, Any] | None:
         return self.data
 
     async def async_save(self, data: dict[str, Any]) -> None:
         self.saves += 1
+        if self.fail:
+            raise RuntimeError("store unavailable")
         self.data = data
 
 
@@ -68,13 +71,10 @@ def _entities() -> dict[str, str]:
     return {"L1": "sensor.l1", "L2": "sensor.l2", "L3": "sensor.l3"}
 
 
-@pytest.mark.asyncio
-async def test_durable_reservation_and_confirmation_survive_restart_and_release_exactly_once(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    reservation_store = _Store()
-    confirmation_store = _Store()
-
+async def _persist_confirmed_settlement(
+    reservation_store: _Store,
+    confirmation_store: _Store,
+):
     reservation_repo = PhaseCapacityReservationRepository(reservation_store)
     reservation, created = await reservation_repo.async_reserve(
         lifecycle_id="life-1",
@@ -135,21 +135,24 @@ async def test_durable_reservation_and_confirmation_survive_restart_and_release_
     )
     assert confirmed_created is True
     assert confirmed.confirmed_at == 200
+    return reservation, confirmed
 
-    final_reservation_repo = PhaseCapacityReservationRepository(reservation_store)
-    final_confirmation_repo = PhaseSettlementConfirmationRepository(confirmation_store)
-    assert (await final_confirmation_repo.async_get("life-1")) == confirmed
 
+def _wire_release(
+    monkeypatch: pytest.MonkeyPatch,
+    reservation_repo: PhaseCapacityReservationRepository,
+    confirmation_repo: PhaseSettlementConfirmationRepository,
+) -> None:
     monkeypatch.setattr(
         release,
         "phase_settlement_confirmation_repository",
-        lambda hass, entry_id: final_confirmation_repo,
+        lambda hass, entry_id: confirmation_repo,
     )
     monkeypatch.setattr(release, "lifecycle_repository", lambda hass, entry_id: _LifecycleRepo())
     monkeypatch.setattr(
         release,
         "phase_capacity_reservation_repository",
-        lambda hass, entry_id: final_reservation_repo,
+        lambda hass, entry_id: reservation_repo,
     )
 
     async def final_proof(hass, *, entry_id: str, lifecycle_id: str):
@@ -158,6 +161,20 @@ async def test_durable_reservation_and_confirmation_survive_restart_and_release_
         return value
 
     monkeypatch.setattr(release, "async_phase_settlement_proof", final_proof)
+
+
+@pytest.mark.asyncio
+async def test_durable_reservation_and_confirmation_survive_restart_and_release_exactly_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reservation_store = _Store()
+    confirmation_store = _Store()
+    _, confirmed = await _persist_confirmed_settlement(reservation_store, confirmation_store)
+
+    final_reservation_repo = PhaseCapacityReservationRepository(reservation_store)
+    final_confirmation_repo = PhaseSettlementConfirmationRepository(confirmation_store)
+    assert (await final_confirmation_repo.async_get("life-1")) == confirmed
+    _wire_release(monkeypatch, final_reservation_repo, final_confirmation_repo)
 
     result = await release.async_release_confirmed_phase_reservation(
         object(),  # type: ignore[arg-type]
@@ -182,3 +199,35 @@ async def test_durable_reservation_and_confirmation_survive_restart_and_release_
     )
     assert replay.status == release.STATUS_ALREADY_ABSENT
     assert replay.released is False
+
+
+@pytest.mark.asyncio
+async def test_failed_release_persistence_keeps_reservation_after_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reservation_store = _Store()
+    confirmation_store = _Store()
+    reservation, confirmed = await _persist_confirmed_settlement(
+        reservation_store,
+        confirmation_store,
+    )
+
+    final_reservation_repo = PhaseCapacityReservationRepository(reservation_store)
+    final_confirmation_repo = PhaseSettlementConfirmationRepository(confirmation_store)
+    assert (await final_confirmation_repo.async_get("life-1")) == confirmed
+    _wire_release(monkeypatch, final_reservation_repo, final_confirmation_repo)
+
+    reservation_store.fail = True
+    with pytest.raises(release.PhaseSettlementReleaseError, match="persistence unavailable"):
+        await release.async_release_confirmed_phase_reservation(
+            object(),  # type: ignore[arg-type]
+            entry_id="entry-1",
+            lifecycle_id="life-1",
+        )
+    reservation_store.fail = False
+
+    # A failed durable delete must not publish an in-memory-only release. Both the
+    # live repository and a newly reconstructed repository still consume headroom.
+    assert await final_reservation_repo.async_snapshot(now=201) == (reservation,)
+    after_failure_restart = PhaseCapacityReservationRepository(reservation_store)
+    assert await after_failure_restart.async_snapshot(now=201) == (reservation,)
