@@ -28,6 +28,7 @@ from .load_execution_phase_settlement_proof import (
 STORAGE_VERSION = 1
 SCHEMA_VERSION = 1
 MIN_CONFIRMATION_INTERVAL_SECONDS = 5.0
+MAX_RETAINED_INACTIVE_CONFIRMATIONS = 500
 _REPOSITORIES_KEY = "load_execution_phase_settlement_confirmation_repositories_by_entry"
 
 STATUS_LIFECYCLE_NOT_FOUND = "lifecycle_not_found"
@@ -218,6 +219,40 @@ class PhaseSettlementConfirmationRepository:
             await self._async_save(updated)
             self._items = updated
             return candidate, True
+
+    async def async_prune(
+        self,
+        *,
+        active_lifecycle_ids: set[str],
+        max_inactive: int = MAX_RETAINED_INACTIVE_CONFIRMATIONS,
+    ) -> tuple[str, ...]:
+        """Bound inactive durable confirmation history while preserving active state."""
+        if max_inactive < 0:
+            raise PhaseSettlementConfirmationError("max_inactive must be non-negative")
+        active = {value for value in active_lifecycle_ids if value}
+        async with self._lock:
+            await self._async_load()
+            inactive = sorted(
+                (item for item in self._items.values() if item.lifecycle_id not in active),
+                key=lambda item: (
+                    item.confirmed_at if item.confirmed_at is not None else item.first_watermark,
+                    item.lifecycle_id,
+                ),
+                reverse=True,
+            )
+            keep_inactive = {item.lifecycle_id for item in inactive[:max_inactive]}
+            keep_ids = active | keep_inactive
+            removed = tuple(sorted(set(self._items) - keep_ids))
+            if not removed:
+                return ()
+            updated = {
+                lifecycle_id: item
+                for lifecycle_id, item in self._items.items()
+                if lifecycle_id in keep_ids
+            }
+            await self._async_save(updated)
+            self._items = updated
+            return removed
 
 
 def home_assistant_confirmation_repository(

@@ -21,6 +21,7 @@ from .load_execution_phase_capacity_reservation import (
 )
 from .load_execution_phase_settlement_confirmation import (
     async_observe_phase_settlement_confirmation,
+    phase_settlement_confirmation_repository,
 )
 from .load_execution_phase_settlement_evidence import (
     phase_settlement_evidence_repository,
@@ -189,6 +190,9 @@ class PhaseSettlementRuntime:
                     )
 
             await phase_settlement_evidence_repository(
+                self._hass, self._entry_id
+            ).async_prune(active_lifecycle_ids=active_ids)
+            await phase_settlement_confirmation_repository(
                 self._hass, self._entry_id
             ).async_prune(active_lifecycle_ids=active_ids)
 
