@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 
 from homeassistant.core import HomeAssistant
 
+from .entry_runtime_cache import purge_entry_scoped_domain_caches
 from .load_execution_pending_run_retention_runtime import (
     async_run_pending_run_retention_best_effort,
 )
@@ -71,11 +72,12 @@ async def async_start_execution_runtimes(hass: HomeAssistant, entry_id: str) -> 
 
 
 async def async_stop_execution_runtimes(hass: HomeAssistant, entry_id: str) -> None:
-    """Stop all execution workers in reverse startup order.
+    """Stop all execution workers in reverse startup order and drop entry caches.
 
-    Every stopper is attempted even when an earlier one fails. After cleanup is
-    exhausted, re-raise the first failure so callers still know unload was not fully
-    clean while later workers are not left running merely because one stop failed.
+    Every stopper is attempted even when an earlier one fails. Entry-scoped in-memory
+    repository/runtime wrappers are then purged so a reload reconstructs them from
+    durable Home Assistant storage. After cleanup is exhausted, re-raise the first
+    failure so callers still know unload was not fully clean.
     """
     if not entry_id:
         raise ValueError("entry_id is required")
@@ -92,6 +94,8 @@ async def async_stop_execution_runtimes(hass: HomeAssistant, entry_id: str) -> N
         except Exception as err:
             if first_error is None:
                 first_error = err
+
+    purge_entry_scoped_domain_caches(hass, entry_id)
 
     if first_error is not None:
         raise first_error
