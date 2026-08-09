@@ -1,0 +1,141 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - name: Checkout tagged commit
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Install backend test dependencies
+        run: python -m pip install --upgrade pip pytest
+
+      - name: Verify tag matches VERSION
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(tr -d '\r\n' < VERSION)"
+          expected_tag="v${version}"
+          actual_tag="${GITHUB_REF_NAME}"
+          if [[ "${actual_tag}" != "${expected_tag}" ]]; then
+            echo "Tag ${actual_tag} does not match VERSION ${version}; expected ${expected_tag}" >&2
+            exit 1
+          fi
+          if [[ "${version}" == *-alpha.* || "${version}" == *-beta.* || "${version}" == *-rc.* ]]; then
+            prerelease=true
+          else
+            prerelease=false
+          fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "prerelease=${prerelease}" >> "${GITHUB_OUTPUT}"
+
+      - name: Release preflight contract
+        run: python scripts/release_preflight.py
+
+      - name: Compile integration
+        run: python -m compileall -q custom_components/frakon_energy
+
+      - name: Run backend tests
+        run: python -m pytest -q
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm install
+
+      - name: Type-check and build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Verify packaged dashboard matches tagged source
+        run: |
+          rm -rf /tmp/frakon-energy-frontend-app
+          mkdir -p /tmp/frakon-energy-frontend-app
+          cp -R frontend/dist/. /tmp/frakon-energy-frontend-app/
+          diff -ru /tmp/frakon-energy-frontend-app custom_components/frakon_energy/frontend_app
+
+      - name: Build release archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+          archive="frakon-energy-${version}.zip"
+          python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZIP_DEFLATED, ZipFile
+          import os
+
+          version = os.environ["RELEASE_VERSION"]
+          archive = Path(f"frakon-energy-{version}.zip")
+          source = Path("custom_components/frakon_energy")
+          with ZipFile(archive, "w", compression=ZIP_DEFLATED) as zf:
+              for path in sorted(source.rglob("*")):
+                  if path.is_file():
+                      zf.write(path, path.relative_to("custom_components"))
+          print(archive)
+          PY
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+
+      - name: Upload validated release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frakon-energy-${{ steps.version.outputs.version }}
+          path: frakon-energy-${{ steps.version.outputs.version }}.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout tagged commit
+        uses: actions/checkout@v5
+
+      - name: Download validated release artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: frakon-energy-${{ needs.validate.outputs.version }}
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(
+            "v${VERSION}"
+            "frakon-energy-${VERSION}.zip"
+            --title "FRAKON Energy ${VERSION}"
+            --generate-notes
+            --verify-tag
+          )
+          if [[ "${PRERELEASE}" == "true" ]]; then
+            args+=(--prerelease)
+          fi
+          gh release create "${args[@]}"
