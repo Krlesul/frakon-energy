@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -20,6 +21,14 @@ class _ReservationRepo:
 
 class _Hass:
     data = {}
+
+
+class _TaskHass:
+    def __init__(self) -> None:
+        self.data: dict = {}
+
+    def async_create_task(self, coro):
+        return asyncio.create_task(coro)
 
 
 def _reservation() -> PhaseCapacityReservation:
@@ -163,3 +172,52 @@ async def test_runtime_caps_recent_released_history(monkeypatch: pytest.MonkeyPa
     ids = {item.lifecycle_id for item in statuses}
     assert "released-000" not in ids
     assert f"released-{total - 1:03d}" in ids
+
+
+@pytest.mark.asyncio
+async def test_runtime_start_is_idempotent_and_stop_cancels_single_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hass = _TaskHass()
+    runtime = runtime_module.PhaseSettlementRuntime(hass, "entry-1")  # type: ignore[arg-type]
+    processed = asyncio.Event()
+
+    async def process_once() -> None:
+        processed.set()
+
+    monkeypatch.setattr(runtime, "async_process_once", process_once)
+
+    await runtime.async_start()
+    await asyncio.wait_for(processed.wait(), timeout=1)
+    first_task = runtime._task
+    assert first_task is not None
+    assert runtime.started is True
+
+    await runtime.async_start()
+    assert runtime._task is first_task
+
+    await runtime.async_stop()
+    assert runtime.started is False
+    assert runtime._task is None
+    assert first_task.cancelled() is True
+
+
+@pytest.mark.asyncio
+async def test_runtime_registry_removes_instance_on_stop_and_reload_gets_one_new_instance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hass = _TaskHass()
+    repo = _ReservationRepo(())
+    monkeypatch.setattr(runtime_module, "phase_capacity_reservation_repository", lambda hass, entry_id: repo)
+
+    first = runtime_module.phase_settlement_runtime(hass, "entry-1")  # type: ignore[arg-type]
+    assert runtime_module.phase_settlement_runtime(hass, "entry-1") is first  # type: ignore[arg-type]
+
+    await runtime_module.async_start_phase_settlement_runtime(hass, "entry-1")  # type: ignore[arg-type]
+    assert first.started is True
+    await runtime_module.async_stop_phase_settlement_runtime(hass, "entry-1")  # type: ignore[arg-type]
+    assert first.started is False
+
+    second = runtime_module.phase_settlement_runtime(hass, "entry-1")  # type: ignore[arg-type]
+    assert second is not first
+    assert runtime_module.phase_settlement_runtime(hass, "entry-1") is second  # type: ignore[arg-type]
