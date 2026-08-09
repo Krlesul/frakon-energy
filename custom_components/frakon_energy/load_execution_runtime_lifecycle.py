@@ -71,11 +71,27 @@ async def async_start_execution_runtimes(hass: HomeAssistant, entry_id: str) -> 
 
 
 async def async_stop_execution_runtimes(hass: HomeAssistant, entry_id: str) -> None:
-    """Stop execution workers in reverse startup order."""
+    """Stop all execution workers in reverse startup order.
+
+    Every stopper is attempted even when an earlier one fails. After cleanup is
+    exhausted, re-raise the first failure so callers still know unload was not fully
+    clean while later workers are not left running merely because one stop failed.
+    """
     if not entry_id:
         raise ValueError("entry_id is required")
 
-    await async_stop_phase_settlement_runtime(hass, entry_id)
-    await async_stop_pending_run_scheduler(hass, entry_id)
-    await async_stop_start_scheduler(hass, entry_id)
-    await async_stop_stop_scheduler(hass, entry_id)
+    first_error: Exception | None = None
+    for stopper in (
+        async_stop_phase_settlement_runtime,
+        async_stop_pending_run_scheduler,
+        async_stop_start_scheduler,
+        async_stop_stop_scheduler,
+    ):
+        try:
+            await stopper(hass, entry_id)
+        except Exception as err:
+            if first_error is None:
+                first_error = err
+
+    if first_error is not None:
+        raise first_error
