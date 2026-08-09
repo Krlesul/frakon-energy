@@ -82,6 +82,40 @@ def _update_entry_options(hass: HomeAssistant, entry: ConfigEntry, options: Mapp
     hass.config_entries.async_update_entry(entry, options=dict(options))
 
 
+async def _async_rollback_failed_setup(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    *,
+    runtime_registry: EntityDiscoveryRuntimeRegistry | None,
+    discovery_registered: bool,
+    sensors_forwarded: bool,
+) -> None:
+    """Best-effort cleanup for setup failure without masking the original error."""
+    if sensors_forwarded:
+        try:
+            await hass.config_entries.async_unload_platforms(entry, ["sensor"])
+        except Exception:
+            pass
+
+    try:
+        await async_stop_execution_runtimes(hass, entry.entry_id)
+    except Exception:
+        pass
+
+    if discovery_registered and runtime_registry is not None:
+        try:
+            unload_entity_discovery_runtime(
+                entry_id=entry.entry_id,
+                runtime_registry=runtime_registry,
+            )
+        except Exception:
+            pass
+
+    domain_data = hass.data.get(DOMAIN)
+    if isinstance(domain_data, dict):
+        domain_data.pop(entry.entry_id, None)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     provider = entry.data.get(CONF_PROVIDER, PROVIDER_VISIONQ)
     if provider == PROVIDER_CEZ_HDO:
@@ -91,50 +125,67 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         coordinator = FrakonEnergyCoordinator(hass, entry, client)
         await coordinator.async_initialize_history()
     await coordinator.async_config_entry_first_refresh()
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
-    runtime_registry = _runtime_registry(hass)
-    setup_entity_discovery_runtime(entry_id=entry.entry_id, runtime_registry=runtime_registry, profile_provider=lambda: technology_profile_from_options(entry.options), registry_provider=lambda: _entity_registry_snapshot(hass), options_provider=lambda: entry.options, options_updater=lambda options: _update_entry_options(hass, entry, options))
-    await async_initialize_lifecycle_recovery(hass, entry_id=entry.entry_id)
-    await async_initialize_stop_recovery(hass, entry_id=entry.entry_id)
-    async_register_entity_discovery_websocket(hass, runtime_registry)
-    async_register_technology_profile_websocket(hass)
-    async_register_energy_flow_websocket(hass)
-    async_register_site_capacity_websocket(hass)
-    async_register_spot_price_websocket(hass)
-    async_register_spot_price_settings_websocket(hass)
-    async_register_load_plan_websocket(hass)
-    async_register_load_profiles_websocket(hass)
-    async_register_load_execution_policy_websocket(hass)
-    async_register_load_execution_approval_preview_websocket(hass)
-    async_register_load_execution_consume_websocket(hass)
-    async_register_load_execution_action_snapshot_websocket(hass)
-    async_register_load_execution_readiness_websocket(hass)
-    async_register_load_execution_lifecycle_websocket(hass)
-    async_register_load_execution_lifecycle_recovery_websocket(hass)
-    async_register_load_execution_recovery_resolution_websocket(hass)
-    async_register_load_execution_recovery_verification_websocket(hass)
-    async_register_load_execution_dispatch_gate_websocket(hass)
-    async_register_load_execution_noop_completion_websocket(hass)
-    async_register_load_execution_stop_lease_websocket(hass)
-    async_register_load_execution_bounded_dispatch_gate_websocket(hass)
-    async_register_load_execution_stop_due_websocket(hass)
-    async_register_load_execution_stop_resolution_websocket(hass)
-    async_register_load_execution_stop_scheduler_websocket(hass)
-    async_register_load_execution_stop_dispatcher_websocket(hass)
-    async_register_load_execution_start_dispatcher_websocket(hass)
-    async_register_load_execution_start_scheduler_websocket(hass)
-    async_register_load_execution_pending_run_websocket(hass)
-    async_register_load_execution_pending_run_scheduler_websocket(hass)
-    async_register_load_execution_arm_websocket(hass)
-    async_register_load_execution_safety_status_websocket(hass)
-    async_register_load_execution_commissioning_preflight_websocket(hass)
-    entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
-    await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
-    await async_register_panel(hass)
-    # Start execution workers only after every other setup step has succeeded. The
-    # transactional helper rolls back partial worker startup on its own failure.
-    await async_start_execution_runtimes(hass, entry.entry_id)
-    return True
+
+    runtime_registry: EntityDiscoveryRuntimeRegistry | None = None
+    discovery_registered = False
+    sensors_forwarded = False
+
+    try:
+        hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
+        runtime_registry = _runtime_registry(hass)
+        setup_entity_discovery_runtime(entry_id=entry.entry_id, runtime_registry=runtime_registry, profile_provider=lambda: technology_profile_from_options(entry.options), registry_provider=lambda: _entity_registry_snapshot(hass), options_provider=lambda: entry.options, options_updater=lambda options: _update_entry_options(hass, entry, options))
+        discovery_registered = True
+        await async_initialize_lifecycle_recovery(hass, entry_id=entry.entry_id)
+        await async_initialize_stop_recovery(hass, entry_id=entry.entry_id)
+        async_register_entity_discovery_websocket(hass, runtime_registry)
+        async_register_technology_profile_websocket(hass)
+        async_register_energy_flow_websocket(hass)
+        async_register_site_capacity_websocket(hass)
+        async_register_spot_price_websocket(hass)
+        async_register_spot_price_settings_websocket(hass)
+        async_register_load_plan_websocket(hass)
+        async_register_load_profiles_websocket(hass)
+        async_register_load_execution_policy_websocket(hass)
+        async_register_load_execution_approval_preview_websocket(hass)
+        async_register_load_execution_consume_websocket(hass)
+        async_register_load_execution_action_snapshot_websocket(hass)
+        async_register_load_execution_readiness_websocket(hass)
+        async_register_load_execution_lifecycle_websocket(hass)
+        async_register_load_execution_lifecycle_recovery_websocket(hass)
+        async_register_load_execution_recovery_resolution_websocket(hass)
+        async_register_load_execution_recovery_verification_websocket(hass)
+        async_register_load_execution_dispatch_gate_websocket(hass)
+        async_register_load_execution_noop_completion_websocket(hass)
+        async_register_load_execution_stop_lease_websocket(hass)
+        async_register_load_execution_bounded_dispatch_gate_websocket(hass)
+        async_register_load_execution_stop_due_websocket(hass)
+        async_register_load_execution_stop_resolution_websocket(hass)
+        async_register_load_execution_stop_scheduler_websocket(hass)
+        async_register_load_execution_stop_dispatcher_websocket(hass)
+        async_register_load_execution_start_dispatcher_websocket(hass)
+        async_register_load_execution_start_scheduler_websocket(hass)
+        async_register_load_execution_pending_run_websocket(hass)
+        async_register_load_execution_pending_run_scheduler_websocket(hass)
+        async_register_load_execution_arm_websocket(hass)
+        async_register_load_execution_safety_status_websocket(hass)
+        async_register_load_execution_commissioning_preflight_websocket(hass)
+        await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
+        sensors_forwarded = True
+        await async_register_panel(hass)
+        # Start execution workers only after every other setup step has succeeded. The
+        # transactional helper rolls back partial worker startup on its own failure.
+        await async_start_execution_runtimes(hass, entry.entry_id)
+        entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
+        return True
+    except Exception:
+        await _async_rollback_failed_setup(
+            hass,
+            entry,
+            runtime_registry=runtime_registry,
+            discovery_registered=discovery_registered,
+            sensors_forwarded=sensors_forwarded,
+        )
+        raise
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
