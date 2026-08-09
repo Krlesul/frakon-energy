@@ -96,7 +96,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     setup_entity_discovery_runtime(entry_id=entry.entry_id, runtime_registry=runtime_registry, profile_provider=lambda: technology_profile_from_options(entry.options), registry_provider=lambda: _entity_registry_snapshot(hass), options_provider=lambda: entry.options, options_updater=lambda options: _update_entry_options(hass, entry, options))
     await async_initialize_lifecycle_recovery(hass, entry_id=entry.entry_id)
     await async_initialize_stop_recovery(hass, entry_id=entry.entry_id)
-    await async_start_execution_runtimes(hass, entry.entry_id)
     async_register_entity_discovery_websocket(hass, runtime_registry)
     async_register_technology_profile_websocket(hass)
     async_register_energy_flow_websocket(hass)
@@ -132,6 +131,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
     await async_register_panel(hass)
+    # Start execution workers only after every other setup step has succeeded. The
+    # transactional helper rolls back partial worker startup on its own failure.
+    await async_start_execution_runtimes(hass, entry.entry_id)
     return True
 
 
