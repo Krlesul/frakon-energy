@@ -35,14 +35,14 @@ def test_registered_handlers_require_entry_id() -> None:
         async_register_entity_discovery_websocket(hass, runtime_registry)
 
     assert len(handlers) == 4
-    command_types = {handler.schema.schema["type"] for handler in handlers}
+    command_types = {handler._ws_command for handler in handlers}
     assert command_types == {
         "frakon_energy/entity_discovery/get",
         "frakon_energy/entity_discovery/rescan",
         "frakon_energy/entity_discovery/save",
         "frakon_energy/entity_discovery/remove",
     }
-    assert all("entry_id" in handler.schema.schema for handler in handlers)
+    assert all("entry_id" in handler._ws_schema.schema for handler in handlers)
 
 
 def test_get_handler_routes_to_requested_config_entry() -> None:
@@ -66,13 +66,13 @@ def test_get_handler_routes_to_requested_config_entry() -> None:
     get_handler = next(
         handler
         for handler in handlers
-        if handler.schema.schema["type"] == "frakon_energy/entity_discovery/get"
+        if handler._ws_command == "frakon_energy/entity_discovery/get"
     )
 
     import asyncio
 
     asyncio.run(
-        get_handler(
+        get_handler.__wrapped__(
             hass,
             connection,
             {
