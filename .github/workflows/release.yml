@@ -82,8 +82,29 @@ jobs:
       - name: Compile integration
         run: python -m compileall -q custom_components/frakon_energy
 
-      - name: Run full backend test suite
-        run: python -m pytest -q
+      - name: Backend tests A-F
+        shell: bash
+        run: |
+          mapfile -t files < <(find tests -maxdepth 1 -type f -name 'test_*.py' -printf '%f\n' | sort | awk 'tolower(substr($0,6,1)) ~ /^[a-f]$/ {print "tests/"$0}')
+          if ((${#files[@]})); then python -m pytest -q "${files[@]}"; fi
+
+      - name: Backend tests G-L
+        shell: bash
+        run: |
+          mapfile -t files < <(find tests -maxdepth 1 -type f -name 'test_*.py' -printf '%f\n' | sort | awk 'tolower(substr($0,6,1)) ~ /^[g-l]$/ {print "tests/"$0}')
+          if ((${#files[@]})); then python -m pytest -q "${files[@]}"; fi
+
+      - name: Backend tests M-R
+        shell: bash
+        run: |
+          mapfile -t files < <(find tests -maxdepth 1 -type f -name 'test_*.py' -printf '%f\n' | sort | awk 'tolower(substr($0,6,1)) ~ /^[m-r]$/ {print "tests/"$0}')
+          if ((${#files[@]})); then python -m pytest -q "${files[@]}"; fi
+
+      - name: Backend tests S-Z
+        shell: bash
+        run: |
+          mapfile -t files < <(find tests -maxdepth 1 -type f -name 'test_*.py' -printf '%f\n' | sort | awk 'tolower(substr($0,6,1)) ~ /^[s-z]$/ {print "tests/"$0}')
+          if ((${#files[@]})); then python -m pytest -q "${files[@]}"; fi
 
       - name: Install frontend dependencies
         working-directory: frontend
