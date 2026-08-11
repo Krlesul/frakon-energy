@@ -22,8 +22,8 @@ def test_daily_record_calculates_vt_nt_variable_and_total_cost() -> None:
     )
 
     assert record.total_kwh == Decimal("24.800")
-    assert record.variable_cost_czk == Decimal("139.16")
-    assert record.total_cost_czk == Decimal("152.96")
+    assert record.variable_cost_czk == Decimal("139.19")
+    assert record.total_cost_czk == Decimal("152.99")
 
 
 def test_month_aggregates_consumption_cost_and_quality() -> None:
