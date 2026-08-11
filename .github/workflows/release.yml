@@ -92,7 +92,16 @@ jobs:
         shell: bash
         run: |
           mapfile -t files < <(find tests -maxdepth 1 -type f -name 'test_*.py' -printf '%f\n' | sort | awk 'tolower(substr($0,6,1)) ~ /^[g-l]$/ {print "tests/"$0}')
-          if ((${#files[@]})); then python -m pytest -q "${files[@]}"; fi
+          if ((${#files[@]})); then python -m pytest -q --junitxml=pytest-g-l.xml "${files[@]}"; fi
+
+      - name: Upload G-L pytest diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-g-l-${{ github.run_id }}-${{ github.run_attempt }}
+          path: pytest-g-l.xml
+          if-no-files-found: ignore
+          retention-days: 1
 
       - name: Backend tests M-R
         shell: bash
