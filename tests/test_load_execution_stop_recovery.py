@@ -72,6 +72,16 @@ async def _repository_with(record: ExecutionStopLifecycleRecord):
     repository = ExecutionStopLifecycleRepository(store)
     await repository.async_create_owned(_owned())
     if record.state != STOP_STATE_OWNED:
+        if record.state in (STOP_STATE_DISPATCHED, STOP_STATE_RECOVERY_REQUIRED):
+            dispatching = replace(
+                _owned(),
+                state=STOP_STATE_DISPATCHING,
+                service_call_status=STOP_CALL_UNKNOWN,
+                dispatch_attempts=1,
+                dispatch_started_at=int(END.timestamp()),
+                updated_at=int(END.timestamp()),
+            ).validated()
+            await repository.async_update(dispatching)
         await repository.async_update(record)
     return store, repository
 
