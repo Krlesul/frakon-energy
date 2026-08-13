@@ -165,7 +165,7 @@ async def test_prepare_persists_only_prepared_lifecycle(monkeypatch: pytest.Monk
     store, repository = _repository(monkeypatch)
     calls: list[int] = []
     _mock_readiness(monkeypatch, _payload(), calls)
-    hass = SimpleNamespace()
+    hass = SimpleNamespace(data={})
 
     result = await lifecycle_ws.async_prepare_execution_lifecycle(
         hass,  # type: ignore[arg-type]
@@ -195,7 +195,7 @@ async def test_exact_prepare_retry_returns_existing_without_rechecking_readiness
     _, repository = _repository(monkeypatch)
     calls: list[int] = []
     _mock_readiness(monkeypatch, _payload(), calls)
-    hass = SimpleNamespace()
+    hass = SimpleNamespace(data={})
 
     first = await lifecycle_ws.async_prepare_execution_lifecycle(
         hass,  # type: ignore[arg-type]
@@ -226,7 +226,7 @@ async def test_same_attempt_with_different_plan_is_conflict_before_readiness(
     _repository(monkeypatch)
     calls: list[int] = []
     _mock_readiness(monkeypatch, _payload(), calls)
-    hass = SimpleNamespace()
+    hass = SimpleNamespace(data={})
 
     await lifecycle_ws.async_prepare_execution_lifecycle(
         hass,  # type: ignore[arg-type]
@@ -257,7 +257,7 @@ async def test_waiting_readiness_cannot_prepare(monkeypatch: pytest.MonkeyPatch)
 
     with pytest.raises(lifecycle_ws.LifecyclePrepareError, match="not ready"):
         await lifecycle_ws.async_prepare_execution_lifecycle(
-            SimpleNamespace(),  # type: ignore[arg-type]
+            SimpleNamespace(data={}),  # type: ignore[arg-type]
             entry_id="entry-1",
             attempt_id="attempt-1",
             plan_value=_plan().as_dict(),
@@ -276,7 +276,7 @@ async def test_prepare_storage_failure_rolls_back(monkeypatch: pytest.MonkeyPatc
 
     with pytest.raises(RuntimeError, match="storage unavailable"):
         await lifecycle_ws.async_prepare_execution_lifecycle(
-            SimpleNamespace(),  # type: ignore[arg-type]
+            SimpleNamespace(data={}),  # type: ignore[arg-type]
             entry_id="entry-1",
             attempt_id="attempt-1",
             plan_value=_plan().as_dict(),
@@ -292,7 +292,7 @@ async def test_lifecycle_list_is_read_only(monkeypatch: pytest.MonkeyPatch) -> N
     _, repository = _repository(monkeypatch)
     calls: list[int] = []
     _mock_readiness(monkeypatch, _payload(), calls)
-    hass = SimpleNamespace()
+    hass = SimpleNamespace(data={})
     await lifecycle_ws.async_prepare_execution_lifecycle(
         hass,  # type: ignore[arg-type]
         entry_id="entry-1",
