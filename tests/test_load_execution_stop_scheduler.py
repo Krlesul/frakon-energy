@@ -108,7 +108,7 @@ class _Repo:
 
 def _owned() -> ExecutionStopLifecycleRecord:
     return ExecutionStopLifecycleRecord(
-        stop_lifecycle_id="e" * 32,
+        stop_lifecycle_id="f76d6da2c879fda8c5fae44f6cdc897a",
         lease_id="a" * 32,
         entry_id="entry-1",
         start_lifecycle_id="b" * 32,
