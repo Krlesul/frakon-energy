@@ -37,7 +37,7 @@ from custom_components.frakon_energy.load_execution_policy import (
     upsert_execution_policy,
 )
 from custom_components.frakon_energy.load_execution_readiness import (
-    REASON_POLICY_NOT_ELIGIBLE,
+    REASON_SCOPE_CHANGED,
     evaluate_execution_readiness,
 )
 from custom_components.frakon_energy.load_profiles import (
@@ -305,7 +305,7 @@ async def test_current_policy_change_blocks_dispatch(
         now=START,
     )
 
-    assert result["readiness"]["reason"] == REASON_POLICY_NOT_ELIGIBLE
+    assert result["readiness"]["reason"] == REASON_SCOPE_CHANGED
     assert result["dispatch_gate"]["status"] == DISPATCH_GATE_BLOCKED
     assert result["dispatch_gate"]["can_dispatch"] is False
 
