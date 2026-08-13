@@ -19,6 +19,11 @@ class _ReservationRepo:
         return self.reservations
 
 
+class _PruneRepo:
+    async def async_prune(self, *, active_lifecycle_ids) -> None:
+        return None
+
+
 class _Hass:
     data = {}
 
@@ -29,6 +34,27 @@ class _TaskHass:
 
     def async_create_task(self, coro):
         return asyncio.create_task(coro)
+
+
+def _wire_repositories(monkeypatch: pytest.MonkeyPatch, reservations) -> _ReservationRepo:
+    repo = _ReservationRepo(reservations)
+    prune_repo = _PruneRepo()
+    monkeypatch.setattr(
+        runtime_module,
+        "phase_capacity_reservation_repository",
+        lambda hass, entry_id: repo,
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "phase_settlement_evidence_repository",
+        lambda hass, entry_id: prune_repo,
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "phase_settlement_confirmation_repository",
+        lambda hass, entry_id: prune_repo,
+    )
+    return repo
 
 
 def _reservation() -> PhaseCapacityReservation:
@@ -45,8 +71,7 @@ def _reservation() -> PhaseCapacityReservation:
 
 @pytest.mark.asyncio
 async def test_runtime_waits_until_confirmation_is_ready(monkeypatch: pytest.MonkeyPatch) -> None:
-    repo = _ReservationRepo((_reservation(),))
-    monkeypatch.setattr(runtime_module, "phase_capacity_reservation_repository", lambda hass, entry_id: repo)
+    _wire_repositories(monkeypatch, (_reservation(),))
 
     async def observe(hass, *, entry_id: str, lifecycle_id: str):
         return SimpleNamespace(confirmed=False, status="first_observation_recorded")
@@ -72,8 +97,7 @@ async def test_runtime_waits_until_confirmation_is_ready(monkeypatch: pytest.Mon
 
 @pytest.mark.asyncio
 async def test_runtime_releases_only_after_confirmation(monkeypatch: pytest.MonkeyPatch) -> None:
-    repo = _ReservationRepo((_reservation(),))
-    monkeypatch.setattr(runtime_module, "phase_capacity_reservation_repository", lambda hass, entry_id: repo)
+    _wire_repositories(monkeypatch, (_reservation(),))
 
     async def observe(hass, *, entry_id: str, lifecycle_id: str):
         return SimpleNamespace(confirmed=True, status="confirmed")
@@ -99,8 +123,7 @@ async def test_runtime_releases_only_after_confirmation(monkeypatch: pytest.Monk
 async def test_runtime_error_is_local_and_keeps_processing_contract_fail_safe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    repo = _ReservationRepo((_reservation(),))
-    monkeypatch.setattr(runtime_module, "phase_capacity_reservation_repository", lambda hass, entry_id: repo)
+    _wire_repositories(monkeypatch, (_reservation(),))
 
     async def observe(hass, *, entry_id: str, lifecycle_id: str):
         raise RuntimeError("telemetry unavailable")
@@ -119,8 +142,7 @@ async def test_runtime_error_is_local_and_keeps_processing_contract_fail_safe(
 async def test_runtime_prunes_inactive_and_expired_released_statuses(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    repo = _ReservationRepo(())
-    monkeypatch.setattr(runtime_module, "phase_capacity_reservation_repository", lambda hass, entry_id: repo)
+    _wire_repositories(monkeypatch, ())
     monkeypatch.setattr(runtime_module.time, "time", lambda: 5000)
 
     runtime = runtime_module.PhaseSettlementRuntime(_Hass(), "entry-1")  # type: ignore[arg-type]
@@ -150,8 +172,7 @@ async def test_runtime_prunes_inactive_and_expired_released_statuses(
 
 @pytest.mark.asyncio
 async def test_runtime_caps_recent_released_history(monkeypatch: pytest.MonkeyPatch) -> None:
-    repo = _ReservationRepo(())
-    monkeypatch.setattr(runtime_module, "phase_capacity_reservation_repository", lambda hass, entry_id: repo)
+    _wire_repositories(monkeypatch, ())
     monkeypatch.setattr(runtime_module.time, "time", lambda: 10000)
 
     runtime = runtime_module.PhaseSettlementRuntime(_Hass(), "entry-1")  # type: ignore[arg-type]
@@ -207,8 +228,7 @@ async def test_runtime_registry_removes_instance_on_stop_and_reload_gets_one_new
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     hass = _TaskHass()
-    repo = _ReservationRepo(())
-    monkeypatch.setattr(runtime_module, "phase_capacity_reservation_repository", lambda hass, entry_id: repo)
+    _wire_repositories(monkeypatch, ())
 
     first = runtime_module.phase_settlement_runtime(hass, "entry-1")  # type: ignore[arg-type]
     assert runtime_module.phase_settlement_runtime(hass, "entry-1") is first  # type: ignore[arg-type]
