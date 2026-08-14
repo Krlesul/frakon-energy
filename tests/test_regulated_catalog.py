@@ -34,16 +34,38 @@ def load_modules():
         package.__path__ = []
         sys.modules[name] = package
 
-    pricing = _load("custom_components.frakon_energy.pricing", "custom_components/frakon_energy/pricing.py")
-    sources = _load("custom_components.frakon_energy.tariff_sources", "custom_components/frakon_energy/tariff_sources.py")
-    regulated = _load("custom_components.frakon_energy.regulated_pricing", "custom_components/frakon_energy/regulated_pricing.py")
-    provenance = _load("custom_components.frakon_energy.tariff_provenance", "custom_components/frakon_energy/tariff_provenance.py")
-    catalog = _load("custom_components.frakon_energy.regulated_catalog", "custom_components/frakon_energy/regulated_catalog.py")
+    pricing = _load(
+        "custom_components.frakon_energy.pricing",
+        "custom_components/frakon_energy/pricing.py",
+    )
+    sources = _load(
+        "custom_components.frakon_energy.tariff_sources",
+        "custom_components/frakon_energy/tariff_sources.py",
+    )
+    regulated = _load(
+        "custom_components.frakon_energy.regulated_pricing",
+        "custom_components/frakon_energy/regulated_pricing.py",
+    )
+    provenance = _load(
+        "custom_components.frakon_energy.tariff_provenance",
+        "custom_components/frakon_energy/tariff_provenance.py",
+    )
+    catalog = _load(
+        "custom_components.frakon_energy.regulated_catalog",
+        "custom_components/frakon_energy/regulated_catalog.py",
+    )
     return pricing, sources, regulated, provenance, catalog
 
 
-def _version(*, valid_from=date(2026, 1, 1), valid_to=date(2026, 12, 31), checksum="a" * 64, confirmed=True):
-    pricing, sources, regulated, provenance, catalog = load_modules()
+def _version_from_modules(
+    modules,
+    *,
+    valid_from=date(2026, 1, 1),
+    valid_to=date(2026, 12, 31),
+    checksum="a" * 64,
+    confirmed=True,
+):
+    pricing, sources, regulated, provenance, catalog = modules
     source_url = "https://eru.gov.cz/energeticky-regulacni-vestnik-182025"
     bundle = regulated.RegulatedTariffBundle(
         distributor="cez_distribuce",
@@ -112,7 +134,12 @@ def _version(*, valid_from=date(2026, 1, 1), valid_to=date(2026, 12, 31), checks
             checksum=checksum,
         ),
     )
-    return catalog, catalog.ConfirmedRegulatedTariffVersion(bundle=bundle, evidence=evidence)
+    return catalog.ConfirmedRegulatedTariffVersion(bundle=bundle, evidence=evidence)
+
+
+def _version(**kwargs):
+    modules = load_modules()
+    return modules[-1], _version_from_modules(modules, **kwargs)
 
 
 def test_confirmed_regulated_version_round_trips_exact_decimal_and_evidence_state() -> None:
@@ -139,28 +166,84 @@ def test_catalog_rejects_unconfirmed_bundle_instead_of_creating_confirmation_aut
         valid_from=date(2026, 1, 1),
         valid_to=date(2026, 12, 31),
         variable_components=(
-            pricing.VariablePriceComponent(kind=pricing.PriceComponentKind.DISTRIBUTION, name="Distribuce", high_rate_czk_per_kwh=Decimal("1"), low_rate_czk_per_kwh=Decimal("0.5"), includes_vat=False),
-            pricing.VariablePriceComponent(kind=pricing.PriceComponentKind.SYSTEM_SERVICES, name="Systémové služby", high_rate_czk_per_kwh=Decimal("0.1"), low_rate_czk_per_kwh=Decimal("0.1"), includes_vat=False),
-            pricing.VariablePriceComponent(kind=pricing.PriceComponentKind.POZE, name="POZE", high_rate_czk_per_kwh=Decimal("0"), low_rate_czk_per_kwh=Decimal("0"), includes_vat=False),
-            pricing.VariablePriceComponent(kind=pricing.PriceComponentKind.ELECTRICITY_TAX, name="Daň", high_rate_czk_per_kwh=Decimal("0.0283"), low_rate_czk_per_kwh=Decimal("0.0283"), includes_vat=False),
+            pricing.VariablePriceComponent(
+                kind=pricing.PriceComponentKind.DISTRIBUTION,
+                name="Distribuce",
+                high_rate_czk_per_kwh=Decimal("1"),
+                low_rate_czk_per_kwh=Decimal("0.5"),
+                includes_vat=False,
+            ),
+            pricing.VariablePriceComponent(
+                kind=pricing.PriceComponentKind.SYSTEM_SERVICES,
+                name="Systémové služby",
+                high_rate_czk_per_kwh=Decimal("0.1"),
+                low_rate_czk_per_kwh=Decimal("0.1"),
+                includes_vat=False,
+            ),
+            pricing.VariablePriceComponent(
+                kind=pricing.PriceComponentKind.POZE,
+                name="POZE",
+                high_rate_czk_per_kwh=Decimal("0"),
+                low_rate_czk_per_kwh=Decimal("0"),
+                includes_vat=False,
+            ),
+            pricing.VariablePriceComponent(
+                kind=pricing.PriceComponentKind.ELECTRICITY_TAX,
+                name="Daň",
+                high_rate_czk_per_kwh=Decimal("0.0283"),
+                low_rate_czk_per_kwh=Decimal("0.0283"),
+                includes_vat=False,
+            ),
         ),
         fixed_components=(
-            pricing.FixedPriceComponent(kind=pricing.PriceComponentKind.BREAKER_FIXED, name="Jistič", monthly_czk=Decimal("200"), includes_vat=False),
-            pricing.FixedPriceComponent(kind=pricing.PriceComponentKind.OTHER_FIXED, name=regulated.NON_NETWORK_INFRASTRUCTURE_COMPONENT_NAME, monthly_czk=Decimal("12.87"), includes_vat=False),
+            pricing.FixedPriceComponent(
+                kind=pricing.PriceComponentKind.BREAKER_FIXED,
+                name="Jistič",
+                monthly_czk=Decimal("200"),
+                includes_vat=False,
+            ),
+            pricing.FixedPriceComponent(
+                kind=pricing.PriceComponentKind.OTHER_FIXED,
+                name=regulated.NON_NETWORK_INFRASTRUCTURE_COMPONENT_NAME,
+                monthly_czk=Decimal("12.87"),
+                includes_vat=False,
+            ),
         ),
         source_url=source_url,
         checksum="a" * 64,
         confirmed=False,
     )
-    evidence = (provenance.PriceEvidence(scope=sources.PRICE_SCOPE_REGULATED, source_name="ERÚ", document_name="fixture", source_url=source_url, valid_from=date(2026, 1, 1), valid_to=date(2026, 12, 31), checksum="a" * 64),)
+    evidence = (
+        provenance.PriceEvidence(
+            scope=sources.PRICE_SCOPE_REGULATED,
+            source_name="ERÚ",
+            document_name="fixture",
+            source_url=source_url,
+            valid_from=date(2026, 1, 1),
+            valid_to=date(2026, 12, 31),
+            checksum="a" * 64,
+        ),
+    )
 
     with pytest.raises(ValueError, match="confirmed bundles only"):
         catalog.ConfirmedRegulatedTariffVersion(bundle=bundle, evidence=evidence)
 
 
 def test_append_is_idempotent_and_never_overwrites_historical_versions() -> None:
-    catalog, first = _version(valid_from=date(2026, 1, 1), valid_to=date(2026, 6, 30), checksum="a" * 64)
-    _catalog2, second = _version(valid_from=date(2026, 7, 1), valid_to=date(2026, 12, 31), checksum="b" * 64)
+    modules = load_modules()
+    catalog = modules[-1]
+    first = _version_from_modules(
+        modules,
+        valid_from=date(2026, 1, 1),
+        valid_to=date(2026, 6, 30),
+        checksum="a" * 64,
+    )
+    second = _version_from_modules(
+        modules,
+        valid_from=date(2026, 7, 1),
+        valid_to=date(2026, 12, 31),
+        checksum="b" * 64,
+    )
     options = {"unrelated": {"keep": True}}
 
     after_first = catalog.append_confirmed_regulated_tariff(options, first)
@@ -175,8 +258,20 @@ def test_append_is_idempotent_and_never_overwrites_historical_versions() -> None
 
 
 def test_selection_requires_exact_context_and_uses_newest_applicable_version() -> None:
-    catalog, annual = _version(valid_from=date(2026, 1, 1), valid_to=date(2026, 12, 31), checksum="a" * 64)
-    _catalog2, update = _version(valid_from=date(2026, 8, 1), valid_to=date(2026, 12, 31), checksum="b" * 64)
+    modules = load_modules()
+    catalog = modules[-1]
+    annual = _version_from_modules(
+        modules,
+        valid_from=date(2026, 1, 1),
+        valid_to=date(2026, 12, 31),
+        checksum="a" * 64,
+    )
+    update = _version_from_modules(
+        modules,
+        valid_from=date(2026, 8, 1),
+        valid_to=date(2026, 12, 31),
+        checksum="b" * 64,
+    )
     options = catalog.append_confirmed_regulated_tariff({}, annual)
     options = catalog.append_confirmed_regulated_tariff(options, update)
 
@@ -208,8 +303,10 @@ def test_selection_requires_exact_context_and_uses_newest_applicable_version() -
 
 
 def test_equal_start_overlapping_versions_are_ambiguous_instead_of_silently_ranked() -> None:
-    catalog, first = _version(checksum="a" * 64)
-    _catalog2, second = _version(checksum="b" * 64)
+    modules = load_modules()
+    catalog = modules[-1]
+    first = _version_from_modules(modules, checksum="a" * 64)
+    second = _version_from_modules(modules, checksum="b" * 64)
     options = catalog.append_confirmed_regulated_tariff({}, first)
     options = catalog.append_confirmed_regulated_tariff(options, second)
 
