@@ -45,6 +45,31 @@ jobs:
           pytest pytest-asyncio
           "homeassistant==2026.7.0"
 
+      - name: Install integration requirements
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY' > /tmp/frakon-integration-requirements.txt
+          import json
+          from pathlib import Path
+
+          manifest = json.loads(
+              Path("custom_components/frakon_energy/manifest.json").read_text(
+                  encoding="utf-8"
+              )
+          )
+          requirements = manifest.get("requirements", [])
+          if not isinstance(requirements, list) or any(
+              not isinstance(item, str) or not item.strip() for item in requirements
+          ):
+              raise SystemExit("manifest requirements must be a list of non-empty strings")
+          for requirement in requirements:
+              print(requirement.strip())
+          PY
+          if [[ -s /tmp/frakon-integration-requirements.txt ]]; then
+            python -m pip install -r /tmp/frakon-integration-requirements.txt
+          fi
+
       - name: Verify release identity
         id: version
         shell: bash
