@@ -32,6 +32,7 @@ _REGULATED_FIXED_KINDS = frozenset(
     {
         PriceComponentKind.BREAKER_FIXED,
         PriceComponentKind.DISTRIBUTION_FIXED,
+        PriceComponentKind.OTHER_FIXED,
     }
 )
 
