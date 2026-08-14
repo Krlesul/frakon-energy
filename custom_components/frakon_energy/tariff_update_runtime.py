@@ -77,13 +77,17 @@ class TariffUpdateRuntime:
         if self._started:
             return
         self._started = True
-        self._unsubscribe = async_track_time_interval(
-            self._hass,
-            self._interval_fired,
-            self._probe_interval,
-            name=f"FRAKON Energy tariff update probe {self.entry_id}",
-        )
-        self._schedule_probe()
+        try:
+            self._unsubscribe = async_track_time_interval(
+                self._hass,
+                self._interval_fired,
+                self._probe_interval,
+                name=f"FRAKON Energy tariff update probe {self.entry_id}",
+            )
+            self._schedule_probe()
+        except Exception:
+            self.stop()
+            raise
 
     @callback
     def stop(self) -> None:
