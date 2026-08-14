@@ -234,3 +234,91 @@ def test_invalid_price_components_are_rejected() -> None:
         pass
     else:
         raise AssertionError("Negative VAT rate must be rejected")
+
+
+def _catalog_price(pricing, product: str, valid_from: date, *, confirmed: bool = False):
+    return pricing.AllInTariffPrice(
+        source=pricing.PriceSource(
+            supplier="ČEZ",
+            product=product,
+            valid_from=valid_from,
+            confirmed=confirmed,
+        ),
+        variable_components=(
+            pricing.VariablePriceComponent(
+                pricing.PriceComponentKind.COMMODITY,
+                "Komodita",
+                Decimal("3.00"),
+                Decimal("2.50"),
+            ),
+        ),
+        fixed_components=(),
+    )
+
+
+def test_tariff_catalog_append_preserves_history_unrelated_options_and_is_idempotent() -> None:
+    pricing = load_pricing()
+    old = _catalog_price(pricing, "Starý produkt", date(2026, 1, 1))
+    new = _catalog_price(pricing, "Nový produkt", date(2026, 6, 1))
+
+    options = {"unrelated": {"keep": True}}
+    options = pricing.append_tariff_price(options, old)
+    once = options
+    options = pricing.append_tariff_price(options, old)
+    assert options == once
+    assert options["unrelated"] == {"keep": True}
+    assert len(pricing.tariff_prices_from_options(options)) == 1
+
+    options = pricing.append_tariff_price(options, new)
+    stored = pricing.tariff_prices_from_options(options)
+    assert [item.source.product for item in stored] == ["Starý produkt", "Nový produkt"]
+    assert pricing.tariff_price_fingerprint(stored[0]) != pricing.tariff_price_fingerprint(stored[1])
+
+
+def test_tariff_confirmation_preserves_identity_and_controls_active_selection() -> None:
+    pricing = load_pricing()
+    old = _catalog_price(pricing, "Starý produkt", date(2026, 1, 1))
+    new = _catalog_price(pricing, "Nový produkt", date(2026, 6, 1))
+    old_fingerprint = pricing.tariff_price_fingerprint(old)
+    new_fingerprint = pricing.tariff_price_fingerprint(new)
+
+    options = pricing.append_tariff_price({}, old)
+    options = pricing.append_tariff_price(options, new)
+    options = pricing.confirm_tariff_price(options, old_fingerprint)
+
+    stored = pricing.tariff_prices_from_options(options)
+    assert stored[0].source.confirmed is True
+    assert stored[1].source.confirmed is False
+    assert pricing.tariff_price_fingerprint(stored[0]) == old_fingerprint
+    assert pricing.confirmed_tariff_price_from_options(
+        options, date(2026, 8, 1)
+    ).source.product == "Starý produkt"
+
+    options = pricing.confirm_tariff_price(options, new_fingerprint)
+    stored = pricing.tariff_prices_from_options(options)
+    assert pricing.tariff_price_fingerprint(stored[1]) == new_fingerprint
+    assert pricing.confirmed_tariff_price_from_options(
+        options, date(2026, 8, 1)
+    ).source.product == "Nový produkt"
+
+
+def test_tariff_catalog_rejects_duplicate_storage_and_unknown_confirmation_target() -> None:
+    pricing = load_pricing()
+    price = _catalog_price(pricing, "Produkt", date(2026, 1, 1))
+    duplicate_options = {
+        pricing.OPTION_TARIFF_CATALOG: [price.as_dict(), price.as_dict()]
+    }
+
+    try:
+        pricing.tariff_prices_from_options(duplicate_options)
+    except ValueError as err:
+        assert "duplicate tariff price fingerprint" in str(err)
+    else:
+        raise AssertionError("Duplicate stored tariff identity must be rejected")
+
+    try:
+        pricing.confirm_tariff_price({}, "0" * 64)
+    except LookupError:
+        pass
+    else:
+        raise AssertionError("Unknown tariff confirmation target must be rejected")

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
+import hashlib
+import json
 from typing import Any, Iterable, Mapping
 
 DEFAULT_VAT_RATE_PERCENT = Decimal("21")
 TARIFF_PRICE_SCHEMA_VERSION = 1
+OPTION_TARIFF_CATALOG = "tariff_catalog"
 
 
 class PriceComponentKind(StrEnum):
@@ -362,3 +365,96 @@ def select_confirmed_price_for_day(
     if not matches:
         raise LookupError(f"No confirmed tariff price applies on {day.isoformat()}")
     return max(matches, key=lambda item: item.source.valid_from)
+
+
+def tariff_price_fingerprint(price: AllInTariffPrice) -> str:
+    """Return stable content identity that intentionally ignores confirmation state."""
+    if not isinstance(price, AllInTariffPrice):
+        raise ValueError("price must be AllInTariffPrice")
+    payload = price.as_dict()
+    source = dict(payload["source"])
+    source["confirmed"] = False
+    payload["source"] = source
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def tariff_prices_from_options(options: Mapping[str, Any]) -> tuple[AllInTariffPrice, ...]:
+    """Load the immutable tariff history from config-entry options."""
+    raw = options.get(OPTION_TARIFF_CATALOG, [])
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ValueError("tariff_catalog must be a list")
+
+    prices: list[AllInTariffPrice] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, Mapping):
+            raise ValueError("each tariff catalog item must be an object")
+        price = AllInTariffPrice.from_dict(item)
+        fingerprint = tariff_price_fingerprint(price)
+        if fingerprint in seen:
+            raise ValueError(f"duplicate tariff price fingerprint: {fingerprint}")
+        seen.add(fingerprint)
+        prices.append(price)
+    return tuple(prices)
+
+
+def append_tariff_price(
+    options: Mapping[str, Any], price: AllInTariffPrice
+) -> dict[str, Any]:
+    """Append one immutable tariff version without overwriting matching history."""
+    if not isinstance(price, AllInTariffPrice):
+        raise ValueError("price must be AllInTariffPrice")
+    prices = list(tariff_prices_from_options(options))
+    fingerprint = tariff_price_fingerprint(price)
+    if any(tariff_price_fingerprint(item) == fingerprint for item in prices):
+        return dict(options)
+    prices.append(price)
+    updated = dict(options)
+    updated[OPTION_TARIFF_CATALOG] = [item.as_dict() for item in prices]
+    return updated
+
+
+def confirm_tariff_price(
+    options: Mapping[str, Any], fingerprint: str
+) -> dict[str, Any]:
+    """Confirm exactly one stored tariff version without changing its content identity."""
+    if (
+        not isinstance(fingerprint, str)
+        or len(fingerprint) != 64
+        or any(char not in "0123456789abcdef" for char in fingerprint)
+    ):
+        raise ValueError("fingerprint must be a lowercase SHA-256 hex digest")
+
+    prices = list(tariff_prices_from_options(options))
+    matched = False
+    for index, price in enumerate(prices):
+        if tariff_price_fingerprint(price) != fingerprint:
+            continue
+        matched = True
+        if not price.source.confirmed:
+            prices[index] = replace(
+                price,
+                source=replace(price.source, confirmed=True),
+            )
+        break
+    if not matched:
+        raise LookupError(f"tariff price not found: {fingerprint}")
+
+    updated = dict(options)
+    updated[OPTION_TARIFF_CATALOG] = [item.as_dict() for item in prices]
+    return updated
+
+
+def confirmed_tariff_price_from_options(
+    options: Mapping[str, Any], day: date
+) -> AllInTariffPrice:
+    """Select the latest confirmed historical tariff stored in options."""
+    return select_confirmed_price_for_day(tariff_prices_from_options(options), day)
