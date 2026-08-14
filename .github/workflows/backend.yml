@@ -31,7 +31,7 @@ jobs:
           python-version: "3.13"
 
       - name: Install test dependencies
-        run: python -m pip install --upgrade pip pytest
+        run: python -m pip install --upgrade pip pytest pypdf==6.14.2
 
       - name: Compile integration
         run: python -m compileall -q custom_components/frakon_energy
@@ -93,6 +93,7 @@ jobs:
           tests/test_tariff_discovery_wiring.py
           tests/test_tariff_download_preview_ws_api.py
           tests/test_tariff_download_preview_wiring.py
+          tests/test_tariff_pdf_text.py
           tests/test_regulated_pricing.py
           tests/test_tariff_provenance.py
           tests/test_tariff_assembly.py
