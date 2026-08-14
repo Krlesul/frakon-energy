@@ -81,3 +81,4 @@ jobs:
           tests/test_cez_tariffs.py
           tests/test_cez_tariff_parser.py
           tests/test_cez_tariff_components.py
+          tests/test_regulated_tariff.py
