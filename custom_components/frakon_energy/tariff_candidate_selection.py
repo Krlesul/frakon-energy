@@ -7,7 +7,7 @@ from datetime import date
 import hashlib
 import json
 import re
-from typing import Iterable
+from typing import Any, Iterable
 
 from .tariff_sources import TariffDocumentCandidate
 
@@ -66,6 +66,30 @@ class TariffCandidateReviewItem:
     parsing_performed: bool = False
     persistence_performed: bool = False
     activation_performed: bool = False
+
+    def as_dict(self) -> dict[str, Any]:
+        """Serialize the review record to Home Assistant websocket-safe values."""
+        return {
+            "fingerprint": self.fingerprint,
+            "supplier": self.supplier,
+            "product_name": self.product_name,
+            "source_url": self.source_url,
+            "valid_from": self.valid_from.isoformat(),
+            "valid_to": self.valid_to.isoformat() if self.valid_to is not None else None,
+            "match_score": self.match_score,
+            "match_reasons": list(self.match_reasons),
+            "price_scope": self.price_scope,
+            "document_sha256": self.document_sha256,
+            "document_date": (
+                self.document_date.isoformat()
+                if self.document_date is not None
+                else None
+            ),
+            "download_performed": self.download_performed,
+            "parsing_performed": self.parsing_performed,
+            "persistence_performed": self.persistence_performed,
+            "activation_performed": self.activation_performed,
+        }
 
 
 def candidate_review_items(
