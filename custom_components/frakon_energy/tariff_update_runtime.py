@@ -14,6 +14,7 @@ from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .tariff_update_ha import async_check_active_tariff_source_if_due_ha
+from .tariff_update_notification import async_sync_tariff_update_notification
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -125,7 +126,10 @@ class TariffUpdateRuntime:
         task = self._probe_task
         if task is not None and not task.done():
             return
-        self._probe_task = self._hass.async_create_task(self._async_probe())
+        self._probe_task = self._hass.async_create_background_task(
+            self._async_probe(),
+            f"FRAKON Energy tariff update probe {self.entry_id}",
+        )
 
     async def _async_probe(self) -> None:
         now = dt_util.now()
@@ -166,8 +170,17 @@ class TariffUpdateRuntime:
         self._last_error = None
         if run is None:
             self._last_check_status = "not_due"
-        else:
-            self._last_check_status = run.check.status
+            return
+
+        self._last_check_status = run.check.status
+        try:
+            async_sync_tariff_update_notification(self._hass, self._entry, run)
+        except Exception as err:  # pragma: no cover - defensive notification boundary
+            self._last_error = f"notification: {err}"
+            _LOGGER.exception(
+                "Failed to synchronize FRAKON Energy tariff update notification for entry %s",
+                self.entry_id,
+            )
 
 
 def _runtime_registry(hass: HomeAssistant) -> dict[str, TariffUpdateRuntime]:
