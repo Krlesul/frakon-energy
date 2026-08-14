@@ -9,7 +9,7 @@ from typing import Any, Mapping
 from .all_in_catalog import (
     PersistedAllInTariff,
     all_in_tariff_fingerprint,
-    confirmed_all_in_tariff_from_options,
+    confirmed_all_in_tariff_for_context_from_options,
 )
 from .contracts import (
     ElectricityContract,
@@ -163,7 +163,14 @@ def prepare_active_tariff_source_watch(
     if not isinstance(day, date):
         raise ValueError("day must be a date")
     contract = confirmed_contract_from_options(options, day)
-    tariff = confirmed_all_in_tariff_from_options(options, day)
+    tariff = confirmed_all_in_tariff_for_context_from_options(
+        options,
+        supplier=contract.supplier.value,
+        product_name=contract.product_name,
+        distribution_tariff=contract.distribution_tariff,
+        breaker_code=contract.breaker.code,
+        day=day,
+    )
     _validate_alignment(contract, tariff)
 
     authoritative_watch = source_watch_from_confirmed_all_in(
