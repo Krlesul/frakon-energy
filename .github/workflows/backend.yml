@@ -79,9 +79,10 @@ jobs:
           tests/test_contracts.py
           tests/test_tariff_sources.py
           tests/test_cez_tariffs.py
-          tests/test_eon_tariffs.py
           tests/test_cez_tariff_parser.py
           tests/test_cez_tariff_components.py
+          tests/test_pre_tariffs.py
+          tests/test_eon_tariffs.py
           tests/test_regulated_pricing.py
           tests/test_tariff_provenance.py
           tests/test_tariff_assembly.py
