@@ -2,18 +2,25 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import date
 
 from ..pricing import FixedPriceComponent, PriceComponentKind, VariablePriceComponent
+from ..tariff_sources import PRICE_SCOPE_SUPPLIER_COMMERCIAL
 from .cez_tariff_parser import ParsedCezCommercialPrice
 
 
 @dataclass(frozen=True, slots=True)
 class CezCommercialComponents:
-    """Supplier-only components that are not an all-in tariff on their own."""
+    """Supplier-only components that are explicitly not an all-in tariff."""
 
+    product_name: str
+    valid_from: date
+    distribution_tariff: str
     commodity: VariablePriceComponent
     supplier_fixed: FixedPriceComponent
+    price_scope: str = field(default=PRICE_SCOPE_SUPPLIER_COMMERCIAL, init=False)
+    all_in_ready: bool = field(default=False, init=False)
 
 
 def components_from_parsed_cez_commercial_price(
@@ -21,9 +28,12 @@ def components_from_parsed_cez_commercial_price(
 ) -> CezCommercialComponents:
     """Convert a parsed dual-rate ČEZ document into supplier pricing components.
 
-    Single-rate tariffs intentionally fail here.  The current all-in pricing model
+    Single-rate tariffs intentionally fail here. The current all-in pricing model
     requires explicit VT and NT component values, so silently copying VT into NT
     or replacing an unavailable NT with zero would produce misleading costs.
+    The returned object also keeps its supplier-commercial scope explicit so it
+    cannot be mistaken for a complete customer tariff before regulated parts are
+    added by a separate verified source.
     """
     if not isinstance(parsed, ParsedCezCommercialPrice):
         raise ValueError("parsed must be ParsedCezCommercialPrice")
@@ -35,6 +45,9 @@ def components_from_parsed_cez_commercial_price(
         raise ValueError("parsed ČEZ commercial price must include VAT")
 
     return CezCommercialComponents(
+        product_name=parsed.product_name,
+        valid_from=parsed.valid_from,
+        distribution_tariff=parsed.distribution_tariff,
         commodity=VariablePriceComponent(
             kind=PriceComponentKind.COMMODITY,
             name="ČEZ – obchodní cena elektřiny",
