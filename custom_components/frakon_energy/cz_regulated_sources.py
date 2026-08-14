@@ -16,7 +16,10 @@ import re
 from urllib.parse import urlsplit
 
 from .pricing import FixedPriceComponent, PriceComponentKind, VariablePriceComponent
-from .regulated_pricing import RegulatedTariffBundle
+from .regulated_pricing import (
+    NON_NETWORK_INFRASTRUCTURE_COMPONENT_NAME,
+    RegulatedTariffBundle,
+)
 from .tariff_provenance import PriceEvidence
 from .tariff_sources import PRICE_SCOPE_REGULATED
 
@@ -245,7 +248,7 @@ class CzechRegulatedTariffInputs:
                 ),
                 FixedPriceComponent(
                     kind=PriceComponentKind.OTHER_FIXED,
-                    name="OTE – provoz nesíťové infrastruktury",
+                    name=NON_NETWORK_INFRASTRUCTURE_COMPONENT_NAME,
                     monthly_czk=self.non_network_monthly_czk,
                     includes_vat=False,
                 ),
