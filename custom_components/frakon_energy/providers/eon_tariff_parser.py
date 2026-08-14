@@ -17,8 +17,8 @@ _VALID_FROM_RE = re.compile(
     re.IGNORECASE,
 )
 _PRODUCT_RE = re.compile(
-    r"Produktová\s+řada\s+(.+?)\s+Obchodní\s+cena\s+za\s+elektřinu\s+platná\s+od",
-    re.IGNORECASE,
+    r"^[ \t]*Produktová[ \t]+řada[ \t]+(.+?)[ \t]*$",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 _COMMERCIAL_MARKER = "Obchodní cena za dodávku elektřiny pro rok 2026"
@@ -159,8 +159,8 @@ def _validated_vat_pair(
     return gross
 
 
-def _extract_product(compact: str) -> str:
-    match = _PRODUCT_RE.search(compact)
+def _extract_product(text: str) -> str:
+    match = _PRODUCT_RE.search(text)
     if match is None:
         raise ValueError("E.ON product line was not found")
     product = match.group(1).strip()
@@ -246,7 +246,7 @@ def parse_eon_commercial_price_text(
     tariff = _normalize_tariff(distribution_tariff)
     group = _RATE_GROUP[tariff]
     return ParsedEonCommercialPrice(
-        product_name=_extract_product(compact),
+        product_name=_extract_product(text),
         valid_from=_extract_valid_from(compact),
         price_year=price_year,
         distribution_tariff=tariff,
