@@ -8,12 +8,31 @@ from decimal import Decimal
 import re
 
 from .pricing import FixedPriceComponent, PriceComponentKind, VariablePriceComponent
-from .regulated_pricing import RegulatedTariffBundle
+from .regulated_pricing import (
+    NON_NETWORK_INFRASTRUCTURE_COMPONENT_NAME,
+    RegulatedTariffBundle,
+)
 from .tariff_provenance import MultiSourceTariffProvenance
-from .tariff_sources import PRICE_SCOPE_ALL_IN
+from .tariff_sources import PRICE_SCOPE_ALL_IN, PRICE_SCOPE_REGULATED
 
 _TARIFF_RE = re.compile(r"^D\d{2}d$")
 _BREAKER_RE = re.compile(r"^(?:1|3)x[1-9]\d*A$")
+
+_REQUIRED_VARIABLE_KINDS = (
+    PriceComponentKind.COMMODITY,
+    PriceComponentKind.DISTRIBUTION,
+    PriceComponentKind.SYSTEM_SERVICES,
+    PriceComponentKind.POZE,
+    PriceComponentKind.ELECTRICITY_TAX,
+)
+_REQUIRED_FIXED_KINDS = (
+    PriceComponentKind.SUPPLIER_FIXED,
+    PriceComponentKind.BREAKER_FIXED,
+)
+_ALLOWED_ALL_IN_VARIABLE_KINDS = frozenset((*_REQUIRED_VARIABLE_KINDS, PriceComponentKind.MARKET))
+_ALLOWED_ALL_IN_FIXED_KINDS = frozenset(
+    (*_REQUIRED_FIXED_KINDS, PriceComponentKind.DISTRIBUTION_FIXED, PriceComponentKind.OTHER_FIXED)
+)
 
 
 def _non_empty(value: str, field_name: str) -> str:
@@ -52,12 +71,82 @@ def _period_intersection(
     return start, end
 
 
+def _require_exactly_one_kind(items: tuple[object, ...], kind: PriceComponentKind) -> None:
+    count = sum(getattr(item, "kind", None) == kind for item in items)
+    if count != 1:
+        raise ValueError(f"all-in tariff requires exactly one {kind.value} component")
+
+
+def _validate_all_in_components(
+    variable: tuple[VariablePriceComponent, ...],
+    fixed: tuple[FixedPriceComponent, ...],
+) -> None:
+    if any(item.kind not in _ALLOWED_ALL_IN_VARIABLE_KINDS for item in variable):
+        raise ValueError("all-in variable components contain an unsupported kind")
+    if any(item.kind not in _ALLOWED_ALL_IN_FIXED_KINDS for item in fixed):
+        raise ValueError("all-in fixed components contain an unsupported kind")
+
+    for kind in _REQUIRED_VARIABLE_KINDS:
+        _require_exactly_one_kind(variable, kind)
+    for kind in _REQUIRED_FIXED_KINDS:
+        _require_exactly_one_kind(fixed, kind)
+
+    non_network = [
+        item
+        for item in fixed
+        if item.kind == PriceComponentKind.OTHER_FIXED
+        and item.name == NON_NETWORK_INFRASTRUCTURE_COMPONENT_NAME
+    ]
+    if len(non_network) != 1:
+        raise ValueError("all-in tariff requires exactly one non-network infrastructure component")
+    if any(
+        item.kind == PriceComponentKind.OTHER_FIXED
+        and item.name != NON_NETWORK_INFRASTRUCTURE_COMPONENT_NAME
+        for item in fixed
+    ):
+        raise ValueError("all-in tariff contains an unsupported OTHER_FIXED component")
+
+
+def _validate_regulated_bundle_completeness(regulated: RegulatedTariffBundle) -> None:
+    required_variable = (
+        PriceComponentKind.DISTRIBUTION,
+        PriceComponentKind.SYSTEM_SERVICES,
+        PriceComponentKind.POZE,
+        PriceComponentKind.ELECTRICITY_TAX,
+    )
+    for kind in required_variable:
+        _require_exactly_one_kind(regulated.variable_components, kind)
+    _require_exactly_one_kind(regulated.fixed_components, PriceComponentKind.BREAKER_FIXED)
+    non_network = [
+        item
+        for item in regulated.fixed_components
+        if item.kind == PriceComponentKind.OTHER_FIXED
+        and item.name == NON_NETWORK_INFRASTRUCTURE_COMPONENT_NAME
+    ]
+    if len(non_network) != 1:
+        raise ValueError("regulated tariff requires exactly one non-network infrastructure component")
+
+
+def _validate_regulated_provenance_link(
+    regulated: RegulatedTariffBundle,
+    provenance: MultiSourceTariffProvenance,
+) -> None:
+    evidence = provenance.evidence_for_scope(PRICE_SCOPE_REGULATED)
+    source_matches = [item for item in evidence if item.source_url == regulated.source_url]
+    if not source_matches:
+        raise ValueError("provenance does not contain the regulated bundle source URL")
+    if regulated.checksum is not None and not any(
+        item.checksum == regulated.checksum for item in source_matches
+    ):
+        raise ValueError("provenance checksum does not match the regulated bundle")
+
+
 @dataclass(frozen=True, slots=True)
 class AllInTariffAssembly:
     """Technically complete all-in tariff candidate with multi-source provenance.
 
     This object is complete enough to calculate a customer price, but it is still
-    separate from durable tariff-catalog confirmation.  Persisting/activating the
+    separate from durable tariff-catalog confirmation. Persisting/activating the
     result remains a later explicit step.
     """
 
@@ -99,6 +188,7 @@ class AllInTariffAssembly:
         names = [item.name for item in (*variable, *fixed)]
         if len(set(names)) != len(names):
             raise ValueError("all-in component names must be unique")
+        _validate_all_in_components(variable, fixed)
         object.__setattr__(self, "variable_components", variable)
         object.__setattr__(self, "fixed_components", fixed)
 
@@ -144,8 +234,8 @@ def assemble_all_in_tariff(
     """Combine independently verified commercial and regulated tariff parts.
 
     The function refuses to assemble until the regulated bundle is explicitly
-    confirmed and all tariff/breaker/validity boundaries agree.  It also refuses
-    supplier components of the wrong semantic kind.
+    confirmed, semantically complete, linked to its provenance, and all
+    tariff/breaker/validity boundaries agree.
     """
 
     tariff = _normalize_tariff(distribution_tariff)
@@ -171,6 +261,9 @@ def assemble_all_in_tariff(
         raise ValueError("regulated tariff bundle must be confirmed before all-in assembly")
     if not isinstance(provenance, MultiSourceTariffProvenance):
         raise ValueError("provenance must be MultiSourceTariffProvenance")
+
+    _validate_regulated_bundle_completeness(regulated)
+    _validate_regulated_provenance_link(regulated, provenance)
 
     if regulated.distribution_tariff != tariff:
         raise ValueError("commercial and regulated distribution tariffs do not match")
