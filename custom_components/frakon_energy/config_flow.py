@@ -67,6 +67,27 @@ CONF_CONTRACT_VALID_TO = "contract_valid_to"
 CONF_CONTRACT_FIXATION_END = "contract_fixation_end"
 CONF_CONTRACT_CONFIRM = "contract_confirm"
 
+_SUPPLIER_OPTIONS = {
+    Supplier.CEZ.value: "ČEZ",
+    Supplier.EON.value: "E.ON",
+    Supplier.PRE.value: "PRE",
+    Supplier.MND.value: "MND",
+    Supplier.INNOGY.value: "innogy",
+    Supplier.CENTROPOL.value: "Centropol",
+    Supplier.EPET.value: "EPET",
+    Supplier.OTHER.value: "Other / Jiný",
+}
+_DISTRIBUTOR_OPTIONS = {
+    Distributor.CEZ_DISTRIBUCE.value: "ČEZ Distribuce",
+    Distributor.EG_D.value: "EG.D",
+    Distributor.PRE_DISTRIBUCE.value: "PREdistribuce",
+}
+_CONTRACT_KIND_OPTIONS = {
+    ContractKind.FIXED.value: "Fixace / Fixed",
+    ContractKind.INDEFINITE.value: "Na dobu neurčitou / Indefinite",
+    ContractKind.SPOT.value: "Spot",
+}
+
 
 class FrakonEnergyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
@@ -193,15 +214,15 @@ class FrakonEnergyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     @staticmethod
     def async_get_options_flow(config_entry: config_entries.ConfigEntry):
-        return FrakonEnergyOptionsFlow(config_entry)
+        return FrakonEnergyOptionsFlow()
 
 
 class FrakonEnergyOptionsFlow(config_entries.OptionsFlow):
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        self._entry = config_entry
+    def __init__(self) -> None:
+        self._pending_contract: ElectricityContract | None = None
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
-        if self._entry.data.get(CONF_PROVIDER) == PROVIDER_CEZ_HDO:
+        if self.config_entry.data.get(CONF_PROVIDER) == PROVIDER_CEZ_HDO:
             return self.async_abort(reason="no_options_available")
         return self.async_show_menu(
             step_id="init",
@@ -210,14 +231,14 @@ class FrakonEnergyOptionsFlow(config_entries.OptionsFlow):
 
     async def async_step_billing(self, user_input: dict[str, Any] | None = None):
         errors: dict[str, str] = {}
-        defaults = self._defaults()
+        defaults = self._billing_defaults()
         if user_input is not None:
             try:
                 self._validate_billing(user_input)
             except ValueError as err:
                 errors["base"] = str(err)
             else:
-                updated = dict(self._entry.options)
+                updated = dict(self.config_entry.options)
                 updated.update(user_input)
                 return self.async_create_entry(title="", data=updated)
 
@@ -301,47 +322,23 @@ class FrakonEnergyOptionsFlow(config_entries.OptionsFlow):
         errors: dict[str, str] = {}
         defaults = self._contract_defaults()
         if user_input is not None:
-            if not user_input.get(CONF_CONTRACT_CONFIRM, False):
-                errors["base"] = "contract_confirmation_required"
+            try:
+                self._pending_contract = self._contract_from_input(user_input)
+            except (KeyError, TypeError, ValueError):
+                errors["base"] = "invalid_contract"
             else:
-                try:
-                    contract = self._contract_from_input(user_input)
-                except (KeyError, TypeError, ValueError):
-                    errors["base"] = "invalid_contract"
-                else:
-                    updated = append_electricity_contract(self._entry.options, contract)
-                    updated = confirm_electricity_contract(
-                        updated, contract_fingerprint(contract)
-                    )
-                    return self.async_create_entry(title="", data=updated)
+                return await self.async_step_contract_confirm()
 
         schema = vol.Schema(
             {
                 vol.Required(
                     CONF_CONTRACT_SUPPLIER,
                     default=defaults[CONF_CONTRACT_SUPPLIER],
-                ): vol.In(
-                    {
-                        Supplier.CEZ.value: "ČEZ",
-                        Supplier.EON.value: "E.ON",
-                        Supplier.PRE.value: "PRE",
-                        Supplier.MND.value: "MND",
-                        Supplier.INNOGY.value: "innogy",
-                        Supplier.CENTROPOL.value: "Centropol",
-                        Supplier.EPET.value: "EPET",
-                        Supplier.OTHER.value: "Jiný",
-                    }
-                ),
+                ): vol.In(_SUPPLIER_OPTIONS),
                 vol.Required(
                     CONF_CONTRACT_DISTRIBUTOR,
                     default=defaults[CONF_CONTRACT_DISTRIBUTOR],
-                ): vol.In(
-                    {
-                        Distributor.CEZ_DISTRIBUCE.value: "ČEZ Distribuce",
-                        Distributor.EG_D.value: "EG.D",
-                        Distributor.PRE_DISTRIBUCE.value: "PREdistribuce",
-                    }
-                ),
+                ): vol.In(_DISTRIBUTOR_OPTIONS),
                 vol.Required(
                     CONF_CONTRACT_PRODUCT,
                     default=defaults[CONF_CONTRACT_PRODUCT],
@@ -349,13 +346,7 @@ class FrakonEnergyOptionsFlow(config_entries.OptionsFlow):
                 vol.Required(
                     CONF_CONTRACT_KIND,
                     default=defaults[CONF_CONTRACT_KIND],
-                ): vol.In(
-                    {
-                        ContractKind.FIXED.value: "Fixovaná",
-                        ContractKind.INDEFINITE.value: "Na dobu neurčitou",
-                        ContractKind.SPOT.value: "Spotová",
-                    }
-                ),
+                ): vol.In(_CONTRACT_KIND_OPTIONS),
                 vol.Required(
                     CONF_CONTRACT_DISTRIBUTION_TARIFF,
                     default=defaults[CONF_CONTRACT_DISTRIBUTION_TARIFF],
@@ -363,7 +354,7 @@ class FrakonEnergyOptionsFlow(config_entries.OptionsFlow):
                 vol.Required(
                     CONF_CONTRACT_BREAKER_PHASES,
                     default=defaults[CONF_CONTRACT_BREAKER_PHASES],
-                ): vol.In({1: "1 fáze", 3: "3 fáze"}),
+                ): vol.In({1: "1", 3: "3"}),
                 vol.Required(
                     CONF_CONTRACT_BREAKER_AMPERES,
                     default=defaults[CONF_CONTRACT_BREAKER_AMPERES],
@@ -387,22 +378,64 @@ class FrakonEnergyOptionsFlow(config_entries.OptionsFlow):
                     CONF_CONTRACT_FIXATION_END,
                     default=defaults[CONF_CONTRACT_FIXATION_END],
                 ): selector.DateSelector(),
-                vol.Required(
-                    CONF_CONTRACT_CONFIRM,
-                    default=False,
-                ): selector.BooleanSelector(),
             }
         )
         return self.async_show_form(
             step_id="contract", data_schema=schema, errors=errors
         )
 
-    def _defaults(self) -> dict[str, Any]:
+    async def async_step_contract_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ):
+        if self._pending_contract is None:
+            return await self.async_step_contract()
+
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            if user_input.get(CONF_CONTRACT_CONFIRM) is not True:
+                errors["base"] = "contract_confirmation_required"
+            else:
+                candidate = self._pending_contract
+                fingerprint = contract_fingerprint(candidate)
+                updated = append_electricity_contract(
+                    self.config_entry.options, candidate
+                )
+                updated = confirm_electricity_contract(updated, fingerprint)
+                return self.async_create_entry(title="", data=updated)
+
+        contract = self._pending_contract
+        placeholders = {
+            "supplier": _SUPPLIER_OPTIONS[contract.supplier.value],
+            "product": contract.product_name,
+            "contract_kind": _CONTRACT_KIND_OPTIONS[contract.contract_kind.value],
+            "distributor": _DISTRIBUTOR_OPTIONS[contract.distributor.value],
+            "tariff": contract.distribution_tariff,
+            "breaker": contract.breaker.code,
+            "valid_from": contract.valid_from.isoformat(),
+            "valid_to": contract.valid_to.isoformat() if contract.valid_to else "—",
+            "fixation_end": (
+                contract.fixation_end.isoformat() if contract.fixation_end else "—"
+            ),
+        }
+        return self.async_show_form(
+            step_id="contract_confirm",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_CONTRACT_CONFIRM, default=False
+                    ): selector.BooleanSelector()
+                }
+            ),
+            errors=errors,
+            description_placeholders=placeholders,
+        )
+
+    def _billing_defaults(self) -> dict[str, Any]:
         today = date.today()
         settlement = next_default_settlement_date(today)
         baseline = date(settlement.year - 1, 1, 31)
         cycle_start = baseline + timedelta(days=1)
-        options = self._entry.options
+        options = self.config_entry.options
         return {
             CONF_BILLING_ENABLED: options.get(CONF_BILLING_ENABLED, True),
             CONF_BILLING_BASELINE_DATE: options.get(
@@ -436,7 +469,7 @@ class FrakonEnergyOptionsFlow(config_entries.OptionsFlow):
 
     def _contract_defaults(self) -> dict[str, Any]:
         today = date.today()
-        stored = contracts_from_options(self._entry.options)
+        stored = contracts_from_options(self.config_entry.options)
         if stored:
             contract = max(stored, key=lambda item: item.valid_from)
             return {
