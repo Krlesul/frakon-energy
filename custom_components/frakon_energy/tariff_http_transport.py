@@ -1,4 +1,4 @@
-"""Bounded HTTP transport executor for selected tariff documents."""
+"""Bounded HTTP transport executors for tariff documents."""
 
 from __future__ import annotations
 
@@ -74,41 +74,54 @@ async def _read_bounded_body(response: Any, *, max_bytes: int) -> bytes:
     return b"".join(chunks)
 
 
-async def async_fetch_selected_tariff_document(
-    *,
-    candidate: TariffDocumentCandidate,
-    request: TariffFetchRequest,
-    session: Any,
-    checked_at: datetime,
-    timeout_seconds: float = DEFAULT_TARIFF_HTTP_TIMEOUT_SECONDS,
-) -> ValidatedTariffDownload | TariffNotModified:
-    """Execute one exact selected-tariff GET and validate the result fail-closed.
+def _request_headers(headers: Mapping[str, str]) -> dict[str, str]:
+    if not isinstance(headers, Mapping):
+        raise ValueError("HTTP request headers must be a mapping")
+    normalized: dict[str, str] = {}
+    seen: set[str] = set()
+    for name, value in headers.items():
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("HTTP request header names must be non-empty strings")
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("HTTP request header values must be non-empty strings")
+        folded = name.strip().casefold()
+        if folded in seen:
+            raise ValueError("duplicate HTTP request header")
+        seen.add(folded)
+        normalized[name.strip()] = value.strip()
+    return normalized
 
-    The session is injected so Home Assistant can supply its shared aiohttp session
-    while this transport remains independently testable. Redirects are always
-    disabled by the request contract. The response body is streamed under the
-    request's hard byte limit before it enters the PDF/checksum validation layer.
-    """
-    if not isinstance(candidate, TariffDocumentCandidate):
-        raise ValueError("candidate must be TariffDocumentCandidate")
-    if not isinstance(request, TariffFetchRequest):
-        raise ValueError("request must be TariffFetchRequest")
-    if not isinstance(checked_at, datetime) or checked_at.tzinfo is None:
-        raise ValueError("checked_at must be a timezone-aware datetime")
+
+async def async_execute_bounded_tariff_get(
+    *,
+    source_url: str,
+    headers: Mapping[str, str],
+    allow_redirects: bool,
+    max_bytes: int,
+    session: Any,
+    timeout_seconds: float = DEFAULT_TARIFF_HTTP_TIMEOUT_SECONDS,
+) -> TariffHttpResponse:
+    """Execute one bounded tariff GET without assigning parsing/activation authority."""
+    if not isinstance(source_url, str) or not source_url.strip():
+        raise ValueError("source_url must not be empty")
+    if allow_redirects is not False:
+        raise ValueError("tariff HTTP transport must not allow redirects")
+    if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes <= 0:
+        raise ValueError("max_bytes must be a positive integer")
     if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)):
         raise ValueError("timeout_seconds must be a positive number")
     timeout = float(timeout_seconds)
     if timeout <= 0:
         raise ValueError("timeout_seconds must be a positive number")
+    request_headers = _request_headers(headers)
 
     get = getattr(session, "get", None)
     if not callable(get):
         raise ValueError("session must provide a callable get method")
-
     response_context = get(
-        request.source_url,
-        headers=request.headers_dict(),
-        allow_redirects=request.allow_redirects,
+        source_url,
+        headers=request_headers,
+        allow_redirects=False,
         timeout=timeout,
     )
     if not hasattr(response_context, "__aenter__") or not hasattr(
@@ -124,19 +137,45 @@ async def async_fetch_selected_tariff_document(
         if url is None:
             raise ValueError("HTTP response must expose its final URL")
         final_url = str(url)
-        headers = getattr(response, "headers", None)
-        content_type = _header(headers, "Content-Type")
-        etag = _header(headers, "ETag")
-        last_modified = _header(headers, "Last-Modified")
-        body = await _read_bounded_body(response, max_bytes=request.max_bytes)
+        response_headers = getattr(response, "headers", None)
+        content_type = _header(response_headers, "Content-Type")
+        etag = _header(response_headers, "ETag")
+        last_modified = _header(response_headers, "Last-Modified")
+        body = await _read_bounded_body(response, max_bytes=max_bytes)
 
-    http_response = TariffHttpResponse(
+    return TariffHttpResponse(
         status_code=status,
         final_url=final_url,
         content_type=content_type,
         content=body,
         etag=etag,
         last_modified=last_modified,
+    )
+
+
+async def async_fetch_selected_tariff_document(
+    *,
+    candidate: TariffDocumentCandidate,
+    request: TariffFetchRequest,
+    session: Any,
+    checked_at: datetime,
+    timeout_seconds: float = DEFAULT_TARIFF_HTTP_TIMEOUT_SECONDS,
+) -> ValidatedTariffDownload | TariffNotModified:
+    """Execute one exact selected-tariff GET and validate the result fail-closed."""
+    if not isinstance(candidate, TariffDocumentCandidate):
+        raise ValueError("candidate must be TariffDocumentCandidate")
+    if not isinstance(request, TariffFetchRequest):
+        raise ValueError("request must be TariffFetchRequest")
+    if not isinstance(checked_at, datetime) or checked_at.tzinfo is None:
+        raise ValueError("checked_at must be a timezone-aware datetime")
+
+    http_response = await async_execute_bounded_tariff_get(
+        source_url=request.source_url,
+        headers=request.headers_dict(),
+        allow_redirects=request.allow_redirects,
+        max_bytes=request.max_bytes,
+        session=session,
+        timeout_seconds=timeout_seconds,
     )
     return process_tariff_fetch_response(
         candidate=candidate,
