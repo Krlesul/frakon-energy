@@ -93,6 +93,83 @@ type TariffParsePreviewResponse = {
   preview: SupplierTariffPreview;
 };
 
+type AllInVariableComponent = {
+  kind: string;
+  name: string;
+  high_rate_czk_per_kwh: string;
+  low_rate_czk_per_kwh: string;
+  includes_vat: boolean;
+  vat_rate_percent: string;
+  gross_vt_czk_per_kwh: string;
+  gross_nt_czk_per_kwh: string;
+};
+
+type AllInFixedComponent = {
+  kind: string;
+  name: string;
+  monthly_czk: string;
+  includes_vat: boolean;
+  vat_rate_percent: string;
+  gross_monthly_czk: string;
+};
+
+type AllInTariffPreview = {
+  supplier: string;
+  product_name: string;
+  distribution_tariff: string;
+  breaker_code: string;
+  valid_from: string;
+  valid_to: string | null;
+  all_in_vt_czk_kwh: string;
+  all_in_nt_czk_kwh: string;
+  fixed_monthly_total_czk: string;
+  variable_components: AllInVariableComponent[];
+  fixed_components: AllInFixedComponent[];
+  supplier_source_url: string;
+  supplier_document_sha256: string;
+  regulated_source_url: string;
+  regulated_checksum: string | null;
+  provenance: unknown;
+  validation_reasons: string[];
+  all_in_ready: boolean;
+  persistence_performed: boolean;
+  activation_performed: boolean;
+};
+
+type CustomerTariffProposalResponse = {
+  entry_id: string;
+  proposal_fingerprint: string;
+  contract_fingerprint: string;
+  all_in_tariff_fingerprint: string;
+  candidate_fingerprint: string;
+  regulated_version_fingerprint: string;
+  proposed_for_day: string;
+  proposed_at: string;
+  checked_at: string;
+  source_url: string;
+  document_sha256: string;
+  content_bytes: number;
+  download_performed: boolean;
+  parsing_performed: boolean;
+  all_in_preview_performed: boolean;
+  persistence_performed: boolean;
+  confirmation_performed: boolean;
+  activation_performed: boolean;
+  preview: AllInTariffPreview;
+};
+
+type CustomerTariffConfirmResponse = {
+  entry_id: string;
+  proposal_fingerprint: string;
+  contract_fingerprint: string;
+  all_in_tariff_fingerprint: string;
+  regulated_version_fingerprint: string;
+  confirmed: boolean;
+  persistence_performed: boolean;
+  confirmation_performed: boolean;
+  activation_performed: boolean;
+};
+
 type WizardDraft = {
   supplier: string;
   productName: string;
@@ -226,7 +303,15 @@ function CandidateCard({
   );
 }
 
-function PricePreviewCard({ response }: { response: TariffParsePreviewResponse }) {
+function PricePreviewCard({
+  response,
+  preparingAllIn,
+  onPrepareAllIn,
+}: {
+  response: TariffParsePreviewResponse;
+  preparingAllIn: boolean;
+  onPrepareAllIn: () => void;
+}) {
   const preview = response.preview;
   return (
     <section className="tariff-price-preview">
@@ -260,12 +345,125 @@ function PricePreviewCard({ response }: { response: TariffParsePreviewResponse }
 
       <div className="tariff-wizard__notice pending">
         <b>Toto ještě není all-in cena.</b>
-        <span>Jde pouze o obchodní část dodavatele. Regulované distribuční složky se skládají odděleně a aktivní tarif se tímto náhledem nemění.</span>
+        <span>Jde pouze o obchodní část dodavatele. Kompletní návrh musí backend znovu spojit s potvrzenou regulatorní verzí pro přesnou sazbu, jistič a datum.</span>
       </div>
-      <div className="tariff-wizard__confirmation-lock">
-        <b>Potvrzení a aktivace zůstávají zamčené.</b>
-        <span>Backend vrátil `persistence_performed=false` a `activation_performed=false`. Další authority krok dostane samostatné explicitní potvrzení.</span>
+      <div className="tariff-wizard__proposal-action">
+        <button type="button" className="tariff-wizard__prepare-button" disabled={preparingAllIn} onClick={onPrepareAllIn}>
+          {preparingAllIn ? "Sestavuji a ověřuji all-in návrh…" : "Sestavit kompletní all-in návrh"}
+        </button>
+        <span>Backend znovu ověří oficiální PDF i regulované složky. Uloží se pouze nepotvrzený návrh; aktivace zůstane zamčená.</span>
       </div>
+    </section>
+  );
+}
+
+function AllInProposalCard({
+  response,
+  confirmation,
+  confirming,
+  onConfirm,
+}: {
+  response: CustomerTariffProposalResponse;
+  confirmation: CustomerTariffConfirmResponse | null;
+  confirming: boolean;
+  onConfirm: () => void;
+}) {
+  const preview = response.preview;
+  const validity = preview.valid_to ? `${preview.valid_from} → ${preview.valid_to}` : `od ${preview.valid_from}`;
+  const confirmed = confirmation?.confirmed === true;
+  return (
+    <section className={`tariff-all-in${confirmed ? " confirmed" : ""}`}>
+      <div className="tariff-wizard__results-head">
+        <div>
+          <span className="eyebrow">Krok 4 · serverově ověřený návrh</span>
+          <h3>Kompletní all-in cena elektřiny</h3>
+        </div>
+        <span className={confirmed ? "tariff-all-in__badge confirmed" : "tariff-all-in__badge pending"}>
+          {confirmed ? "Potvrzeno a aktivováno" : "Čeká na vaše potvrzení"}
+        </span>
+      </div>
+
+      <div className="tariff-all-in__totals">
+        <div><span>All-in VT</span><b>{preview.all_in_vt_czk_kwh} Kč/kWh</b><small>včetně všech variabilních složek</small></div>
+        <div><span>All-in NT</span><b>{preview.all_in_nt_czk_kwh} Kč/kWh</b><small>včetně všech variabilních složek</small></div>
+        <div><span>Fixní platby</span><b>{preview.fixed_monthly_total_czk} Kč/měsíc</b><small>dodavatel + regulované fixní složky</small></div>
+      </div>
+
+      <div className="tariff-all-in__context">
+        <span><b>Produkt:</b> {preview.product_name}</span>
+        <span><b>Dodavatel:</b> {SUPPLIER_LABELS[preview.supplier] ?? preview.supplier}</span>
+        <span><b>Sazba:</b> {preview.distribution_tariff}</span>
+        <span><b>Jistič:</b> {preview.breaker_code}</span>
+        <span><b>Platnost:</b> {validity}</span>
+        <span><b>Návrh pro den:</b> {response.proposed_for_day}</span>
+      </div>
+
+      <div className="tariff-all-in__components-grid">
+        <div>
+          <h4>Variabilní složky</h4>
+          <div className="tariff-all-in__component-list">
+            {preview.variable_components.map((component) => (
+              <div key={`${component.kind}:${component.name}`}>
+                <span>{component.name}</span>
+                <b>VT {component.gross_vt_czk_per_kwh} · NT {component.gross_nt_czk_per_kwh} Kč/kWh</b>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div>
+          <h4>Fixní složky</h4>
+          <div className="tariff-all-in__component-list">
+            {preview.fixed_components.map((component) => (
+              <div key={`${component.kind}:${component.name}`}>
+                <span>{component.name}</span>
+                <b>{component.gross_monthly_czk} Kč/měsíc</b>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="tariff-all-in__sources">
+        <div>
+          <span>Obchodní část</span>
+          <a href={preview.supplier_source_url} target="_blank" rel="noreferrer">Oficiální ceník dodavatele</a>
+          <code>SHA {preview.supplier_document_sha256}</code>
+        </div>
+        <div>
+          <span>Regulovaná část</span>
+          <a href={preview.regulated_source_url} target="_blank" rel="noreferrer">Potvrzený regulatorní zdroj</a>
+          <code>{preview.regulated_checksum ? `SHA ${preview.regulated_checksum}` : "Zdroj bez checksumu"}</code>
+        </div>
+      </div>
+
+      <div className="tariff-price-preview__checks">
+        <b>Backend před vytvořením návrhu ověřil</b>
+        <ul>{preview.validation_reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
+      </div>
+
+      <div className="tariff-all-in__fingerprints">
+        <span><b>Proposal:</b> <code>{response.proposal_fingerprint}</code></span>
+        <span><b>Smlouva:</b> <code>{response.contract_fingerprint}</code></span>
+        <span><b>All-in:</b> <code>{response.all_in_tariff_fingerprint}</code></span>
+        <span><b>Regulace:</b> <code>{response.regulated_version_fingerprint}</code></span>
+      </div>
+
+      {confirmed ? (
+        <div className="tariff-wizard__notice success">
+          <b>Tarif je potvrzený.</b>
+          <span>Aktivní smlouva i přesně svázaná all-in verze byly potvrzeny jedním fingerprint-only krokem. Historické verze zůstaly zachované.</span>
+        </div>
+      ) : (
+        <div className="tariff-all-in__confirm-box">
+          <div>
+            <b>Poslední krok je záměrně ruční.</b>
+            <span>Potvrzením aktivujete pouze tento serverově ověřený návrh. Do potvrzovacího requestu se neposílá cena, URL ani obsah ceníku — jen fingerprint výše uvedeného proposal envelope.</span>
+          </div>
+          <button type="button" disabled={confirming} onClick={onConfirm}>
+            {confirming ? "Potvrzuji přesný návrh…" : "Potvrdit a aktivovat tento tarif"}
+          </button>
+        </div>
+      )}
     </section>
   );
 }
@@ -282,7 +480,22 @@ export function TariffSetupWizard({ hass }: { hass?: HomeAssistant }) {
   const [pricePreview, setPricePreview] = useState<TariffParsePreviewResponse | null>(null);
   const [pricePreviewError, setPricePreviewError] = useState<string | null>(null);
   const [previewingFingerprint, setPreviewingFingerprint] = useState<string | null>(null);
+  const [customerProposal, setCustomerProposal] = useState<CustomerTariffProposalResponse | null>(null);
+  const [proposalError, setProposalError] = useState<string | null>(null);
+  const [preparingAllIn, setPreparingAllIn] = useState(false);
+  const [confirmation, setConfirmation] = useState<CustomerTariffConfirmResponse | null>(null);
+  const [confirmationError, setConfirmationError] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
   const reviewRevision = useRef(0);
+
+  const clearProposalState = () => {
+    setCustomerProposal(null);
+    setProposalError(null);
+    setPreparingAllIn(false);
+    setConfirmation(null);
+    setConfirmationError(null);
+    setConfirming(false);
+  };
 
   const invalidateReview = () => {
     reviewRevision.current += 1;
@@ -291,6 +504,7 @@ export function TariffSetupWizard({ hass }: { hass?: HomeAssistant }) {
     setPricePreview(null);
     setPricePreviewError(null);
     setPreviewingFingerprint(null);
+    clearProposalState();
   };
 
   const updateDraft = (patch: Partial<WizardDraft>) => {
@@ -308,6 +522,11 @@ export function TariffSetupWizard({ hass }: { hass?: HomeAssistant }) {
     setDiscoveryError(null);
     setPricePreview(null);
     setPricePreviewError(null);
+    setPreviewingFingerprint(null);
+    setCustomerProposal(null);
+    setProposalError(null);
+    setConfirmation(null);
+    setConfirmationError(null);
     if (!hass) return () => { active = false; };
 
     setLoadingCatalog(true);
@@ -357,6 +576,7 @@ export function TariffSetupWizard({ hass }: { hass?: HomeAssistant }) {
     setDiscoveryError(null);
     setPricePreview(null);
     setPricePreviewError(null);
+    clearProposalState();
     try {
       const response = await callHomeAssistantWs<TariffDiscoveryResponse>(hass, {
         type: "frakon_energy/tariff/discover",
@@ -387,6 +607,7 @@ export function TariffSetupWizard({ hass }: { hass?: HomeAssistant }) {
     setPreviewingFingerprint(candidate.fingerprint);
     setPricePreview(null);
     setPricePreviewError(null);
+    clearProposalState();
     try {
       const response = await callHomeAssistantWs<TariffParsePreviewResponse>(hass, {
         type: "frakon_energy/tariff/parse_preview",
@@ -418,13 +639,94 @@ export function TariffSetupWizard({ hass }: { hass?: HomeAssistant }) {
     }
   };
 
+  const prepareCustomerProposal = async () => {
+    if (!hass || !entryId || !selectedProduct || !discovery || !pricePreview) return;
+    const revision = reviewRevision.current;
+    const candidateFingerprint = pricePreview.candidate_fingerprint;
+    setPreparingAllIn(true);
+    setCustomerProposal(null);
+    setProposalError(null);
+    setConfirmation(null);
+    setConfirmationError(null);
+    try {
+      const response = await callHomeAssistantWs<CustomerTariffProposalResponse>(hass, {
+        type: "frakon_energy/tariff/customer/propose",
+        entry_id: entryId,
+        contract: contractPayload(draft, selectedProduct),
+        day: draft.discoveryDay,
+        candidate_fingerprint: candidateFingerprint,
+      });
+      if (reviewRevision.current !== revision) return;
+      if (response.candidate_fingerprint !== candidateFingerprint) {
+        throw new Error("Backend vytvořil návrh pro jiný fingerprint ceníku.");
+      }
+      if (response.contract_fingerprint !== discovery.contract_fingerprint) {
+        throw new Error("Backend vytvořil návrh pro jinou verzi smlouvy.");
+      }
+      if (response.source_url !== response.preview.supplier_source_url || response.document_sha256 !== response.preview.supplier_document_sha256) {
+        throw new Error("All-in návrh nemá shodnou identitu ověřeného dodavatelského dokumentu.");
+      }
+      if (
+        !response.download_performed ||
+        !response.parsing_performed ||
+        !response.all_in_preview_performed ||
+        !response.preview.all_in_ready ||
+        response.confirmation_performed ||
+        response.activation_performed ||
+        response.preview.persistence_performed ||
+        response.preview.activation_performed
+      ) {
+        throw new Error("Backend nevrátil bezpečný nepotvrzený all-in proposal.");
+      }
+      setCustomerProposal(response);
+    } catch (error) {
+      if (reviewRevision.current === revision) setProposalError(readableError(error));
+    } finally {
+      if (reviewRevision.current === revision) setPreparingAllIn(false);
+    }
+  };
+
+  const confirmCustomerProposal = async () => {
+    if (!hass || !entryId || !customerProposal || confirmation?.confirmed) return;
+    const revision = reviewRevision.current;
+    const proposalFingerprint = customerProposal.proposal_fingerprint;
+    setConfirming(true);
+    setConfirmationError(null);
+    try {
+      const response = await callHomeAssistantWs<CustomerTariffConfirmResponse>(hass, {
+        type: "frakon_energy/tariff/customer/confirm",
+        entry_id: entryId,
+        proposal_fingerprint: proposalFingerprint,
+      });
+      if (reviewRevision.current !== revision) return;
+      if (response.proposal_fingerprint !== customerProposal.proposal_fingerprint) {
+        throw new Error("Backend potvrdil jiný proposal fingerprint.");
+      }
+      if (
+        response.contract_fingerprint !== customerProposal.contract_fingerprint ||
+        response.all_in_tariff_fingerprint !== customerProposal.all_in_tariff_fingerprint ||
+        response.regulated_version_fingerprint !== customerProposal.regulated_version_fingerprint
+      ) {
+        throw new Error("Potvrzené immutable reference neodpovídají zobrazenému návrhu.");
+      }
+      if (!response.confirmed) {
+        throw new Error("Backend nepotvrdil zákaznický tarif.");
+      }
+      setConfirmation(response);
+    } catch (error) {
+      if (reviewRevision.current === revision) setConfirmationError(readableError(error));
+    } finally {
+      if (reviewRevision.current === revision) setConfirming(false);
+    }
+  };
+
   return (
     <section className="tariff-wizard">
       <div className="tariff-wizard__header">
         <div>
           <span className="eyebrow">Nastavení ceny elektřiny</span>
-          <h2>Najít přesný oficiální ceník</h2>
-          <p>Vyberte údaje ze smlouvy. FRAKON Energy hledá pouze přesnou shodu v ověřených zdrojích a nic bez potvrzení neaktivuje.</p>
+          <h2>Najít, ověřit a potvrdit přesný tarif</h2>
+          <p>Vyberte údaje ze smlouvy. FRAKON Energy hledá pouze přesnou shodu v ověřených zdrojích, sestaví kompletní all-in cenu a aktivuje ji až po samostatném potvrzení konkrétního fingerprintu.</p>
         </div>
         <span className="tariff-wizard__safety">Fail-closed</span>
       </div>
@@ -432,7 +734,9 @@ export function TariffSetupWizard({ hass }: { hass?: HomeAssistant }) {
       <div className="tariff-wizard__steps" aria-label="Průběh nastavení tarifu">
         <div className="active"><b>1</b><span>Smlouva</span></div>
         <div className={discovery?.candidates.length ? "active" : ""}><b>2</b><span>Ověření zdroje</span></div>
-        <div className={pricePreview ? "active" : ""}><b>3</b><span>Náhled ceny</span></div>
+        <div className={pricePreview ? "active" : ""}><b>3</b><span>Obchodní cena</span></div>
+        <div className={customerProposal ? "active" : ""}><b>4</b><span>All-in návrh</span></div>
+        <div className={confirmation?.confirmed ? "active confirmed" : ""}><b>5</b><span>Potvrzení</span></div>
       </div>
 
       {loadingCatalog ? <div className="tariff-wizard__notice">Načítám ověřený katalog dodavatelů…</div> : null}
@@ -523,6 +827,8 @@ export function TariffSetupWizard({ hass }: { hass?: HomeAssistant }) {
 
           {discoveryError ? <div className="tariff-wizard__notice error">{discoveryError}</div> : null}
           {pricePreviewError ? <div className="tariff-wizard__notice error">{pricePreviewError}</div> : null}
+          {proposalError ? <div className="tariff-wizard__notice error">{proposalError}</div> : null}
+          {confirmationError ? <div className="tariff-wizard__notice error">{confirmationError}</div> : null}
 
           {discovery?.candidates.length ? (
             <div className="tariff-wizard__results">
@@ -542,7 +848,22 @@ export function TariffSetupWizard({ hass }: { hass?: HomeAssistant }) {
             </div>
           ) : null}
 
-          {pricePreview ? <PricePreviewCard response={pricePreview} /> : null}
+          {pricePreview ? (
+            <PricePreviewCard
+              response={pricePreview}
+              preparingAllIn={preparingAllIn}
+              onPrepareAllIn={prepareCustomerProposal}
+            />
+          ) : null}
+
+          {customerProposal ? (
+            <AllInProposalCard
+              response={customerProposal}
+              confirmation={confirmation}
+              confirming={confirming}
+              onConfirm={confirmCustomerProposal}
+            />
+          ) : null}
         </>
       ) : null}
     </section>
