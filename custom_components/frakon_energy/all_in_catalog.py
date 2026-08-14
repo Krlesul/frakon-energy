@@ -7,6 +7,7 @@ from datetime import date
 import hashlib
 import json
 from typing import Any, Mapping
+import unicodedata
 
 from .pricing import FixedPriceComponent, VariablePriceComponent
 from .tariff_assembly import AllInTariffAssembly
@@ -23,6 +24,16 @@ def _date_from_value(value: Any, field: str) -> date:
         return date.fromisoformat(value)
     except ValueError as err:
         raise ValueError(f"{field} must be an ISO-8601 date") from err
+
+
+def _supplier_identity(value: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("supplier must not be empty")
+    decomposed = unicodedata.normalize("NFKD", value.strip()).casefold()
+    normalized = "".join(char for char in decomposed if char.isalnum())
+    if not normalized:
+        raise ValueError("supplier must contain an alphanumeric identity")
+    return normalized
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,16 +197,78 @@ def confirm_all_in_tariff(options: Mapping[str, Any], fingerprint: str) -> dict[
     return updated
 
 
+def _select_unique_newest_all_in(
+    matches: list[PersistedAllInTariff],
+    day: date,
+) -> PersistedAllInTariff:
+    if not matches:
+        raise LookupError(f"No confirmed all-in tariff applies on {day.isoformat()}")
+    newest_valid_from = max(item.assembly.valid_from for item in matches)
+    newest = [item for item in matches if item.assembly.valid_from == newest_valid_from]
+    if len(newest) != 1:
+        raise ValueError(f"ambiguous confirmed all-in tariffs for {day.isoformat()}")
+    return newest[0]
+
+
 def select_confirmed_all_in_tariff(
     items: tuple[PersistedAllInTariff, ...], day: date
 ) -> PersistedAllInTariff:
     matches = [item for item in items if item.confirmed and item.applies_on(day)]
-    if not matches:
-        raise LookupError(f"No confirmed all-in tariff applies on {day.isoformat()}")
-    return max(matches, key=lambda item: item.assembly.valid_from)
+    return _select_unique_newest_all_in(matches, day)
+
+
+def select_confirmed_all_in_tariff_for_context(
+    items: tuple[PersistedAllInTariff, ...],
+    *,
+    supplier: str,
+    product_name: str,
+    distribution_tariff: str,
+    breaker_code: str,
+    day: date,
+) -> PersistedAllInTariff:
+    """Select one exact confirmed customer all-in version or fail closed."""
+    if not isinstance(day, date):
+        raise ValueError("day must be a date")
+    if not isinstance(product_name, str) or not product_name.strip():
+        raise ValueError("product_name must not be empty")
+    if not isinstance(distribution_tariff, str) or not distribution_tariff.strip():
+        raise ValueError("distribution_tariff must not be empty")
+    if not isinstance(breaker_code, str) or not breaker_code.strip():
+        raise ValueError("breaker_code must not be empty")
+    supplier_key = _supplier_identity(supplier)
+    matches = [
+        item
+        for item in items
+        if item.confirmed
+        and item.applies_on(day)
+        and _supplier_identity(item.assembly.supplier) == supplier_key
+        and item.assembly.product_name.strip() == product_name.strip()
+        and item.assembly.distribution_tariff == distribution_tariff.strip()
+        and item.assembly.breaker_code == breaker_code.strip()
+    ]
+    return _select_unique_newest_all_in(matches, day)
 
 
 def confirmed_all_in_tariff_from_options(
     options: Mapping[str, Any], day: date
 ) -> PersistedAllInTariff:
     return select_confirmed_all_in_tariff(all_in_tariffs_from_options(options), day)
+
+
+def confirmed_all_in_tariff_for_context_from_options(
+    options: Mapping[str, Any],
+    *,
+    supplier: str,
+    product_name: str,
+    distribution_tariff: str,
+    breaker_code: str,
+    day: date,
+) -> PersistedAllInTariff:
+    return select_confirmed_all_in_tariff_for_context(
+        all_in_tariffs_from_options(options),
+        supplier=supplier,
+        product_name=product_name,
+        distribution_tariff=distribution_tariff,
+        breaker_code=breaker_code,
+        day=day,
+    )
