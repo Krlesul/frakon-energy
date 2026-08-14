@@ -56,6 +56,7 @@ from .spot_price_settings_ws_api import async_register_spot_price_settings_webso
 from .spot_price_ws_api import async_register_spot_price_websocket
 from .tariff_discovery_ws_api import async_register_tariff_discovery_websocket
 from .tariff_download_preview_ws_api import async_register_tariff_download_preview_websocket
+from .tariff_parse_preview_ws_api import async_register_tariff_parse_preview_websocket
 from .tariff_product_catalog_ws_api import async_register_tariff_product_catalog_websocket
 from .tariff_update_runtime import (
     async_start_tariff_update_runtime,
@@ -190,6 +191,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         async_register_tariff_product_catalog_websocket(hass)
         async_register_tariff_discovery_websocket(hass)
         async_register_tariff_download_preview_websocket(hass)
+        async_register_tariff_parse_preview_websocket(hass)
         async_register_load_plan_websocket(hass)
         async_register_load_profiles_websocket(hass)
         async_register_load_execution_policy_websocket(hass)
