@@ -46,11 +46,11 @@
         "title": "Nastavení FRAKON Energy",
         "menu_options": {
           "billing": "Vyúčtování, elektroměry a ceny",
-          "contract": "Smlouva a tarifní profil"
+          "contract": "Dodavatel a smlouva"
         },
         "menu_option_descriptions": {
           "billing": "Nastavte zúčtovací období, odečty elektroměru, zálohy a souhrnné ceny VT/NT.",
-          "contract": "Uložte dodavatele, produkt, distribuční sazbu, jistič a platnost smlouvy do potvrzené historie."
+          "contract": "Zadejte dodavatele, produkt, distribuční sazbu, jistič a platnost smlouvy. Aktivace proběhne až po samostatném potvrzení."
         }
       },
       "billing": {
@@ -78,8 +78,8 @@
         }
       },
       "contract": {
-        "title": "Smlouva a tarifní profil",
-        "description": "Zadejte údaje přesně podle smlouvy nebo ceníku. Uložením vznikne nová historická verze; starší smlouvy se nepřepisují. Aktivní může být pouze výslovně potvrzená verze.",
+        "title": "Dodavatel a smlouva",
+        "description": "Zadejte údaje přesně podle smlouvy. Tento krok ještě nic neaktivuje; před uložením se zobrazí samostatná kontrola všech údajů.",
         "data": {
           "contract_supplier": "Dodavatel",
           "contract_distributor": "Distributor",
@@ -90,8 +90,14 @@
           "contract_breaker_amperes": "Proud hlavního jističe",
           "contract_valid_from": "Smlouva platí od",
           "contract_valid_to": "Smlouva platí do",
-          "contract_fixation_end": "Konec fixace",
-          "contract_confirm": "Potvrzuji, že údaje odpovídají mé smlouvě"
+          "contract_fixation_end": "Konec fixace"
+        }
+      },
+      "contract_confirm": {
+        "title": "Potvrdit smlouvu",
+        "description": "Zkontrolujte údaje před aktivací.\n\nDodavatel: **{supplier}**  \nProdukt: **{product}**  \nTyp: **{contract_kind}**  \nDistributor: **{distributor}**  \nSazba: **{tariff}**  \nHlavní jistič: **{breaker}**  \nPlatnost od: **{valid_from}**  \nPlatnost do: **{valid_to}**  \nKonec fixace: **{fixation_end}**\n\nPotvrzením vznikne nová historická verze smlouvy. Starší smlouvy se nepřepisují.",
+        "data": {
+          "contract_confirm": "Ano, potvrzuji, že údaje odpovídají mé smlouvě"
         }
       }
     },
@@ -105,7 +111,7 @@
       "old_meter_vt_below_start": "Konečný stav VT starého elektroměru nesmí být nižší než jeho počáteční stav.",
       "old_meter_nt_below_start": "Konečný stav NT starého elektroměru nesmí být nižší než jeho počáteční stav.",
       "new_meter_start_negative": "Počáteční registry nového elektroměru nesmí být záporné.",
-      "contract_confirmation_required": "Před uložením potvrďte, že údaje odpovídají vaší smlouvě.",
+      "contract_confirmation_required": "Před uložením výslovně potvrďte, že zobrazené údaje odpovídají vaší smlouvě.",
       "invalid_contract": "Údaje smlouvy nejsou platné. Zkontrolujte produkt, typ smlouvy, sazbu Dxxd, jistič a data platnosti/fixace."
     },
     "abort": {
