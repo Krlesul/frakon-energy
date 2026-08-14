@@ -54,6 +54,7 @@ from .providers.visionq import VisionQApiClient
 from .site_capacity_ws_api import async_register_site_capacity_websocket
 from .spot_price_settings_ws_api import async_register_spot_price_settings_websocket
 from .spot_price_ws_api import async_register_spot_price_websocket
+from .tariff_update_scheduler import async_start_tariff_update_scheduler
 from .technology_profile_options import technology_profile_from_options
 from .technology_profile_ws_api import async_register_technology_profile_websocket
 
@@ -207,6 +208,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # transactional helper rolls back partial worker startup on its own failure.
         await async_start_execution_runtimes(hass, entry.entry_id)
         entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
+        async_start_tariff_update_scheduler(hass, entry)
         return True
     except Exception:
         await _async_rollback_failed_setup(
