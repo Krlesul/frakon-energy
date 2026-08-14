@@ -94,14 +94,14 @@ async def test_issue_creates_entry_scoped_runtime_record(monkeypatch: pytest.Mon
     assert result["can_execute"] is False
     assert result["execution_performed"] is False
 
-    listed = approval_ws._list_payload(hass, "entry-1")
-    assert len(listed["approvals"]) == 1
-    record = listed["approvals"][0]
+    records = approval_ws._approval_records(hass, "entry-1")
+    assert len(records) == 1
+    record = records[result["approval_id"]].as_dict(now=NOW)
     assert record["approved_by"] == "admin-1"
     assert record["profile_id"] == "ev-home"
     assert record["status"] == "approved"
     assert record["can_execute"] is False
-    assert listed["approvals"] != approval_ws._list_payload(hass, "entry-2")["approvals"]
+    assert records != approval_ws._approval_records(hass, "entry-2")
 
 
 @pytest.mark.asyncio
