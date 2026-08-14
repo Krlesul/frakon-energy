@@ -22,6 +22,12 @@ from .tariff_sources import PRICE_SCOPE_REGULATED
 _DISTRIBUTION_TARIFF_RE = re.compile(r"^D\d{2}d$")
 _BREAKER_RE = re.compile(r"^(?:1|3)x[1-9]\d*A$")
 
+# Universal customer charges confirmed by official 2026 regulator/operator
+# publications. Distribution, breaker and system-service values stay parser
+# inputs because they depend on tables/amendments and must not be guessed.
+POZE_2026_CZK_PER_KWH = Decimal("0")
+OTE_NON_NETWORK_2026_CZK_PER_MONTH = Decimal("12.87")
+
 
 class RegulatedAuthority(StrEnum):
     ERU = "eru"
@@ -179,13 +185,14 @@ class RegulatedTariffComponents:
         )
 
 
-def official_2026_regulated_sources() -> tuple[RegulatedPriceSource, ...]:
-    """Return official metadata roots governing household regulated prices in 2026.
+def official_2026_baseline_sources() -> tuple[RegulatedPriceSource, ...]:
+    """Return official baseline provenance for regulated household prices in 2026.
 
-    The numeric distribution/system-service values are intentionally not embedded
-    here. Parsers must obtain them from the referenced official datasets. The
-    sources are enough to anchor provenance and the confirmed 2026 zero-POZE /
-    OTE non-network policies without trusting supplier documents.
+    This is deliberately named *baseline*: later ERÚ amendments (including
+    1/2026) must be applied by a version-aware parser, not silently folded into
+    static constants. The baseline includes the low-voltage measure, general
+    regulated-price measure, the December 2025 amendment that zeroed customer
+    POZE from 1 January 2026, and OTE service-price provenance.
     """
     valid_from = date(2026, 1, 1)
     return (
@@ -197,8 +204,14 @@ def official_2026_regulated_sources() -> tuple[RegulatedPriceSource, ...]:
         ),
         RegulatedPriceSource(
             authority=RegulatedAuthority.ERU,
-            document_id="Cenový výměr 13/2025 ve znění změn pro rok 2026",
+            document_id="Cenový výměr 13/2025 – ostatní regulované ceny",
             source_url="https://eru.gov.cz/energeticky-regulacni-vestnik-172025",
+            valid_from=valid_from,
+        ),
+        RegulatedPriceSource(
+            authority=RegulatedAuthority.ERU,
+            document_id="Cenový výměr 15/2025 – změna pro rok 2026",
+            source_url="https://eru.gov.cz/kopie-z-energeticky-regulacni-vestnik-192025",
             valid_from=valid_from,
         ),
         RegulatedPriceSource(
