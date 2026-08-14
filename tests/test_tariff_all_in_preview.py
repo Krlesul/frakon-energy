@@ -23,9 +23,10 @@ def load_modules():
         "custom_components.frakon_energy.contracts", "custom_components.frakon_energy.pricing",
         "custom_components.frakon_energy.tariff_sources", "custom_components.frakon_energy.regulated_pricing",
         "custom_components.frakon_energy.tariff_candidate_selection", "custom_components.frakon_energy.tariff_download",
-        "custom_components.frakon_energy.tariff_provenance", "custom_components.frakon_energy.tariff_assembly",
-        "custom_components.frakon_energy.providers.cez_tariffs", "custom_components.frakon_energy.providers.cez_tariff_parser",
-        "custom_components.frakon_energy.tariff_parser_preview", "custom_components.frakon_energy.tariff_all_in_preview",
+        "custom_components.frakon_energy.tariff_pdf_text", "custom_components.frakon_energy.tariff_provenance",
+        "custom_components.frakon_energy.tariff_assembly", "custom_components.frakon_energy.providers.cez_tariffs",
+        "custom_components.frakon_energy.providers.cez_tariff_parser", "custom_components.frakon_energy.tariff_parser_preview",
+        "custom_components.frakon_energy.tariff_all_in_preview",
     )
     for name in names:
         sys.modules.pop(name, None)
@@ -40,6 +41,7 @@ def load_modules():
     regulated_pricing = _load("custom_components.frakon_energy.regulated_pricing", "custom_components/frakon_energy/regulated_pricing.py")
     selection = _load("custom_components.frakon_energy.tariff_candidate_selection", "custom_components/frakon_energy/tariff_candidate_selection.py")
     download = _load("custom_components.frakon_energy.tariff_download", "custom_components/frakon_energy/tariff_download.py")
+    _load("custom_components.frakon_energy.tariff_pdf_text", "custom_components/frakon_energy/tariff_pdf_text.py")
     provenance = _load("custom_components.frakon_energy.tariff_provenance", "custom_components/frakon_energy/tariff_provenance.py")
     _load("custom_components.frakon_energy.tariff_assembly", "custom_components/frakon_energy/tariff_assembly.py")
     _load("custom_components.frakon_energy.providers.cez_tariffs", "custom_components/frakon_energy/providers/cez_tariffs.py")
