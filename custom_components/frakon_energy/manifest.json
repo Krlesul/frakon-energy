@@ -3,7 +3,7 @@
   "name": "FRAKON Energy",
   "codeowners": ["@Krlesul"],
   "config_flow": true,
-  "dependencies": ["http", "frontend", "panel_custom"],
+  "dependencies": ["http", "frontend", "panel_custom", "persistent_notification"],
   "documentation": "https://github.com/Krlesul/frakon-energy",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/Krlesul/frakon-energy/issues",
