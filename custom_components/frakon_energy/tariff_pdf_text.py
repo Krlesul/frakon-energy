@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from io import BytesIO
+import re
 
 from pypdf import PdfReader
 
@@ -11,6 +12,7 @@ from .tariff_download import MAX_TARIFF_DOCUMENT_BYTES, ValidatedTariffDownload
 
 MAX_TARIFF_PDF_PAGES = 32
 MAX_TARIFF_EXTRACTED_TEXT_CHARS = 1_000_000
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,8 +31,11 @@ class ExtractedTariffPdfText:
     def __post_init__(self) -> None:
         if not isinstance(self.source_url, str) or not self.source_url.strip():
             raise ValueError("source_url must not be empty")
-        if not isinstance(self.document_sha256, str) or len(self.document_sha256) != 64:
-            raise ValueError("document_sha256 must be a SHA-256 hex digest")
+        if (
+            not isinstance(self.document_sha256, str)
+            or not _SHA256_RE.fullmatch(self.document_sha256)
+        ):
+            raise ValueError("document_sha256 must be a lowercase SHA-256 hex digest")
         if isinstance(self.page_count, bool) or not isinstance(self.page_count, int):
             raise ValueError("page_count must be an integer")
         if not 1 <= self.page_count <= MAX_TARIFF_PDF_PAGES:
@@ -43,7 +48,10 @@ class ExtractedTariffPdfText:
             raise ValueError("unsupported tariff PDF extraction method")
         if self.parser_authorized is not True:
             raise ValueError("extracted tariff text must remain parser-authorized")
-        if self.persistence_performed is not False or self.activation_performed is not False:
+        if (
+            self.persistence_performed is not False
+            or self.activation_performed is not False
+        ):
             raise ValueError("PDF text extraction must not persist or activate a tariff")
 
 
@@ -64,11 +72,18 @@ def extract_validated_tariff_pdf_text(
         raise ValueError("download must be ValidatedTariffDownload")
     if download.parser_authorized is not True:
         raise ValueError("validated tariff download is not authorized for parsing")
-    if download.persistence_performed is not False or download.activation_performed is not False:
+    if (
+        download.persistence_performed is not False
+        or download.activation_performed is not False
+    ):
         raise ValueError("parser preview cannot consume an activation-bearing download")
     if len(download.content) > MAX_TARIFF_DOCUMENT_BYTES:
         raise ValueError("validated tariff PDF exceeds maximum allowed size")
-    if isinstance(max_pages, bool) or not isinstance(max_pages, int) or not 1 <= max_pages <= MAX_TARIFF_PDF_PAGES:
+    if (
+        isinstance(max_pages, bool)
+        or not isinstance(max_pages, int)
+        or not 1 <= max_pages <= MAX_TARIFF_PDF_PAGES
+    ):
         raise ValueError("max_pages must be within the tariff PDF page limit")
     if (
         isinstance(max_text_chars, bool)
@@ -82,7 +97,11 @@ def extract_validated_tariff_pdf_text(
     except Exception as err:
         raise ValueError("validated tariff PDF could not be opened") from err
 
-    if reader.is_encrypted:
+    try:
+        encrypted = reader.is_encrypted
+    except Exception as err:
+        raise ValueError("tariff PDF encryption state could not be read") from err
+    if encrypted:
         raise ValueError("encrypted tariff PDFs are not supported")
 
     try:
