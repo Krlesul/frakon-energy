@@ -9,7 +9,13 @@ import types
 FIXED_NOW = datetime(2026, 8, 14, 15, 30, tzinfo=timezone(timedelta(hours=2)))
 
 
-def load_module(*, due_result=None, due_error=None):
+def load_module(
+    *,
+    due_result=None,
+    due_error=None,
+    track_error=None,
+    create_task_error=None,
+):
     names = (
         "custom_components",
         "custom_components.frakon_energy",
@@ -65,6 +71,9 @@ def load_module(*, due_result=None, due_error=None):
             self.created_tasks = []
 
         def async_create_task(self, coro):
+            if create_task_error is not None:
+                coro.close()
+                raise create_task_error
             task = asyncio.create_task(coro)
             self.created_tasks.append(task)
             return task
@@ -97,6 +106,8 @@ def load_module(*, due_result=None, due_error=None):
 
     def async_track_time_interval(hass, action, interval, *, name=None):
         interval_calls.append((hass, action, interval, name))
+        if track_error is not None:
+            raise track_error
 
         def unsubscribe():
             unsubscribe_calls.append(True)
@@ -302,5 +313,65 @@ def test_config_entry_unload_callback_stops_and_forgets_runtime_synchronously() 
         assert unsubscribe_calls == [True]
         registry = hass.data["frakon_energy"]["tariff_update_runtimes_by_entry"]
         assert entry.entry_id not in registry
+
+    asyncio.run(scenario())
+
+
+def test_timer_registration_failure_rolls_back_runtime_registry() -> None:
+    async def scenario():
+        (
+            runtime_module,
+            HomeAssistant,
+            ConfigEntry,
+            interval_calls,
+            unsubscribe_calls,
+            due_calls,
+        ) = load_module(track_error=RuntimeError("timer registration failed"))
+        hass = HomeAssistant()
+        entry = ConfigEntry()
+
+        try:
+            await runtime_module.async_start_tariff_update_runtime(hass, entry)
+        except RuntimeError as err:
+            assert str(err) == "timer registration failed"
+        else:
+            raise AssertionError("Timer registration failure must escape setup")
+
+        registry = hass.data["frakon_energy"]["tariff_update_runtimes_by_entry"]
+        assert entry.entry_id not in registry
+        assert len(interval_calls) == 1
+        assert unsubscribe_calls == []
+        assert due_calls == []
+        assert entry.unload_callbacks == []
+
+    asyncio.run(scenario())
+
+
+def test_immediate_task_failure_unsubscribes_partial_timer_and_rolls_back() -> None:
+    async def scenario():
+        (
+            runtime_module,
+            HomeAssistant,
+            ConfigEntry,
+            interval_calls,
+            unsubscribe_calls,
+            due_calls,
+        ) = load_module(create_task_error=RuntimeError("task creation failed"))
+        hass = HomeAssistant()
+        entry = ConfigEntry()
+
+        try:
+            await runtime_module.async_start_tariff_update_runtime(hass, entry)
+        except RuntimeError as err:
+            assert str(err) == "task creation failed"
+        else:
+            raise AssertionError("Immediate task failure must escape setup")
+
+        registry = hass.data["frakon_energy"]["tariff_update_runtimes_by_entry"]
+        assert entry.entry_id not in registry
+        assert len(interval_calls) == 1
+        assert unsubscribe_calls == [True]
+        assert due_calls == []
+        assert entry.unload_callbacks == []
 
     asyncio.run(scenario())
