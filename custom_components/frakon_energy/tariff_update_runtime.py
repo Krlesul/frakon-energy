@@ -85,8 +85,9 @@ class TariffUpdateRuntime:
         )
         self._schedule_probe()
 
-    async def async_stop(self) -> None:
-        """Stop future probes and cancel any in-flight runtime task."""
+    @callback
+    def stop(self) -> None:
+        """Synchronously stop timers/tasks; safe for ConfigEntry unload callbacks."""
         self._started = False
         if self._unsubscribe is not None:
             unsubscribe = self._unsubscribe
@@ -97,6 +98,12 @@ class TariffUpdateRuntime:
         self._probe_task = None
         if task is not None and not task.done():
             task.cancel()
+
+    async def async_stop(self) -> None:
+        """Stop future probes and await cancellation of any in-flight task."""
+        task = self._probe_task
+        self.stop()
+        if task is not None and not task.done():
             try:
                 await task
             except asyncio.CancelledError:
@@ -187,6 +194,14 @@ async def async_start_tariff_update_runtime(
     except Exception:
         registry.pop(entry.entry_id, None)
         raise
+
+    @callback
+    def stop_on_entry_unload() -> None:
+        if registry.get(entry.entry_id) is runtime:
+            registry.pop(entry.entry_id, None)
+        runtime.stop()
+
+    entry.async_on_unload(stop_on_entry_unload)
     return runtime
 
 
