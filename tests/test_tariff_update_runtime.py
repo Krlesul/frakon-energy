@@ -78,6 +78,11 @@ def load_module(*, due_result=None, due_error=None):
     class ConfigEntry:
         def __init__(self, entry_id="entry-1"):
             self.entry_id = entry_id
+            self.unload_callbacks = []
+
+        def async_on_unload(self, callback_fn):
+            self.unload_callbacks.append(callback_fn)
+            return callback_fn
 
     config_entries.ConfigEntry = ConfigEntry
     sys.modules["homeassistant.config_entries"] = config_entries
@@ -152,6 +157,7 @@ def test_runtime_registers_probe_timer_and_runs_immediate_due_evaluation() -> No
         assert interval_calls[0][0] is hass
         assert interval_calls[0][2] == timedelta(hours=6)
         assert "entry-1" in interval_calls[0][3]
+        assert len(entry.unload_callbacks) == 1
         assert due_calls == [
             (
                 hass,
@@ -166,6 +172,7 @@ def test_runtime_registers_probe_timer_and_runs_immediate_due_evaluation() -> No
         same = await runtime_module.async_start_tariff_update_runtime(hass, entry)
         assert same is runtime
         assert len(interval_calls) == 1
+        assert len(entry.unload_callbacks) == 1
 
         await runtime_module.async_stop_tariff_update_runtime(hass, entry.entry_id)
 
@@ -249,7 +256,7 @@ def test_invalid_confirmed_state_stays_fail_closed_without_stopping_runtime() ->
     asyncio.run(scenario())
 
 
-def test_stop_unsubscribes_timer_and_removes_runtime() -> None:
+def test_explicit_stop_unsubscribes_timer_and_removes_runtime() -> None:
     async def scenario():
         (
             runtime_module,
@@ -265,6 +272,31 @@ def test_stop_unsubscribes_timer_and_removes_runtime() -> None:
         runtime = await runtime_module.async_start_tariff_update_runtime(hass, entry)
         await asyncio.sleep(0)
         await runtime_module.async_stop_tariff_update_runtime(hass, entry.entry_id)
+
+        assert runtime.started is False
+        assert unsubscribe_calls == [True]
+        registry = hass.data["frakon_energy"]["tariff_update_runtimes_by_entry"]
+        assert entry.entry_id not in registry
+
+    asyncio.run(scenario())
+
+
+def test_config_entry_unload_callback_stops_and_forgets_runtime_synchronously() -> None:
+    async def scenario():
+        (
+            runtime_module,
+            HomeAssistant,
+            ConfigEntry,
+            _interval_calls,
+            unsubscribe_calls,
+            _due_calls,
+        ) = load_module(due_result=None)
+        hass = HomeAssistant()
+        entry = ConfigEntry()
+
+        runtime = await runtime_module.async_start_tariff_update_runtime(hass, entry)
+        await asyncio.sleep(0)
+        entry.unload_callbacks[0]()
 
         assert runtime.started is False
         assert unsubscribe_calls == [True]
