@@ -63,8 +63,8 @@ def test_regulated_bundle_maps_net_values_to_partial_pricing_components() -> Non
         distribution_nt_czk_per_kwh=Decimal("0.500"),
         breaker_monthly_czk=Decimal("200"),
         system_services_czk_per_kwh=Decimal("0.100"),
-        poze_czk_per_kwh=Decimal("0"),
-        non_network_monthly_czk=Decimal("12.87"),
+        poze_czk_per_kwh=regulated.POZE_2026_CZK_PER_KWH,
+        non_network_monthly_czk=regulated.OTE_NON_NETWORK_2026_CZK_PER_MONTH,
         sources=(_eru_source(regulated),),
     )
 
@@ -136,9 +136,9 @@ def test_regulated_source_rejects_spoofed_or_nonstandard_urls() -> None:
             raise AssertionError("Unsafe regulated source URL must be rejected")
 
 
-def test_official_2026_sources_are_regulator_owned_and_effective_from_january() -> None:
+def test_official_2026_baseline_sources_are_regulator_owned_and_complete() -> None:
     _, _, regulated = load_modules()
-    sources = regulated.official_2026_regulated_sources()
+    sources = regulated.official_2026_baseline_sources()
 
     assert {item.authority for item in sources} == {
         regulated.RegulatedAuthority.ERU,
@@ -147,4 +147,7 @@ def test_official_2026_sources_are_regulator_owned_and_effective_from_january() 
     assert all(item.valid_from == date(2026, 1, 1) for item in sources)
     assert any("14/2025" in item.document_id for item in sources)
     assert any("13/2025" in item.document_id for item in sources)
+    assert any("15/2025" in item.document_id for item in sources)
     assert any(item.authority == regulated.RegulatedAuthority.OTE for item in sources)
+    assert regulated.POZE_2026_CZK_PER_KWH == Decimal("0")
+    assert regulated.OTE_NON_NETWORK_2026_CZK_PER_MONTH == Decimal("12.87")
