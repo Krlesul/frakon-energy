@@ -200,6 +200,58 @@ def test_confirmation_preserves_identity_and_controls_active_selection() -> None
     ).assembly.product_name == "eTarif"
 
 
+def test_equal_start_confirmed_all_in_versions_fail_closed_instead_of_using_storage_order() -> None:
+    modules = load_modules()
+    *_, catalog = modules
+    first = _assembly(modules, product="Basic", commercial_from=date(2026, 1, 1))
+    second = _assembly(modules, product="eTarif", commercial_from=date(2026, 1, 1))
+    options = catalog.append_all_in_tariff({}, first)
+    options = catalog.append_all_in_tariff(options, second)
+    stored = catalog.all_in_tariffs_from_options(options)
+    options = catalog.confirm_all_in_tariff(
+        options,
+        catalog.all_in_tariff_fingerprint(stored[0]),
+    )
+    options = catalog.confirm_all_in_tariff(
+        options,
+        catalog.all_in_tariff_fingerprint(stored[1]),
+    )
+
+    try:
+        catalog.confirmed_all_in_tariff_from_options(options, date(2026, 8, 14))
+    except ValueError as err:
+        assert "ambiguous confirmed all-in tariffs" in str(err)
+    else:
+        raise AssertionError("Equal-start confirmed all-in versions must fail closed")
+
+
+def test_exact_context_selection_ignores_newer_confirmed_tariff_for_other_product() -> None:
+    modules = load_modules()
+    *_, catalog = modules
+    basic = _assembly(modules, product="Basic", commercial_from=date(2026, 1, 1))
+    other = _assembly(modules, product="eTarif", commercial_from=date(2026, 6, 1))
+    options = catalog.append_all_in_tariff({}, basic)
+    options = catalog.append_all_in_tariff(options, other)
+    stored = catalog.all_in_tariffs_from_options(options)
+    for item in stored:
+        options = catalog.confirm_all_in_tariff(
+            options,
+            catalog.all_in_tariff_fingerprint(item),
+        )
+
+    selected = catalog.confirmed_all_in_tariff_for_context_from_options(
+        options,
+        supplier="cez",
+        product_name="Basic",
+        distribution_tariff="D25d",
+        breaker_code="3x25A",
+        day=date(2026, 8, 14),
+    )
+
+    assert selected.assembly.product_name == "Basic"
+    assert selected.assembly.supplier == "ČEZ"
+
+
 def test_catalog_rejects_duplicate_identity_unknown_confirmation_and_corrupt_schema() -> None:
     modules = load_modules()
     *_, catalog = modules

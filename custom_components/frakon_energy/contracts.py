@@ -206,13 +206,32 @@ def lookup_key(contract: ElectricityContract, day: date) -> TariffLookupKey:
     )
 
 
+def _select_unique_newest_contract(
+    matches: list[ElectricityContract],
+    day: date,
+    *,
+    confirmed: bool,
+) -> ElectricityContract:
+    if not matches:
+        prefix = "confirmed " if confirmed else ""
+        raise LookupError(
+            f"No {prefix}electricity contract applies on {day.isoformat()}"
+        )
+    newest_valid_from = max(contract.valid_from for contract in matches)
+    newest = [contract for contract in matches if contract.valid_from == newest_valid_from]
+    if len(newest) != 1:
+        prefix = "confirmed " if confirmed else ""
+        raise ValueError(
+            f"ambiguous {prefix}electricity contracts for {day.isoformat()}"
+        )
+    return newest[0]
+
+
 def select_contract_for_day(
     contracts: Iterable[ElectricityContract], day: date
 ) -> ElectricityContract:
     matches = [contract for contract in contracts if contract.applies_on(day)]
-    if not matches:
-        raise LookupError(f"No electricity contract applies on {day.isoformat()}")
-    return max(matches, key=lambda contract: contract.valid_from)
+    return _select_unique_newest_contract(matches, day, confirmed=False)
 
 
 def select_confirmed_contract_for_day(
@@ -223,9 +242,7 @@ def select_confirmed_contract_for_day(
         for contract in contracts
         if contract.customer_confirmed and contract.applies_on(day)
     ]
-    if not matches:
-        raise LookupError(f"No confirmed electricity contract applies on {day.isoformat()}")
-    return max(matches, key=lambda contract: contract.valid_from)
+    return _select_unique_newest_contract(matches, day, confirmed=True)
 
 
 def contract_fingerprint(contract: ElectricityContract) -> str:
