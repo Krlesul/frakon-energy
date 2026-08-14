@@ -110,6 +110,7 @@ def test_czech_inputs_convert_to_single_canonical_regulated_bundle() -> None:
         pricing.PriceComponentKind.OTHER_FIXED,
     ]
     assert bundle.variable_components[2].high_rate_czk_per_kwh == Decimal("0")
+    assert bundle.fixed_components[1].name == regulated_pricing.NON_NETWORK_INFRASTRUCTURE_COMPONENT_NAME
     assert bundle.fixed_components[1].monthly_czk == Decimal("12.87")
     assert all(item.includes_vat is False for item in bundle.variable_components)
     assert all(item.includes_vat is False for item in bundle.fixed_components)
@@ -197,6 +198,44 @@ def test_regulated_source_rejects_spoofed_or_nonstandard_authority_urls() -> Non
             raise AssertionError("Unsafe authority URL must be rejected")
 
 
+def test_regulated_bundle_rejects_arbitrary_other_fixed() -> None:
+    pricing, _, _, regulated_pricing, _ = load_modules()
+    distribution = pricing.VariablePriceComponent(
+        pricing.PriceComponentKind.DISTRIBUTION,
+        "Distribuce",
+        Decimal("1"),
+        Decimal("0.5"),
+        includes_vat=False,
+    )
+    breaker = pricing.FixedPriceComponent(
+        pricing.PriceComponentKind.BREAKER_FIXED,
+        "Jistič",
+        Decimal("200"),
+        includes_vat=False,
+    )
+    arbitrary = pricing.FixedPriceComponent(
+        pricing.PriceComponentKind.OTHER_FIXED,
+        "Libovolný jiný regulovaný poplatek",
+        Decimal("1"),
+        includes_vat=False,
+    )
+
+    try:
+        regulated_pricing.RegulatedTariffBundle(
+            distributor="cez_distribuce",
+            distribution_tariff="D25d",
+            breaker_code="3x25A",
+            valid_from=date(2026, 1, 1),
+            variable_components=(distribution,),
+            fixed_components=(breaker, arbitrary),
+            source_url="https://eru.gov.cz/energeticky-regulacni-vestnik-182025",
+        )
+    except ValueError as err:
+        assert "unsupported kind" in str(err)
+    else:
+        raise AssertionError("Arbitrary OTHER_FIXED must not enter regulated pricing")
+
+
 def test_2026_universal_constants_are_source_anchored_but_baseline_is_not_current_claim() -> None:
     _, _, _, _, cz = load_modules()
     baseline = cz.official_2026_baseline_sources()
@@ -207,6 +246,7 @@ def test_2026_universal_constants_are_source_anchored_but_baseline_is_not_curren
         cz.RegulatedAuthority.ERU,
         cz.RegulatedAuthority.OTE,
     }
+    assert all(item.valid_from == date(2026, 1, 1) for item in baseline)
     assert any("14/2025" in item.document_id for item in baseline)
     assert any("13/2025" in item.document_id for item in baseline)
     assert any("15/2025" in item.document_id for item in baseline)
