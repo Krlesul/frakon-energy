@@ -1,15 +1,14 @@
 """Verified E.ON household electricity price-list catalog.
 
 E.ON publishes household electricity price lists separately for each Czech
-physical distribution territory. The verified 2026 documents below contain
-both the supplier commercial price and the regulated 2026 components, including
-an all-in unit-price section. They are therefore classified as all-in sources
-and are bounded to the 2026 regulated-price year even when the commercial price
-is fixed for longer.
+physical distribution territory. The verified documents below display both
+supplier-commercial prices and regulated values. Supplier discovery deliberately
+authorizes only the commercial extraction path: regulated values must continue
+through FRAKON Energy's independent regulated pricing and provenance pipeline.
 
 Discovery is intentionally fail-closed: supplier, product name, fixed-contract
-kind, distribution territory and validity period must all match an immutable
-verified catalog entry. No fuzzy product inference is performed.
+kind, distribution territory and commercial-price validity start must all match
+an immutable verified catalog entry. No fuzzy product inference is performed.
 """
 
 from __future__ import annotations
@@ -21,7 +20,7 @@ from typing import Callable
 import unicodedata
 
 from ..tariff_sources import (
-    PRICE_SCOPE_ALL_IN,
+    PRICE_SCOPE_SUPPLIER_COMMERCIAL,
     OfficialTariffDocument,
     TariffDocumentCandidate,
     TariffSourceQuery,
@@ -37,8 +36,6 @@ DISTRIBUTOR_EG_D = "eg_d"
 DISTRIBUTOR_CEZ = "cez_distribuce"
 DISTRIBUTOR_PRE = "pre_distribuce"
 
-EON_2026_REGULATED_VALID_TO = date(2026, 12, 31)
-
 
 @dataclass(frozen=True, slots=True)
 class EonCatalogEntry:
@@ -48,7 +45,6 @@ class EonCatalogEntry:
     distributor: str
     source_url: str
     valid_from: date
-    valid_to: date
     contract_kind: str = CONTRACT_KIND_FIXED
     aliases: tuple[str, ...] = ()
 
@@ -71,7 +67,6 @@ EON_2026_ELECTRICITY_CATALOG: tuple[EonCatalogEntry, ...] = (
             + "cenik--variant--pro--na--2--roky--3_26-----distribucni--uzemi--eg.d.pdf"
         ),
         valid_from=date(2026, 3, 30),
-        valid_to=EON_2026_REGULATED_VALID_TO,
     ),
     EonCatalogEntry(
         product_name="Variant PRO na 2 roky",
@@ -81,7 +76,6 @@ EON_2026_ELECTRICITY_CATALOG: tuple[EonCatalogEntry, ...] = (
             + "cenik--variant--pro--na--2--roky--3_26-----distribucni--uzemi--cez.pdf"
         ),
         valid_from=date(2026, 3, 30),
-        valid_to=EON_2026_REGULATED_VALID_TO,
     ),
     EonCatalogEntry(
         product_name="Variant PRO na 2 roky",
@@ -91,7 +85,6 @@ EON_2026_ELECTRICITY_CATALOG: tuple[EonCatalogEntry, ...] = (
             + "cenik--variant--pro--na--2--roky--3_26-----distribucni--uzemi--pre.pdf"
         ),
         valid_from=date(2026, 3, 30),
-        valid_to=EON_2026_REGULATED_VALID_TO,
     ),
     EonCatalogEntry(
         product_name="Elektřina výhodně PRO na 3 roky",
@@ -101,7 +94,6 @@ EON_2026_ELECTRICITY_CATALOG: tuple[EonCatalogEntry, ...] = (
             + "cenik--elektrina--vyhodne--pro--na--3--roky--6_26-----distribucni--uzemi--eg.d.pdf"
         ),
         valid_from=date(2026, 6, 17),
-        valid_to=EON_2026_REGULATED_VALID_TO,
     ),
     EonCatalogEntry(
         product_name="Elektřina výhodně PRO na 3 roky",
@@ -111,7 +103,6 @@ EON_2026_ELECTRICITY_CATALOG: tuple[EonCatalogEntry, ...] = (
             + "cenik--elektrina--vyhodne--pro--na--3--roky--6_26-----distribucni--uzemi--cez.pdf"
         ),
         valid_from=date(2026, 6, 17),
-        valid_to=EON_2026_REGULATED_VALID_TO,
     ),
     EonCatalogEntry(
         product_name="Elektřina výhodně PRO na 3 roky",
@@ -121,7 +112,6 @@ EON_2026_ELECTRICITY_CATALOG: tuple[EonCatalogEntry, ...] = (
             + "cenik--elektrina--vyhodne--pro--na--3--roky--6_26-----distribucni--uzemi--pre.pdf"
         ),
         valid_from=date(2026, 6, 17),
-        valid_to=EON_2026_REGULATED_VALID_TO,
     ),
 )
 
@@ -182,7 +172,7 @@ class EonTariffCatalogAdapter:
                 continue
             if query.distributor != entry.distributor:
                 continue
-            if query.valid_on < entry.valid_from or query.valid_on > entry.valid_to:
+            if query.valid_on < entry.valid_from:
                 continue
             match = _match_entry(entry, query.product_name)
             if match is None:
@@ -199,22 +189,25 @@ class EonTariffCatalogAdapter:
                     ),
                     product_name=entry.product_name,
                     valid_from=entry.valid_from,
-                    valid_to=entry.valid_to,
                     match_score=score,
                     match_reasons=(
                         reason,
                         "exact fixed-contract kind from official E.ON price list",
                         "exact Czech distribution territory from official E.ON price list",
                         "official E.ON household electricity PDF on eon.cz",
-                        "document includes supplier and regulated 2026 components",
+                        "supplier-commercial extraction only; regulated values are separate",
                     ),
-                    price_scope=PRICE_SCOPE_ALL_IN,
+                    price_scope=PRICE_SCOPE_SUPPLIER_COMMERCIAL,
                 )
             )
 
         return tuple(
             sorted(
                 candidates,
-                key=lambda item: (-item.match_score, item.product_name, item.document.source_url),
+                key=lambda item: (
+                    -item.match_score,
+                    item.product_name,
+                    item.document.source_url,
+                ),
             )
         )
