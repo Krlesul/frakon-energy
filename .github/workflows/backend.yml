@@ -86,3 +86,4 @@ jobs:
           tests/test_tariff_assembly.py
           tests/test_cz_regulated_sources.py
           tests/test_all_in_catalog.py
+          tests/test_tariff_candidate_selection.py
