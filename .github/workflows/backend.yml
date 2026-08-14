@@ -96,3 +96,4 @@ jobs:
           tests/test_tariff_source_watch_fetch.py
           tests/test_tariff_update_orchestrator.py
           tests/test_tariff_update_ha.py
+          tests/test_tariff_update_scheduler.py
