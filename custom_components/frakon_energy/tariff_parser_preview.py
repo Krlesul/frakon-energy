@@ -6,27 +6,16 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 import re
-import unicodedata
 
 from .contracts import ElectricityContract, Supplier
 from .providers.cez_tariff_parser import parse_cez_commercial_price_text
+from .providers.cez_tariffs import cez_contract_product_matches_candidate
 from .tariff_download import ValidatedTariffDownload
 from .tariff_pdf_text import ExtractedTariffPdfText
 from .tariff_sources import PRICE_SCOPE_SUPPLIER_COMMERCIAL
 
 CONFIDENCE_EXACT = 100
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-_NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
-
-
-def _normalized_product(value: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        return ""
-    decomposed = unicodedata.normalize("NFKD", value.casefold())
-    ascii_text = "".join(
-        char for char in decomposed if not unicodedata.combining(char)
-    )
-    return " ".join(part for part in _NON_ALNUM_RE.split(ascii_text) if part)
 
 
 def _decimal_string(value: Decimal | None) -> str | None:
@@ -176,14 +165,14 @@ def parse_supplier_tariff_preview(
         distribution_tariff=contract.distribution_tariff,
     )
 
-    if _normalized_product(parsed.product_name) != _normalized_product(
-        candidate.product_name
-    ):
+    if parsed.product_name.strip().casefold() != candidate.product_name.strip().casefold():
         raise ValueError("parsed ČEZ product does not match selected candidate")
-    if _normalized_product(candidate.product_name) != _normalized_product(
-        contract.product_name
+    if not cez_contract_product_matches_candidate(
+        candidate_product_name=candidate.product_name,
+        contract_product_name=contract.product_name,
+        contract_kind=contract.contract_kind.value,
     ):
-        raise ValueError("selected ČEZ product does not match contract")
+        raise ValueError("selected ČEZ product does not match verified contract catalog identity")
     if parsed.distribution_tariff != contract.distribution_tariff:
         raise ValueError("parsed ČEZ distribution tariff does not match contract")
     if parsed.valid_from != candidate.valid_from:
@@ -207,7 +196,8 @@ def parse_supplier_tariff_preview(
         validation_reasons=(
             "validated selected supplier-commercial PDF",
             "exact document source URL and SHA-256 match",
-            "exact ČEZ product match",
+            "exact ČEZ parsed product matches selected canonical candidate",
+            "verified ČEZ contract product or official alias match",
             "exact distribution tariff match",
             "exact commercial-price validity match",
         ),
