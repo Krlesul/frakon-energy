@@ -42,6 +42,17 @@
   },
   "options": {
     "step": {
+      "init": {
+        "title": "Nastavení FRAKON Energy",
+        "menu_options": {
+          "billing": "Vyúčtování, elektroměry a ceny",
+          "contract": "Dodavatel a smlouva"
+        },
+        "menu_option_descriptions": {
+          "billing": "Nastavte zúčtovací období, odečty elektroměru, zálohy a souhrnné ceny VT/NT.",
+          "contract": "Zadejte dodavatele, produkt, distribuční sazbu, jistič a platnost smlouvy. Aktivace proběhne až po samostatném potvrzení."
+        }
+      },
       "billing": {
         "title": "Vyúčtování, elektroměry a ceny",
         "description": "Počáteční VT a NT jsou kumulativní registry elektroměru na začátku období, nikoli spotřeba. Pokud byl elektroměr během období vyměněn, zapněte výměnu a zadejte konečné registry starého elektroměru i počáteční registry nového elektroměru. Při instalaci nového elektroměru bývají často 0 kWh.",
@@ -65,6 +76,29 @@
           "price_nt_czk_kwh": "Celková cena NT",
           "fixed_monthly_czk": "Stálé měsíční platby"
         }
+      },
+      "contract": {
+        "title": "Dodavatel a smlouva",
+        "description": "Zadejte údaje přesně podle smlouvy. Tento krok ještě nic neaktivuje; před uložením se zobrazí samostatná kontrola všech údajů.",
+        "data": {
+          "contract_supplier": "Dodavatel",
+          "contract_distributor": "Distributor",
+          "contract_product": "Produkt / název smlouvy",
+          "contract_kind": "Typ smlouvy",
+          "contract_distribution_tariff": "Distribuční sazba",
+          "contract_breaker_phases": "Počet fází hlavního jističe",
+          "contract_breaker_amperes": "Proud hlavního jističe",
+          "contract_valid_from": "Smlouva platí od",
+          "contract_valid_to": "Smlouva platí do",
+          "contract_fixation_end": "Konec fixace"
+        }
+      },
+      "contract_confirm": {
+        "title": "Potvrdit smlouvu",
+        "description": "Zkontrolujte údaje před aktivací.\n\nDodavatel: **{supplier}**  \nProdukt: **{product}**  \nTyp: **{contract_kind}**  \nDistributor: **{distributor}**  \nSazba: **{tariff}**  \nHlavní jistič: **{breaker}**  \nPlatnost od: **{valid_from}**  \nPlatnost do: **{valid_to}**  \nKonec fixace: **{fixation_end}**\n\nPotvrzením vznikne nová historická verze smlouvy. Starší smlouvy se nepřepisují.",
+        "data": {
+          "contract_confirm": "Ano, potvrzuji, že údaje odpovídají mé smlouvě"
+        }
       }
     },
     "error": {
@@ -76,7 +110,9 @@
       "replacement_outside_cycle": "Datum výměny musí být uvnitř zúčtovacího období.",
       "old_meter_vt_below_start": "Konečný stav VT starého elektroměru nesmí být nižší než jeho počáteční stav.",
       "old_meter_nt_below_start": "Konečný stav NT starého elektroměru nesmí být nižší než jeho počáteční stav.",
-      "new_meter_start_negative": "Počáteční registry nového elektroměru nesmí být záporné."
+      "new_meter_start_negative": "Počáteční registry nového elektroměru nesmí být záporné.",
+      "contract_confirmation_required": "Před uložením výslovně potvrďte, že zobrazené údaje odpovídají vaší smlouvě.",
+      "invalid_contract": "Údaje smlouvy nejsou platné. Zkontrolujte produkt, typ smlouvy, sazbu Dxxd, jistič a data platnosti/fixace."
     },
     "abort": {
       "no_options_available": "Pro tento zdroj nejsou k dispozici žádná nastavení."
