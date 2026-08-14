@@ -115,6 +115,32 @@ def test_confirmed_selector_never_activates_newer_unconfirmed_contract() -> None
     ) is old
 
 
+def test_equal_start_confirmed_contracts_fail_closed_as_ambiguous() -> None:
+    contracts = load_contracts()
+    first = _contract(
+        contracts,
+        "Produkt A",
+        date(2026, 1, 1),
+        confirmed=True,
+    )
+    second = _contract(
+        contracts,
+        "Produkt B",
+        date(2026, 1, 1),
+        confirmed=True,
+    )
+
+    try:
+        contracts.select_confirmed_contract_for_day(
+            (first, second),
+            date(2026, 8, 14),
+        )
+    except ValueError as err:
+        assert "ambiguous confirmed electricity contracts" in str(err)
+    else:
+        raise AssertionError("Equal-start confirmed contracts must fail closed")
+
+
 def test_fixed_contract_requires_fixation_end() -> None:
     contracts = load_contracts()
     try:
