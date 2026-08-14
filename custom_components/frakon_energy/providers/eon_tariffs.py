@@ -6,10 +6,11 @@ supplier-commercial prices and regulated values. Supplier discovery deliberately
 authorizes only the commercial extraction path: regulated values must continue
 through FRAKON Energy's independent regulated pricing and provenance pipeline.
 
-Some E.ON fixed products publish multiple calendar price periods inside one PDF.
-Those periods are modeled as separate immutable candidates pointing at the same
-official document. Discovery therefore returns exactly the price period applying
-on the requested day instead of carrying an older advertised price forward.
+Some E.ON fixed products publish multiple display columns inside one PDF. The
+three-year offer has one promotional price through 2026 and one fixed price from
+2027 onward; repeated future-year columns are validation evidence for that same
+fixed price, not separate customer tariff versions. Those two authoritative
+periods are modeled as immutable candidates pointing at the same official PDF.
 """
 
 from __future__ import annotations
@@ -40,7 +41,7 @@ DISTRIBUTOR_PRE = "pre_distribuce"
 
 @dataclass(frozen=True, slots=True)
 class EonCommercialPricePeriod:
-    """One supplier-commercial price period advertised inside an E.ON PDF."""
+    """One supplier-commercial price authority advertised inside an E.ON PDF."""
 
     valid_from: date
     valid_to: date | None
@@ -84,9 +85,7 @@ EON_PRODUCT_PERIODS: dict[str, tuple[EonCommercialPricePeriod, ...]] = {
     ),
     "Elektřina výhodně PRO na 3 roky": (
         EonCommercialPricePeriod(date(2026, 6, 17), date(2026, 12, 31)),
-        EonCommercialPricePeriod(date(2027, 1, 1), date(2027, 12, 31)),
-        EonCommercialPricePeriod(date(2028, 1, 1), date(2028, 12, 31)),
-        EonCommercialPricePeriod(date(2029, 1, 1), None),
+        EonCommercialPricePeriod(date(2027, 1, 1), None),
     ),
 }
 
