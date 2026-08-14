@@ -1,16 +1,17 @@
 import asyncio
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import importlib.util
 from pathlib import Path
 import sys
 import types
 
 
-def load_modules(*, updated_options):
+def load_modules(*, updated_options, due=True):
     names = (
         "custom_components",
         "custom_components.frakon_energy",
         "custom_components.frakon_energy.tariff_http_transport",
+        "custom_components.frakon_energy.tariff_update_cadence",
         "custom_components.frakon_energy.tariff_update_orchestrator",
         "custom_components.frakon_energy.tariff_update_ha",
         "homeassistant",
@@ -30,6 +31,17 @@ def load_modules(*, updated_options):
     transport = types.ModuleType("custom_components.frakon_energy.tariff_http_transport")
     transport.DEFAULT_TARIFF_HTTP_TIMEOUT_SECONDS = 20.0
     sys.modules[transport.__name__] = transport
+
+    cadence = types.ModuleType("custom_components.frakon_energy.tariff_update_cadence")
+    cadence.DEFAULT_TARIFF_UPDATE_INTERVAL = timedelta(days=7)
+    cadence_calls = []
+
+    def active_tariff_check_cadence(options, **kwargs):
+        cadence_calls.append((options, kwargs))
+        return types.SimpleNamespace(due=due)
+
+    cadence.active_tariff_check_cadence = active_tariff_check_cadence
+    sys.modules[cadence.__name__] = cadence
 
     orchestrator = types.ModuleType("custom_components.frakon_energy.tariff_update_orchestrator")
     calls = []
@@ -106,6 +118,7 @@ def load_modules(*, updated_options):
         shared_session,
         session_calls,
         calls,
+        cadence_calls,
     )
 
 
@@ -121,6 +134,7 @@ def test_ha_update_adapter_uses_shared_session_and_persists_changed_options_once
         shared_session,
         session_calls,
         orchestrator_calls,
+        _cadence_calls,
     ) = load_modules(updated_options=new_options)
     hass = HomeAssistant()
     entry = ConfigEntry({"existing": True})
@@ -168,6 +182,7 @@ def test_ha_update_adapter_does_not_write_when_options_are_unchanged() -> None:
         shared_session,
         session_calls,
         orchestrator_calls,
+        _cadence_calls,
     ) = load_modules(updated_options=dict(existing))
     hass = HomeAssistant()
     entry = ConfigEntry(existing)
@@ -198,6 +213,7 @@ def test_ha_update_adapter_rejects_naive_checked_at_before_network_or_write() ->
         _shared_session,
         session_calls,
         orchestrator_calls,
+        _cadence_calls,
     ) = load_modules(updated_options={})
     hass = HomeAssistant()
     entry = ConfigEntry({})
@@ -219,3 +235,98 @@ def test_ha_update_adapter_rejects_naive_checked_at_before_network_or_write() ->
     assert session_calls == []
     assert orchestrator_calls == []
     assert hass.config_entries.update_calls == []
+
+
+def test_due_adapter_skips_network_and_write_before_week_boundary() -> None:
+    (
+        adapter,
+        HomeAssistant,
+        ConfigEntry,
+        _shared_session,
+        session_calls,
+        orchestrator_calls,
+        cadence_calls,
+    ) = load_modules(updated_options={}, due=False)
+    hass = HomeAssistant()
+    entry = ConfigEntry({"existing": True})
+    day = date(2026, 8, 14)
+    checked_at = datetime(2026, 8, 14, 9, 0, tzinfo=timezone.utc)
+
+    result = asyncio.run(
+        adapter.async_check_active_tariff_source_if_due_ha(
+            hass,
+            entry,
+            day=day,
+            checked_at=checked_at,
+        )
+    )
+
+    assert result is None
+    assert cadence_calls == [
+        (
+            entry.options,
+            {
+                "day": day,
+                "checked_at": checked_at,
+                "interval": timedelta(days=7),
+            },
+        )
+    ]
+    assert session_calls == []
+    assert orchestrator_calls == []
+    assert hass.config_entries.update_calls == []
+
+
+def test_due_adapter_runs_existing_safe_check_when_cadence_is_due() -> None:
+    new_options = {"tariff_source_watches": [{"schema_version": 1}]}
+    (
+        adapter,
+        HomeAssistant,
+        ConfigEntry,
+        shared_session,
+        session_calls,
+        orchestrator_calls,
+        cadence_calls,
+    ) = load_modules(updated_options=new_options, due=True)
+    hass = HomeAssistant()
+    entry = ConfigEntry({})
+    day = date(2026, 8, 14)
+    checked_at = datetime(2026, 8, 14, 9, 5, tzinfo=timezone.utc)
+
+    result = asyncio.run(
+        adapter.async_check_active_tariff_source_if_due_ha(
+            hass,
+            entry,
+            day=day,
+            checked_at=checked_at,
+            interval=timedelta(days=3),
+            timeout_seconds=7.0,
+        )
+    )
+
+    assert result is not None
+    assert cadence_calls == [
+        (
+            entry.options,
+            {
+                "day": day,
+                "checked_at": checked_at,
+                "interval": timedelta(days=3),
+            },
+        )
+    ]
+    assert session_calls == [hass]
+    assert orchestrator_calls == [
+        (
+            entry.options,
+            {
+                "day": day,
+                "session": shared_session,
+                "checked_at": checked_at,
+                "timeout_seconds": 7.0,
+            },
+        )
+    ]
+    assert hass.config_entries.update_calls == [
+        (entry, {"options": new_options})
+    ]
