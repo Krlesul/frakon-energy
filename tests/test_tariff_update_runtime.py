@@ -21,6 +21,7 @@ def load_module(
         "custom_components.frakon_energy",
         "custom_components.frakon_energy.const",
         "custom_components.frakon_energy.tariff_update_ha",
+        "custom_components.frakon_energy.tariff_update_notification",
         "custom_components.frakon_energy.tariff_update_runtime",
         "homeassistant",
         "homeassistant.core",
@@ -56,6 +57,12 @@ def load_module(
     )
     sys.modules[update_ha.__name__] = update_ha
 
+    notification = types.ModuleType(
+        "custom_components.frakon_energy.tariff_update_notification"
+    )
+    notification.async_sync_tariff_update_notification = lambda hass, entry, run: False
+    sys.modules[notification.__name__] = notification
+
     homeassistant = types.ModuleType("homeassistant")
     homeassistant.__path__ = []
     sys.modules["homeassistant"] = homeassistant
@@ -69,13 +76,15 @@ def load_module(
         def __init__(self):
             self.data = {}
             self.created_tasks = []
+            self.created_task_names = []
 
-        def async_create_task(self, coro):
+        def async_create_background_task(self, coro, name):
             if create_task_error is not None:
                 coro.close()
                 raise create_task_error
             task = asyncio.create_task(coro)
             self.created_tasks.append(task)
+            self.created_task_names.append(name)
             return task
 
     core.HomeAssistant = HomeAssistant
@@ -169,6 +178,7 @@ def test_runtime_registers_probe_timer_and_runs_immediate_due_evaluation() -> No
         assert interval_calls[0][2] == timedelta(hours=6)
         assert "entry-1" in interval_calls[0][3]
         assert len(entry.unload_callbacks) == 1
+        assert hass.created_task_names == ["FRAKON Energy tariff update probe entry-1"]
         assert due_calls == [
             (
                 hass,
