@@ -77,3 +77,4 @@ jobs:
           tests/test_domain.py
           tests/test_pricing.py
           tests/test_contracts.py
+          tests/test_tariff_sources.py
