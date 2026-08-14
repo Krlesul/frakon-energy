@@ -51,6 +51,7 @@ from .load_plan_ws_api import async_register_load_plan_websocket
 from .load_profiles_ws_api import async_register_load_profiles_websocket
 from .panel import async_register_panel
 from .providers.visionq import VisionQApiClient
+from .regulated_proposals_ws_api import async_register_regulated_tariff_proposals_websocket
 from .site_capacity_ws_api import async_register_site_capacity_websocket
 from .spot_price_settings_ws_api import async_register_spot_price_settings_websocket
 from .spot_price_ws_api import async_register_spot_price_websocket
@@ -194,6 +195,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         async_register_tariff_download_preview_websocket(hass)
         async_register_tariff_parse_preview_websocket(hass)
         async_register_tariff_all_in_preview_websocket(hass)
+        async_register_regulated_tariff_proposals_websocket(hass)
         async_register_load_plan_websocket(hass)
         async_register_load_profiles_websocket(hass)
         async_register_load_execution_policy_websocket(hass)
