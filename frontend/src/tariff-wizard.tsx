@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { callHomeAssistantWs, findFrakonEnergyEntryId, type HomeAssistant } from "./home-assistant";
 import "./tariff-wizard.css";
 
@@ -54,6 +54,43 @@ type TariffDiscoveryResponse = {
   parsing_performed: boolean;
   persistence_performed: boolean;
   activation_performed: boolean;
+};
+
+type SupplierTariffPreview = {
+  supplier: string;
+  product_name: string;
+  valid_from: string;
+  distribution_tariff: string;
+  high_rate_czk_per_kwh: string;
+  low_rate_czk_per_kwh: string | null;
+  supplier_standing_czk_month: string;
+  includes_vat: boolean;
+  source_url: string;
+  document_sha256: string;
+  page_count: number;
+  parser_name: string;
+  extraction_method: string;
+  extraction_confidence: number;
+  validation_reasons: string[];
+  price_scope: "supplier_commercial";
+  parsing_performed: boolean;
+  persistence_performed: boolean;
+  activation_performed: boolean;
+};
+
+type TariffParsePreviewResponse = {
+  entry_id: string;
+  contract_fingerprint: string;
+  candidate_fingerprint: string;
+  checked_at: string;
+  source_url: string;
+  document_sha256: string;
+  content_bytes: number;
+  download_performed: boolean;
+  parsing_performed: boolean;
+  persistence_performed: boolean;
+  activation_performed: boolean;
+  preview: SupplierTariffPreview;
 };
 
 type WizardDraft = {
@@ -139,10 +176,21 @@ function SourceStatus({ product }: { product: TariffProduct }) {
   return <span className="tariff-wizard__status verified">Ověřený katalog dodavatele</span>;
 }
 
-function CandidateCard({ candidate }: { candidate: TariffCandidate }) {
+function CandidateCard({
+  candidate,
+  previewing,
+  previewed,
+  onPreview,
+}: {
+  candidate: TariffCandidate;
+  previewing: boolean;
+  previewed: boolean;
+  onPreview: (candidate: TariffCandidate) => void;
+}) {
   const validity = candidate.valid_to ? `${candidate.valid_from} → ${candidate.valid_to}` : `od ${candidate.valid_from}`;
+  const parserAvailable = candidate.supplier === "cez";
   return (
-    <article className="tariff-candidate">
+    <article className={`tariff-candidate${previewed ? " selected" : ""}`}>
       <div className="tariff-candidate__head">
         <div>
           <span className="eyebrow">Ověřený zdroj</span>
@@ -161,9 +209,64 @@ function CandidateCard({ candidate }: { candidate: TariffCandidate }) {
       <div className="tariff-candidate__actions">
         <a href={candidate.source_url} target="_blank" rel="noreferrer">Otevřít oficiální ceník</a>
         <span>Fingerprint {candidate.fingerprint.slice(0, 12)}…</span>
+        {parserAvailable ? (
+          <button type="button" className="tariff-candidate__preview-button" disabled={previewing} onClick={() => onPreview(candidate)}>
+            {previewing ? "Stahuji a ověřuji PDF…" : previewed ? "Ceny ověřeny" : "Načíst ověřené ceny"}
+          </button>
+        ) : (
+          <span className="tariff-candidate__parser-pending">Parser cen pro tohoto dodavatele ještě není aktivní.</span>
+        )}
       </div>
-      <div className="tariff-candidate__safety">Jen k revizi · nic nebylo staženo, uloženo ani aktivováno.</div>
+      <div className="tariff-candidate__safety">
+        {previewed
+          ? "PDF bylo staženo a parsováno pouze pro náhled · nic nebylo uloženo ani aktivováno."
+          : "Discovery nic nestahuje, neukládá ani neaktivuje. PDF se načte až po explicitním výběru."}
+      </div>
     </article>
+  );
+}
+
+function PricePreviewCard({ response }: { response: TariffParsePreviewResponse }) {
+  const preview = response.preview;
+  return (
+    <section className="tariff-price-preview">
+      <div className="tariff-wizard__results-head">
+        <div><span className="eyebrow">Krok 3 · read-only</span><h3>Ověřený návrh obchodní ceny</h3></div>
+        <span>{preview.extraction_confidence}/100 exact guards</span>
+      </div>
+
+      <div className="tariff-price-preview__grid">
+        <div><span>Vysoký tarif</span><b>{preview.high_rate_czk_per_kwh} Kč/kWh</b></div>
+        <div><span>Nízký tarif</span><b>{preview.low_rate_czk_per_kwh ? `${preview.low_rate_czk_per_kwh} Kč/kWh` : "—"}</b></div>
+        <div><span>Stálý plat dodavatele</span><b>{preview.supplier_standing_czk_month} Kč/měsíc</b></div>
+        <div><span>DPH</span><b>{preview.includes_vat ? "Zahrnuta" : "Nezahrnuta"}</b></div>
+      </div>
+
+      <div className="tariff-price-preview__meta">
+        <span><b>Produkt:</b> {preview.product_name}</span>
+        <span><b>Sazba:</b> {preview.distribution_tariff}</span>
+        <span><b>Platnost od:</b> {preview.valid_from}</span>
+        <span><b>PDF:</b> {preview.page_count} str.</span>
+        <span><b>Parser:</b> {preview.parser_name}</span>
+        <span><b>SHA-256:</b> <code>{response.document_sha256}</code></span>
+      </div>
+
+      <a className="tariff-price-preview__source" href={response.source_url} target="_blank" rel="noreferrer">Otevřít přesný ověřený zdrojový dokument</a>
+
+      <div className="tariff-price-preview__checks">
+        <b>Prošlé validační kontroly</b>
+        <ul>{preview.validation_reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
+      </div>
+
+      <div className="tariff-wizard__notice pending">
+        <b>Toto ještě není all-in cena.</b>
+        <span>Jde pouze o obchodní část dodavatele. Regulované distribuční složky se skládají odděleně a aktivní tarif se tímto náhledem nemění.</span>
+      </div>
+      <div className="tariff-wizard__confirmation-lock">
+        <b>Potvrzení a aktivace zůstávají zamčené.</b>
+        <span>Backend vrátil `persistence_performed=false` a `activation_performed=false`. Další authority krok dostane samostatné explicitní potvrzení.</span>
+      </div>
+    </section>
   );
 }
 
@@ -176,12 +279,35 @@ export function TariffSetupWizard({ hass }: { hass?: HomeAssistant }) {
   const [discovery, setDiscovery] = useState<TariffDiscoveryResponse | null>(null);
   const [discoveryError, setDiscoveryError] = useState<string | null>(null);
   const [discovering, setDiscovering] = useState(false);
+  const [pricePreview, setPricePreview] = useState<TariffParsePreviewResponse | null>(null);
+  const [pricePreviewError, setPricePreviewError] = useState<string | null>(null);
+  const [previewingFingerprint, setPreviewingFingerprint] = useState<string | null>(null);
+  const reviewRevision = useRef(0);
+
+  const invalidateReview = () => {
+    reviewRevision.current += 1;
+    setDiscovery(null);
+    setDiscoveryError(null);
+    setPricePreview(null);
+    setPricePreviewError(null);
+    setPreviewingFingerprint(null);
+  };
+
+  const updateDraft = (patch: Partial<WizardDraft>) => {
+    invalidateReview();
+    setDraft((current) => ({ ...current, ...patch }));
+  };
 
   useEffect(() => {
     let active = true;
+    reviewRevision.current += 1;
     setEntryId(null);
     setCatalog(null);
     setCatalogError(null);
+    setDiscovery(null);
+    setDiscoveryError(null);
+    setPricePreview(null);
+    setPricePreviewError(null);
     if (!hass) return () => { active = false; };
 
     setLoadingCatalog(true);
@@ -220,16 +346,17 @@ export function TariffSetupWizard({ hass }: { hass?: HomeAssistant }) {
 
   const updateSupplier = (supplier: string) => {
     const nextGroup = catalog?.suppliers.find((group) => group.supplier === supplier);
-    setDraft((current) => ({ ...current, supplier, productName: nextGroup?.products[0]?.product_name ?? "" }));
-    setDiscovery(null);
-    setDiscoveryError(null);
+    updateDraft({ supplier, productName: nextGroup?.products[0]?.product_name ?? "" });
   };
 
   const discover = async () => {
     if (!hass || !entryId || !selectedProduct || invalidDates || mndBlocked) return;
+    const revision = reviewRevision.current;
     setDiscovering(true);
     setDiscovery(null);
     setDiscoveryError(null);
+    setPricePreview(null);
+    setPricePreviewError(null);
     try {
       const response = await callHomeAssistantWs<TariffDiscoveryResponse>(hass, {
         type: "frakon_energy/tariff/discover",
@@ -237,14 +364,57 @@ export function TariffSetupWizard({ hass }: { hass?: HomeAssistant }) {
         contract: contractPayload(draft, selectedProduct),
         day: draft.discoveryDay,
       });
+      if (reviewRevision.current !== revision) return;
       setDiscovery(response);
       if (response.candidates.length === 0) {
         setDiscoveryError("Pro tuto přesnou kombinaci smlouvy a data nebyl nalezen ověřený ceník. Nic se nepřiřadilo automaticky.");
       }
     } catch (error) {
-      setDiscoveryError(readableError(error));
+      if (reviewRevision.current === revision) setDiscoveryError(readableError(error));
     } finally {
       setDiscovering(false);
+    }
+  };
+
+  const previewCandidate = async (candidate: TariffCandidate) => {
+    if (!hass || !entryId || !selectedProduct || !discovery) return;
+    if (candidate.supplier !== "cez") {
+      setPricePreviewError("Automatický parser ceny je zatím aktivní pouze pro ČEZ.");
+      return;
+    }
+
+    const revision = reviewRevision.current;
+    setPreviewingFingerprint(candidate.fingerprint);
+    setPricePreview(null);
+    setPricePreviewError(null);
+    try {
+      const response = await callHomeAssistantWs<TariffParsePreviewResponse>(hass, {
+        type: "frakon_energy/tariff/parse_preview",
+        entry_id: entryId,
+        contract: contractPayload(draft, selectedProduct),
+        day: draft.discoveryDay,
+        candidate_fingerprint: candidate.fingerprint,
+      });
+      if (reviewRevision.current !== revision) return;
+      if (response.candidate_fingerprint !== candidate.fingerprint) {
+        throw new Error("Backend vrátil náhled pro jiný fingerprint ceníku.");
+      }
+      if (response.contract_fingerprint !== discovery.contract_fingerprint) {
+        throw new Error("Backend vrátil náhled pro jinou verzi smlouvy.");
+      }
+      if (
+        response.persistence_performed ||
+        response.activation_performed ||
+        response.preview.persistence_performed ||
+        response.preview.activation_performed
+      ) {
+        throw new Error("Read-only náhled nesmí ukládat ani aktivovat tarif.");
+      }
+      setPricePreview(response);
+    } catch (error) {
+      if (reviewRevision.current === revision) setPricePreviewError(readableError(error));
+    } finally {
+      if (reviewRevision.current === revision) setPreviewingFingerprint(null);
     }
   };
 
@@ -262,7 +432,7 @@ export function TariffSetupWizard({ hass }: { hass?: HomeAssistant }) {
       <div className="tariff-wizard__steps" aria-label="Průběh nastavení tarifu">
         <div className="active"><b>1</b><span>Smlouva</span></div>
         <div className={discovery?.candidates.length ? "active" : ""}><b>2</b><span>Ověření zdroje</span></div>
-        <div><b>3</b><span>Potvrzení ceny</span></div>
+        <div className={pricePreview ? "active" : ""}><b>3</b><span>Náhled ceny</span></div>
       </div>
 
       {loadingCatalog ? <div className="tariff-wizard__notice">Načítám ověřený katalog dodavatelů…</div> : null}
@@ -280,7 +450,7 @@ export function TariffSetupWizard({ hass }: { hass?: HomeAssistant }) {
 
             <label className="wide">
               <span>Produkt ze smlouvy</span>
-              <select value={selectedProduct?.product_name ?? ""} onChange={(event) => { setDraft((current) => ({ ...current, productName: event.target.value })); setDiscovery(null); setDiscoveryError(null); }}>
+              <select value={selectedProduct?.product_name ?? ""} onChange={(event) => updateDraft({ productName: event.target.value })}>
                 {products.map((product) => <option key={`${product.product_name}:${product.contract_kind}`} value={product.product_name}>{product.product_name}</option>)}
               </select>
               {selectedProduct ? <div className="tariff-wizard__field-meta"><span>{selectedProduct.contract_kind === "fixed" ? "Fixovaná smlouva" : "Na dobu neurčitou"}</span><SourceStatus product={selectedProduct} /></div> : null}
@@ -288,21 +458,21 @@ export function TariffSetupWizard({ hass }: { hass?: HomeAssistant }) {
 
             <label>
               <span>Distribuční území</span>
-              <select value={draft.distributor} onChange={(event) => setDraft((current) => ({ ...current, distributor: event.target.value }))}>
+              <select value={draft.distributor} onChange={(event) => updateDraft({ distributor: event.target.value })}>
                 {DISTRIBUTORS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
               </select>
             </label>
 
             <label>
               <span>Distribuční sazba</span>
-              <select value={draft.distributionTariff} onChange={(event) => setDraft((current) => ({ ...current, distributionTariff: event.target.value }))}>
+              <select value={draft.distributionTariff} onChange={(event) => updateDraft({ distributionTariff: event.target.value })}>
                 {DISTRIBUTION_TARIFFS.map((item) => <option key={item} value={item}>{item}</option>)}
               </select>
             </label>
 
             <label>
               <span>Počet fází</span>
-              <select value={draft.breakerPhases} onChange={(event) => setDraft((current) => ({ ...current, breakerPhases: Number(event.target.value) }))}>
+              <select value={draft.breakerPhases} onChange={(event) => updateDraft({ breakerPhases: Number(event.target.value) })}>
                 <option value={1}>1 fáze</option>
                 <option value={3}>3 fáze</option>
               </select>
@@ -310,20 +480,20 @@ export function TariffSetupWizard({ hass }: { hass?: HomeAssistant }) {
 
             <label>
               <span>Hlavní jistič</span>
-              <select value={draft.breakerAmperes} onChange={(event) => setDraft((current) => ({ ...current, breakerAmperes: Number(event.target.value) }))}>
+              <select value={draft.breakerAmperes} onChange={(event) => updateDraft({ breakerAmperes: Number(event.target.value) })}>
                 {BREAKER_AMPERES.map((item) => <option key={item} value={item}>{item} A</option>)}
               </select>
             </label>
 
             <label>
               <span>Smlouva platí od</span>
-              <input type="date" value={draft.validFrom} onChange={(event) => setDraft((current) => ({ ...current, validFrom: event.target.value }))} />
+              <input type="date" value={draft.validFrom} onChange={(event) => updateDraft({ validFrom: event.target.value })} />
             </label>
 
             {fixed ? (
               <label>
                 <span>Fixace do</span>
-                <input type="date" min={draft.validFrom} value={draft.fixationEnd} onChange={(event) => setDraft((current) => ({ ...current, fixationEnd: event.target.value }))} />
+                <input type="date" min={draft.validFrom} value={draft.fixationEnd} onChange={(event) => updateDraft({ fixationEnd: event.target.value })} />
               </label>
             ) : (
               <div className="tariff-wizard__read-only"><span>Typ smlouvy</span><b>Bez fixace</b><small>Produkt je v ověřeném katalogu vedený na dobu neurčitou.</small></div>
@@ -331,7 +501,7 @@ export function TariffSetupWizard({ hass }: { hass?: HomeAssistant }) {
 
             <label>
               <span>Ceník ověřit k datu</span>
-              <input type="date" min={draft.validFrom} value={draft.discoveryDay} onChange={(event) => setDraft((current) => ({ ...current, discoveryDay: event.target.value }))} />
+              <input type="date" min={draft.validFrom} value={draft.discoveryDay} onChange={(event) => updateDraft({ discoveryDay: event.target.value })} />
             </label>
           </div>
 
@@ -352,19 +522,27 @@ export function TariffSetupWizard({ hass }: { hass?: HomeAssistant }) {
           </div>
 
           {discoveryError ? <div className="tariff-wizard__notice error">{discoveryError}</div> : null}
+          {pricePreviewError ? <div className="tariff-wizard__notice error">{pricePreviewError}</div> : null}
+
           {discovery?.candidates.length ? (
             <div className="tariff-wizard__results">
               <div className="tariff-wizard__results-head">
                 <div><span className="eyebrow">Krok 2</span><h3>Nalezené ověřené zdroje</h3></div>
                 <span>{discovery.candidates.length} {discovery.candidates.length === 1 ? "shoda" : "shody"}</span>
               </div>
-              {discovery.candidates.map((candidate) => <CandidateCard key={candidate.fingerprint} candidate={candidate} />)}
-              <div className="tariff-wizard__confirmation-lock">
-                <b>Potvrzení ceny ještě není aktivní.</b>
-                <span>Další krok dostane vlastní backendový potvrzovací endpoint. Do té doby nelze z této obrazovky změnit aktivní cenu.</span>
-              </div>
+              {discovery.candidates.map((candidate) => (
+                <CandidateCard
+                  key={candidate.fingerprint}
+                  candidate={candidate}
+                  previewing={previewingFingerprint === candidate.fingerprint}
+                  previewed={pricePreview?.candidate_fingerprint === candidate.fingerprint}
+                  onPreview={previewCandidate}
+                />
+              ))}
             </div>
           ) : null}
+
+          {pricePreview ? <PricePreviewCard response={pricePreview} /> : null}
         </>
       ) : null}
     </section>
