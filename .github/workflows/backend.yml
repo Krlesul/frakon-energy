@@ -100,6 +100,7 @@ jobs:
           tests/test_tariff_parse_preview_wiring.py
           tests/test_tariff_all_in_preview.py
           tests/test_regulated_pricing.py
+          tests/test_regulated_catalog.py
           tests/test_tariff_provenance.py
           tests/test_tariff_assembly.py
           tests/test_cz_regulated_sources.py
