@@ -48,13 +48,6 @@ jobs:
           cp -R frontend/dist/. custom_components/frakon_energy/frontend_app/
           test -f custom_components/frakon_energy/frontend_app/index.html
 
-      - name: Upload packaged dashboard
-        uses: actions/upload-artifact@v4
-        with:
-          name: frontend-app
-          path: custom_components/frakon_energy/frontend_app
-          if-no-files-found: error
-
       - name: Verify committed dashboard is current
         run: |
           if ! git diff --exit-code -- custom_components/frakon_energy/frontend_app; then
