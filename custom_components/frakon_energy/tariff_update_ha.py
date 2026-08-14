@@ -4,19 +4,27 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 
+from homeassistant.components import persistent_notification
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from .const import DOMAIN
 from .tariff_http_transport import DEFAULT_TARIFF_HTTP_TIMEOUT_SECONDS
 from .tariff_update_cadence import (
     DEFAULT_TARIFF_UPDATE_INTERVAL,
     active_tariff_check_cadence,
 )
+from .tariff_update_notifications import (
+    notification_for_new_pending_tariff,
+    pending_tariff_hashes,
+)
 from .tariff_update_orchestrator import (
     TariffUpdateCheckRun,
     async_check_active_tariff_source,
 )
+
+_NOTIFICATION_PREFIX = f"{DOMAIN}_tariff_update"
 
 
 async def async_check_active_tariff_source_ha(
@@ -55,6 +63,28 @@ async def async_check_active_tariff_source_ha(
     return run
 
 
+def _notify_if_new_pending(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    run: TariffUpdateCheckRun,
+    *,
+    pending_before: dict[str, str | None],
+) -> bool:
+    notification = notification_for_new_pending_tariff(
+        run,
+        pending_before=pending_before,
+    )
+    if notification is None:
+        return False
+    persistent_notification.async_create(
+        hass,
+        notification.message,
+        title=notification.title,
+        notification_id=f"{_NOTIFICATION_PREFIX}_{entry.entry_id}",
+    )
+    return True
+
+
 async def async_check_active_tariff_source_if_due_ha(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -68,8 +98,9 @@ async def async_check_active_tariff_source_if_due_ha(
 
     A newly authorized source is checked immediately. Once a durable last-check
     timestamp exists, no network request is made before the full cadence interval
-    has elapsed. The actual check still uses the same fail-closed orchestrator and
-    Home Assistant shared HTTP session as the explicit one-shot adapter above.
+    has elapsed. A user notification is emitted only when the due check creates a
+    genuinely new pending document hash; repeated checks of the same pending hash
+    are silent and active pricing is never changed here.
     """
     cadence = active_tariff_check_cadence(
         entry.options,
@@ -79,10 +110,19 @@ async def async_check_active_tariff_source_if_due_ha(
     )
     if not cadence.due:
         return None
-    return await async_check_active_tariff_source_ha(
+
+    pending_before = pending_tariff_hashes(dict(entry.options))
+    run = await async_check_active_tariff_source_ha(
         hass,
         entry,
         day=day,
         checked_at=checked_at,
         timeout_seconds=timeout_seconds,
     )
+    _notify_if_new_pending(
+        hass,
+        entry,
+        run,
+        pending_before=pending_before,
+    )
+    return run
