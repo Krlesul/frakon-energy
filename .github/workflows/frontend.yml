@@ -33,6 +33,10 @@ jobs:
         working-directory: frontend
         run: npm install
 
+      - name: Validate tariff confirmation bridge
+        working-directory: frontend
+        run: node --check public/tariff-confirmation-bridge.js
+
       - name: Type-check and build
         working-directory: frontend
         run: npm run build
@@ -43,6 +47,13 @@ jobs:
           mkdir -p custom_components/frakon_energy/frontend_app
           cp -R frontend/dist/. custom_components/frakon_energy/frontend_app/
           test -f custom_components/frakon_energy/frontend_app/index.html
+
+      - name: Upload packaged dashboard
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-app
+          path: custom_components/frakon_energy/frontend_app
+          if-no-files-found: error
 
       - name: Verify committed dashboard is current
         run: |
