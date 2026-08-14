@@ -11,6 +11,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import CONF_PROVIDER, DOMAIN, PROVIDER_CEZ_HDO, PROVIDER_VISIONQ
 from .coordinator import FrakonEnergyCoordinator
+from .customer_tariff_proposals_ws_api import async_register_customer_tariff_proposals_websocket
 from .energy_flow_ws_api import async_register_energy_flow_websocket
 from .entity_discovery_lifecycle import EntityDiscoveryRuntimeRegistry
 from .entity_discovery_setup import setup_entity_discovery_runtime, unload_entity_discovery_runtime
@@ -196,6 +197,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         async_register_tariff_parse_preview_websocket(hass)
         async_register_tariff_all_in_preview_websocket(hass)
         async_register_regulated_tariff_proposals_websocket(hass)
+        async_register_customer_tariff_proposals_websocket(hass)
         async_register_load_plan_websocket(hass)
         async_register_load_profiles_websocket(hass)
         async_register_load_execution_policy_websocket(hass)
