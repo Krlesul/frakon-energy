@@ -101,6 +101,8 @@ jobs:
           tests/test_tariff_fetch.py
           tests/test_tariff_http_transport.py
           tests/test_tariff_http_ha.py
+          tests/test_tariff_selected_download.py
+          tests/test_tariff_selected_download_ha.py
           tests/test_tariff_source_watch.py
           tests/test_tariff_source_watch_store.py
           tests/test_tariff_source_watch_fetch.py
