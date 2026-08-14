@@ -42,6 +42,11 @@ class _FakeStore:
         self.saves += 1
 
 
+class _CancellationRepo:
+    async def async_get_by_attempt_id(self, attempt_id: str):
+        return None
+
+
 def _profile() -> LoadProfile:
     return LoadProfile(
         "ev-home",
@@ -135,10 +140,16 @@ def _repository(monkeypatch: pytest.MonkeyPatch, *, fail_save: bool = False):
     store = _FakeStore()
     store.fail_save = fail_save
     repository = ExecutionLifecycleRepository(store)
+    cancellation_repo = _CancellationRepo()
     monkeypatch.setattr(
         lifecycle_ws,
         "lifecycle_repository",
         lambda hass, entry_id: repository,
+    )
+    monkeypatch.setattr(
+        lifecycle_ws,
+        "cancellation_repository",
+        lambda hass, entry_id: cancellation_repo,
     )
     monkeypatch.setattr(
         lifecycle_ws,
