@@ -10,6 +10,7 @@ from .all_in_catalog import (
     PersistedAllInTariff,
     all_in_tariff_fingerprint,
     confirmed_all_in_tariff_for_context_from_options,
+    confirmed_all_in_tariff_from_options,
 )
 from .contracts import (
     ElectricityContract,
@@ -163,14 +164,22 @@ def prepare_active_tariff_source_watch(
     if not isinstance(day, date):
         raise ValueError("day must be a date")
     contract = confirmed_contract_from_options(options, day)
-    tariff = confirmed_all_in_tariff_for_context_from_options(
-        options,
-        supplier=contract.supplier.value,
-        product_name=contract.product_name,
-        distribution_tariff=contract.distribution_tariff,
-        breaker_code=contract.breaker.code,
-        day=day,
-    )
+    try:
+        tariff = confirmed_all_in_tariff_for_context_from_options(
+            options,
+            supplier=contract.supplier.value,
+            product_name=contract.product_name,
+            distribution_tariff=contract.distribution_tariff,
+            breaker_code=contract.breaker.code,
+            day=day,
+        )
+    except LookupError:
+        # A generic confirmed version is inspected only to preserve precise
+        # diagnostics for a product/tariff/breaker mismatch. It is never returned
+        # as an operational fallback and therefore cannot authorize a source watch.
+        diagnostic = confirmed_all_in_tariff_from_options(options, day)
+        _validate_alignment(contract, diagnostic)
+        raise
     _validate_alignment(contract, tariff)
 
     authoritative_watch = source_watch_from_confirmed_all_in(
