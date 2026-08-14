@@ -112,6 +112,36 @@ def _match_entry(entry: CezCatalogEntry, product_name: str) -> tuple[int, str] |
     return None
 
 
+def cez_contract_product_matches_candidate(
+    *,
+    candidate_product_name: str,
+    contract_product_name: str,
+    contract_kind: str,
+    catalog: tuple[CezCatalogEntry, ...] = CEZ_2026_COMMERCIAL_CATALOG,
+) -> bool:
+    """Verify a selected canonical candidate against the same explicit catalog rules.
+
+    Parser-preview validation must not collapse official aliases into a simple
+    string-equality check. This helper reuses the immutable catalog identities
+    and exact alias list already used during discovery; it performs no fuzzy or
+    substring matching.
+    """
+    canonical = _normalized_product(candidate_product_name)
+    if not canonical or not isinstance(contract_kind, str) or not contract_kind.strip():
+        return False
+    matching_entries = tuple(
+        entry
+        for entry in catalog
+        if _normalized_product(entry.product_name) == canonical
+    )
+    if len(matching_entries) != 1:
+        return False
+    entry = matching_entries[0]
+    if entry.contract_kind != contract_kind.strip():
+        return False
+    return _match_entry(entry, contract_product_name) is not None
+
+
 class CezTariffCatalogAdapter:
     """Fail-closed catalog adapter for currently verified ČEZ household PDFs."""
 
