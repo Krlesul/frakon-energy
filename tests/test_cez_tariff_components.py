@@ -12,6 +12,7 @@ def load_modules():
         "custom_components.frakon_energy",
         "custom_components.frakon_energy.providers",
         "custom_components.frakon_energy.pricing",
+        "custom_components.frakon_energy.tariff_sources",
         "custom_components.frakon_energy.providers.cez_tariff_parser",
         "custom_components.frakon_energy.providers.cez_tariff_components",
     ):
@@ -37,6 +38,10 @@ def load_modules():
         "custom_components.frakon_energy.pricing",
         "custom_components/frakon_energy/pricing.py",
     )
+    sources = load(
+        "custom_components.frakon_energy.tariff_sources",
+        "custom_components/frakon_energy/tariff_sources.py",
+    )
     parser = load(
         "custom_components.frakon_energy.providers.cez_tariff_parser",
         "custom_components/frakon_energy/providers/cez_tariff_parser.py",
@@ -45,11 +50,11 @@ def load_modules():
         "custom_components.frakon_energy.providers.cez_tariff_components",
         "custom_components/frakon_energy/providers/cez_tariff_components.py",
     )
-    return pricing, parser, components
+    return pricing, sources, parser, components
 
 
 def test_dual_rate_parsed_price_maps_only_to_supplier_components() -> None:
-    pricing, parser, components = load_modules()
+    pricing, sources, parser, components = load_modules()
     parsed = parser.ParsedCezCommercialPrice(
         product_name="Basic",
         valid_from=date(2026, 1, 1),
@@ -61,6 +66,11 @@ def test_dual_rate_parsed_price_maps_only_to_supplier_components() -> None:
 
     result = components.components_from_parsed_cez_commercial_price(parsed)
 
+    assert result.product_name == "Basic"
+    assert result.valid_from == date(2026, 1, 1)
+    assert result.distribution_tariff == "D25d"
+    assert result.price_scope == sources.PRICE_SCOPE_SUPPLIER_COMMERCIAL
+    assert result.all_in_ready is False
     assert result.commodity.kind == pricing.PriceComponentKind.COMMODITY
     assert result.commodity.high_rate_czk_per_kwh == Decimal("3.960")
     assert result.commodity.low_rate_czk_per_kwh == Decimal("3.700")
@@ -72,7 +82,7 @@ def test_dual_rate_parsed_price_maps_only_to_supplier_components() -> None:
 
 
 def test_single_rate_price_is_not_silently_forced_into_dual_rate_model() -> None:
-    _, parser, components = load_modules()
+    _, _, parser, components = load_modules()
     parsed = parser.ParsedCezCommercialPrice(
         product_name="Basic",
         valid_from=date(2026, 1, 1),
@@ -91,7 +101,7 @@ def test_single_rate_price_is_not_silently_forced_into_dual_rate_model() -> None
 
 
 def test_mapping_rejects_untrusted_object() -> None:
-    _, _, components = load_modules()
+    _, _, _, components = load_modules()
     try:
         components.components_from_parsed_cez_commercial_price(object())
     except ValueError as err:
