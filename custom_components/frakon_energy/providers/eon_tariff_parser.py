@@ -8,6 +8,8 @@ from decimal import Decimal, InvalidOperation
 import re
 import unicodedata
 
+from .eon_tariffs import EON_PRODUCT_PERIODS
+
 _VAT_RATE = Decimal("1.21")
 _MWH_TO_KWH = Decimal("1000")
 _REGULATED_MARKER = "Regulovaná cena za související služby v elektroenergetice"
@@ -16,6 +18,9 @@ _VAT_MARKER = "Tučně uvedené ceny jsou včetně 21% DPH"
 _OVERALL_VALID_FROM_RE = re.compile(
     r"Obchodní\s+cena\s+za\s+elektřinu\s+platná\s+od\s+(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})",
     re.IGNORECASE,
+)
+_CONCATENATED_PRICE_RE = re.compile(
+    r"(?P<first>\d{1,3}[\s\u00a0]\d{3})(?P<second>\d{1,3}[\s\u00a0]\d{3})"
 )
 _PRICE_TOKEN_RE = re.compile(
     r"(?<!\d)(?:\d{1,3}(?:[\s\u00a0]\d{3})+|\d{1,4})(?:,\d{1,2})?(?!\d)|[–—]"
@@ -28,14 +33,16 @@ _RATE_GROUPS: tuple[tuple[str, ...], ...] = (
     ("D45d", "D56d", "D57d"),
     ("D61d",),
 )
-
-
-@dataclass(frozen=True, slots=True)
-class EonCommercialPricePeriod:
-    """One advertised price period inside a multi-period E.ON price list."""
-
-    valid_from: date
-    valid_to: date | None
+_EON_DOCUMENT_VALID_FROM = {
+    "Variant PRO na 2 roky": date(2026, 3, 30),
+    "Elektřina výhodně PRO na 3 roky": date(2026, 6, 17),
+}
+_EON_DOCUMENT_PRICE_BLOCKS = {
+    "Variant PRO na 2 roky": 1,
+    # The PDF prints 2026, 2027, 2028 and 2029+ columns. The latter three must
+    # stay identical because they are one fixed customer price authority.
+    "Elektřina výhodně PRO na 3 roky": 4,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,22 +59,11 @@ class ParsedEonSupplierTariff:
     includes_vat: bool = True
 
 
-EON_PRODUCT_PERIODS: dict[str, tuple[EonCommercialPricePeriod, ...]] = {
-    "Variant PRO na 2 roky": (
-        EonCommercialPricePeriod(date(2026, 3, 30), None),
-    ),
-    "Elektřina výhodně PRO na 3 roky": (
-        EonCommercialPricePeriod(date(2026, 6, 17), date(2026, 12, 31)),
-        EonCommercialPricePeriod(date(2027, 1, 1), date(2027, 12, 31)),
-        EonCommercialPricePeriod(date(2028, 1, 1), date(2028, 12, 31)),
-        EonCommercialPricePeriod(date(2029, 1, 1), None),
-    ),
-}
-
-_EON_DOCUMENT_VALID_FROM = {
-    "Variant PRO na 2 roky": date(2026, 3, 30),
-    "Elektřina výhodně PRO na 3 roky": date(2026, 6, 17),
-}
+@dataclass(frozen=True, slots=True)
+class _GrossPriceBlock:
+    high_rate_czk_mwh: Decimal
+    low_rate_czk_mwh: Decimal | None
+    standing_czk_month: Decimal
 
 
 def _fold(value: str) -> str:
@@ -151,6 +147,19 @@ def _target_rate_segment(commercial_text: str, distribution_tariff: str) -> str:
     return segment[data_start:]
 
 
+def _separate_concatenated_prices(value: str) -> str:
+    """Split adjacent PDF cells such as ``3 3202 744`` deterministically."""
+    previous = value
+    while True:
+        separated = _CONCATENATED_PRICE_RE.sub(
+            lambda match: f"{match.group('first')}\n{match.group('second')}",
+            previous,
+        )
+        if separated == previous:
+            return separated
+        previous = separated
+
+
 def _price_or_dash(token: str) -> Decimal | None:
     if token in {"–", "—"}:
         return None
@@ -166,46 +175,77 @@ def _price_or_dash(token: str) -> Decimal | None:
 
 def _validate_vat_pair(gross: Decimal, net: Decimal, *, field: str) -> None:
     expected = net * _VAT_RATE
-    # E.ON page-one summary rounds displayed gross values to whole CZK while the
-    # detailed current-year table can contain two decimals. Both are official;
-    # allowing less than one CZK per MWh/month covers display rounding only.
+    # Page-one summaries round gross display values to whole CZK while the
+    # detailed current-year table carries cents. The tolerance permits display
+    # rounding only; it is far too small to accept a different price row.
     if abs(gross - expected) > Decimal("0.75"):
         raise ValueError(f"E.ON {field} gross/net pair is inconsistent with 21% VAT")
 
 
-def _selected_period_values(
-    segment: str,
-    *,
-    period_index: int,
-    period_count: int,
-) -> tuple[Decimal, Decimal | None, Decimal]:
-    tokens = [match.group(0).strip() for match in _PRICE_TOKEN_RE.finditer(segment)]
-    expected_tokens = period_count * 6
+def _all_price_blocks(segment: str, *, block_count: int) -> tuple[_GrossPriceBlock, ...]:
+    normalized = _separate_concatenated_prices(segment)
+    tokens = [match.group(0).strip() for match in _PRICE_TOKEN_RE.finditer(normalized)]
+    expected_tokens = block_count * 6
     if len(tokens) != expected_tokens:
         raise ValueError(
             "E.ON commercial tariff row does not contain the exact expected price matrix"
         )
 
-    offset = period_index * 6
-    gross_vt = _price_or_dash(tokens[offset])
-    net_vt = _price_or_dash(tokens[offset + 1])
-    gross_nt = _price_or_dash(tokens[offset + 2])
-    net_nt = _price_or_dash(tokens[offset + 3])
-    gross_fixed = _price_or_dash(tokens[offset + 4])
-    net_fixed = _price_or_dash(tokens[offset + 5])
+    blocks: list[_GrossPriceBlock] = []
+    for block_index in range(block_count):
+        offset = block_index * 6
+        gross_vt = _price_or_dash(tokens[offset])
+        net_vt = _price_or_dash(tokens[offset + 1])
+        gross_nt = _price_or_dash(tokens[offset + 2])
+        net_nt = _price_or_dash(tokens[offset + 3])
+        gross_fixed = _price_or_dash(tokens[offset + 4])
+        net_fixed = _price_or_dash(tokens[offset + 5])
 
-    if gross_vt is None or net_vt is None:
-        raise ValueError("E.ON commercial VT price pair is missing")
-    if gross_fixed is None or net_fixed is None:
-        raise ValueError("E.ON supplier standing price pair is missing")
-    if (gross_nt is None) != (net_nt is None):
-        raise ValueError("E.ON commercial NT gross/net availability is inconsistent")
+        if gross_vt is None or net_vt is None:
+            raise ValueError("E.ON commercial VT price pair is missing")
+        if gross_fixed is None or net_fixed is None:
+            raise ValueError("E.ON supplier standing price pair is missing")
+        if (gross_nt is None) != (net_nt is None):
+            raise ValueError("E.ON commercial NT gross/net availability is inconsistent")
 
-    _validate_vat_pair(gross_vt, net_vt, field="VT")
-    if gross_nt is not None and net_nt is not None:
-        _validate_vat_pair(gross_nt, net_nt, field="NT")
-    _validate_vat_pair(gross_fixed, net_fixed, field="standing")
-    return gross_vt, gross_nt, gross_fixed
+        _validate_vat_pair(gross_vt, net_vt, field="VT")
+        if gross_nt is not None and net_nt is not None:
+            _validate_vat_pair(gross_nt, net_nt, field="NT")
+        _validate_vat_pair(gross_fixed, net_fixed, field="standing")
+        blocks.append(
+            _GrossPriceBlock(
+                high_rate_czk_mwh=gross_vt,
+                low_rate_czk_mwh=gross_nt,
+                standing_czk_month=gross_fixed,
+            )
+        )
+    return tuple(blocks)
+
+
+def _select_semantic_price_block(
+    product_name: str,
+    semantic_period_index: int,
+    blocks: tuple[_GrossPriceBlock, ...],
+) -> _GrossPriceBlock:
+    if product_name == "Variant PRO na 2 roky":
+        if len(blocks) != 1 or semantic_period_index != 0:
+            raise ValueError("E.ON Variant PRO price matrix is inconsistent")
+        return blocks[0]
+
+    if product_name == "Elektřina výhodně PRO na 3 roky":
+        if len(blocks) != 4:
+            raise ValueError("E.ON three-year price matrix is inconsistent")
+        if blocks[1] != blocks[2] or blocks[1] != blocks[3]:
+            raise ValueError(
+                "E.ON fixed 2027+ price columns disagree; refusing ambiguous future price"
+            )
+        if semantic_period_index == 0:
+            return blocks[0]
+        if semantic_period_index == 1:
+            return blocks[1]
+        raise ValueError("E.ON three-year semantic price period is unsupported")
+
+    raise LookupError(f"unsupported E.ON product parser: {product_name}")
 
 
 def parse_eon_supplier_tariff(
@@ -230,8 +270,11 @@ def parse_eon_supplier_tariff(
 
     product_name = expected_product_name.strip()
     tariff = expected_distribution_tariff.strip()
-    period_index = _period_index(product_name, expected_valid_from, expected_valid_to)
-    periods = EON_PRODUCT_PERIODS[product_name]
+    semantic_period_index = _period_index(
+        product_name,
+        expected_valid_from,
+        expected_valid_to,
+    )
 
     folded = _fold(text)
     if _fold(f"Ceník {product_name}") not in folded and _fold(f"Produktová řada {product_name}") not in folded:
@@ -245,6 +288,8 @@ def parse_eon_supplier_tariff(
     if validity_match is None:
         raise ValueError("E.ON tariff document is missing commercial validity marker")
     document_valid_from = _parse_date_match(validity_match)
+    if product_name not in _EON_DOCUMENT_VALID_FROM:
+        raise LookupError(f"unsupported E.ON product parser: {product_name}")
     if document_valid_from != _EON_DOCUMENT_VALID_FROM[product_name]:
         raise ValueError("E.ON tariff document commercial start does not match verified catalog")
 
@@ -254,10 +299,14 @@ def parse_eon_supplier_tariff(
         raise ValueError("E.ON supplier-commercial table is not before the regulated section")
 
     segment = _target_rate_segment(commercial_text, tariff)
-    gross_vt_mwh, gross_nt_mwh, gross_fixed_month = _selected_period_values(
+    blocks = _all_price_blocks(
         segment,
-        period_index=period_index,
-        period_count=len(periods),
+        block_count=_EON_DOCUMENT_PRICE_BLOCKS[product_name],
+    )
+    selected = _select_semantic_price_block(
+        product_name,
+        semantic_period_index,
+        blocks,
     )
 
     return ParsedEonSupplierTariff(
@@ -265,10 +314,12 @@ def parse_eon_supplier_tariff(
         valid_from=expected_valid_from,
         valid_to=expected_valid_to,
         distribution_tariff=tariff,
-        high_rate_czk_per_kwh=gross_vt_mwh / _MWH_TO_KWH,
+        high_rate_czk_per_kwh=selected.high_rate_czk_mwh / _MWH_TO_KWH,
         low_rate_czk_per_kwh=(
-            None if gross_nt_mwh is None else gross_nt_mwh / _MWH_TO_KWH
+            None
+            if selected.low_rate_czk_mwh is None
+            else selected.low_rate_czk_mwh / _MWH_TO_KWH
         ),
-        supplier_standing_czk_month=gross_fixed_month,
+        supplier_standing_czk_month=selected.standing_czk_month,
         includes_vat=True,
     )
