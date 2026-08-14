@@ -42,6 +42,17 @@
   },
   "options": {
     "step": {
+      "init": {
+        "title": "FRAKON Energy settings",
+        "menu_options": {
+          "billing": "Billing, meters and prices",
+          "contract": "Contract and tariff profile"
+        },
+        "menu_option_descriptions": {
+          "billing": "Configure the billing period, meter readings, advances and aggregate high/low tariff prices.",
+          "contract": "Store supplier, product, distribution tariff, breaker and contract validity in confirmed history."
+        }
+      },
       "billing": {
         "title": "Billing and electricity prices",
         "description": "Configure the billing period, cumulative meter baselines, advances and prices. Initial high- and low-tariff values must be cumulative meter readings, not consumption for the period.",
@@ -52,6 +63,12 @@
           "billing_baseline_nt_kwh": "Initial low-tariff reading",
           "billing_cycle_start": "Billing period start",
           "billing_settlement_date": "Expected settlement date",
+          "meter_replaced_during_cycle": "Meter replaced during billing period",
+          "meter_replacement_date": "Meter replacement date",
+          "old_meter_end_vt_kwh": "Old meter final high-tariff reading",
+          "old_meter_end_nt_kwh": "Old meter final low-tariff reading",
+          "new_meter_start_vt_kwh": "New meter initial high-tariff reading",
+          "new_meter_start_nt_kwh": "New meter initial low-tariff reading",
           "monthly_advance_czk": "Monthly advance",
           "advance_valid_from": "Advance valid from",
           "advance_valid_to": "Advance valid to",
@@ -59,13 +76,37 @@
           "price_nt_czk_kwh": "Low-tariff price",
           "fixed_monthly_czk": "Fixed monthly charges"
         }
+      },
+      "contract": {
+        "title": "Contract and tariff profile",
+        "description": "Enter the values exactly as shown in the contract or price list. Saving creates a new historical version; older contracts are not overwritten. Only an explicitly confirmed version may become active.",
+        "data": {
+          "contract_supplier": "Supplier",
+          "contract_distributor": "Distributor",
+          "contract_product": "Product / contract name",
+          "contract_kind": "Contract type",
+          "contract_distribution_tariff": "Distribution tariff",
+          "contract_breaker_phases": "Main breaker phases",
+          "contract_breaker_amperes": "Main breaker current",
+          "contract_valid_from": "Contract valid from",
+          "contract_valid_to": "Contract valid to",
+          "contract_fixation_end": "Fixation end",
+          "contract_confirm": "I confirm these values match my contract"
+        }
       }
     },
     "error": {
       "baseline_after_cycle_start": "The baseline reading date must not be after the billing period start.",
       "settlement_before_cycle_start": "The settlement date must not be before the billing period start.",
       "advance_outside_cycle": "The advance start date must be within the billing period.",
-      "advance_end_before_start": "The advance end date must not be before its start date."
+      "advance_end_before_start": "The advance end date must not be before its start date.",
+      "replacement_date_required": "Enter the meter replacement date.",
+      "replacement_outside_cycle": "The replacement date must be within the billing period.",
+      "old_meter_vt_below_start": "The old meter final high-tariff reading must not be below its initial reading.",
+      "old_meter_nt_below_start": "The old meter final low-tariff reading must not be below its initial reading.",
+      "new_meter_start_negative": "The new meter initial readings must not be negative.",
+      "contract_confirmation_required": "Confirm that the values match your contract before saving.",
+      "invalid_contract": "The contract values are invalid. Check the product, contract type, Dxxd tariff, breaker and validity/fixation dates."
     },
     "abort": {
       "no_options_available": "No options are available for this source."
