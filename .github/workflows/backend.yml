@@ -78,3 +78,4 @@ jobs:
           tests/test_pricing.py
           tests/test_contracts.py
           tests/test_tariff_sources.py
+          tests/test_cez_tariffs.py

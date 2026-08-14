@@ -8,6 +8,17 @@ import re
 from typing import Iterable, Protocol, runtime_checkable
 from urllib.parse import urlparse
 
+PRICE_SCOPE_UNKNOWN = "unknown"
+PRICE_SCOPE_SUPPLIER_COMMERCIAL = "supplier_commercial"
+PRICE_SCOPE_REGULATED = "regulated"
+PRICE_SCOPE_ALL_IN = "all_in"
+PRICE_SCOPES = (
+    PRICE_SCOPE_UNKNOWN,
+    PRICE_SCOPE_SUPPLIER_COMMERCIAL,
+    PRICE_SCOPE_REGULATED,
+    PRICE_SCOPE_ALL_IN,
+)
+
 _SUPPLIER_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _DISTRIBUTION_TARIFF_RE = re.compile(r"^D\d{2}d$")
 _BREAKER_RE = re.compile(r"^(?:1|3)x[1-9]\d*A$")
@@ -128,6 +139,7 @@ class TariffDocumentCandidate:
     valid_to: date | None = None
     match_score: int = 0
     match_reasons: tuple[str, ...] = ()
+    price_scope: str = PRICE_SCOPE_UNKNOWN
 
     def __post_init__(self) -> None:
         if not isinstance(self.document, OfficialTariffDocument):
@@ -148,6 +160,8 @@ class TariffDocumentCandidate:
         if any(not isinstance(item, str) or not item.strip() for item in reasons):
             raise ValueError("match_reasons must contain non-empty strings")
         object.__setattr__(self, "match_reasons", reasons)
+        if self.price_scope not in PRICE_SCOPES:
+            raise ValueError(f"unsupported price_scope: {self.price_scope}")
 
 
 @runtime_checkable
