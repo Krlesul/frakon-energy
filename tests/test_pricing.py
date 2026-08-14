@@ -91,6 +91,78 @@ def test_net_components_are_normalized_to_gross_all_in_totals() -> None:
     assert tariff.fixed_breakdown()["Stálý plat netto"] == Decimal("121")
 
 
+def test_tariff_price_round_trip_preserves_decimal_dates_and_source_metadata() -> None:
+    pricing = load_pricing()
+    tariff = pricing.AllInTariffPrice(
+        source=pricing.PriceSource(
+            supplier="ČEZ",
+            product="Fix 2026",
+            valid_from=date(2026, 1, 1),
+            valid_to=date(2026, 12, 31),
+            source_url="https://example.invalid/cenik.pdf",
+            document_date=date(2025, 12, 1),
+            checksum="sha256:abc123",
+            confirmed=True,
+        ),
+        variable_components=(
+            pricing.VariablePriceComponent(
+                pricing.PriceComponentKind.COMMODITY,
+                "Komodita",
+                Decimal("3.1000"),
+                Decimal("2.7000"),
+                includes_vat=False,
+                vat_rate_percent=Decimal("21"),
+            ),
+        ),
+        fixed_components=(
+            pricing.FixedPriceComponent(
+                pricing.PriceComponentKind.BREAKER_FIXED,
+                "Jistič",
+                Decimal("286.50"),
+            ),
+        ),
+    )
+
+    payload = tariff.as_dict()
+    assert payload["schema_version"] == pricing.TARIFF_PRICE_SCHEMA_VERSION
+    assert payload["variable_components"][0]["high_rate_czk_per_kwh"] == "3.1000"
+    assert payload["source"]["valid_from"] == "2026-01-01"
+
+    restored = pricing.AllInTariffPrice.from_dict(payload)
+    assert restored == tariff
+    assert restored.all_in_vt_czk_kwh == Decimal("3.751000")
+    assert restored.source.checksum == "sha256:abc123"
+
+
+def test_tariff_deserialization_rejects_unknown_schema_and_invalid_period() -> None:
+    pricing = load_pricing()
+    payload = pricing.AllInTariffPrice(
+        source=pricing.PriceSource("ČEZ", "Produkt", date(2026, 1, 1)),
+        variable_components=(),
+        fixed_components=(),
+    ).as_dict()
+    payload["schema_version"] = 999
+
+    try:
+        pricing.AllInTariffPrice.from_dict(payload)
+    except ValueError as err:
+        assert "schema version" in str(err)
+    else:
+        raise AssertionError("Unknown tariff schema must be rejected")
+
+    try:
+        pricing.PriceSource(
+            "ČEZ",
+            "Produkt",
+            date(2026, 2, 1),
+            valid_to=date(2026, 1, 31),
+        )
+    except ValueError as err:
+        assert "must not precede" in str(err)
+    else:
+        raise AssertionError("Invalid source validity interval must be rejected")
+
+
 def test_latest_overlapping_validity_period_wins() -> None:
     pricing = load_pricing()
     old = pricing.AllInTariffPrice(
@@ -104,6 +176,35 @@ def test_latest_overlapping_validity_period_wins() -> None:
         fixed_components=(),
     )
     assert pricing.select_price_for_day((old, new), date(2026, 6, 15)) is new
+
+
+def test_confirmed_selector_never_activates_newer_unconfirmed_tariff() -> None:
+    pricing = load_pricing()
+    confirmed = pricing.AllInTariffPrice(
+        source=pricing.PriceSource(
+            "ČEZ",
+            "Potvrzený produkt",
+            date(2026, 1, 1),
+            confirmed=True,
+        ),
+        variable_components=(),
+        fixed_components=(),
+    )
+    suggested = pricing.AllInTariffPrice(
+        source=pricing.PriceSource(
+            "ČEZ",
+            "Novější návrh",
+            date(2026, 6, 1),
+            confirmed=False,
+        ),
+        variable_components=(),
+        fixed_components=(),
+    )
+
+    assert pricing.select_price_for_day((confirmed, suggested), date(2026, 8, 1)) is suggested
+    assert pricing.select_confirmed_price_for_day(
+        (confirmed, suggested), date(2026, 8, 1)
+    ) is confirmed
 
 
 def test_invalid_price_components_are_rejected() -> None:
