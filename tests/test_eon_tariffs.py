@@ -79,18 +79,32 @@ def test_verified_catalog_contains_two_products_for_all_three_distributors() -> 
         "cez_distribuce",
         "pre_distribuce",
     }
-    assert all(item.contract_kind == "fixed" for item in eon.EON_2026_ELECTRICITY_CATALOG)
-    assert all(item.valid_to == date(2026, 12, 31) for item in eon.EON_2026_ELECTRICITY_CATALOG)
-    assert all(item.source_url.startswith("https://www.eon.cz/getmedia/") for item in eon.EON_2026_ELECTRICITY_CATALOG)
-    assert all(item.source_url.endswith(".pdf") for item in eon.EON_2026_ELECTRICITY_CATALOG)
+    assert all(
+        item.contract_kind == "fixed"
+        for item in eon.EON_2026_ELECTRICITY_CATALOG
+    )
+    assert all(
+        item.source_url.startswith("https://www.eon.cz/getmedia/")
+        for item in eon.EON_2026_ELECTRICITY_CATALOG
+    )
+    assert all(
+        item.source_url.endswith(".pdf")
+        for item in eon.EON_2026_ELECTRICITY_CATALOG
+    )
 
 
-def test_variant_pro_exact_match_returns_territory_specific_all_in_candidate() -> None:
+def test_variant_pro_exact_match_returns_territory_specific_commercial_candidate() -> None:
     sources, eon = load_modules()
     adapter = eon.EonTariffCatalogAdapter(clock=_clock)
 
     result = __import__("asyncio").run(
-        adapter.async_discover(_query(sources, "Variant PRO na 2 roky", distributor="cez_distribuce"))
+        adapter.async_discover(
+            _query(
+                sources,
+                "Variant PRO na 2 roky",
+                distributor="cez_distribuce",
+            )
+        )
     )
 
     assert len(result) == 1
@@ -98,14 +112,14 @@ def test_variant_pro_exact_match_returns_territory_specific_all_in_candidate() -
     assert candidate.product_name == "Variant PRO na 2 roky"
     assert candidate.match_score == 100
     assert candidate.valid_from == date(2026, 3, 30)
-    assert candidate.valid_to == date(2026, 12, 31)
-    assert candidate.price_scope == sources.PRICE_SCOPE_ALL_IN
+    assert candidate.valid_to is None
+    assert candidate.price_scope == sources.PRICE_SCOPE_SUPPLIER_COMMERCIAL
     assert candidate.document.supplier == "eon"
     assert candidate.document.document_date == date(2026, 3, 30)
     assert candidate.document.content_type == "application/pdf"
     assert "distribucni--uzemi--cez.pdf" in candidate.document.source_url
     assert "exact Czech distribution territory" in candidate.match_reasons[2]
-    assert "regulated 2026 components" in candidate.match_reasons[-1]
+    assert "regulated values are separate" in candidate.match_reasons[-1]
 
 
 def test_product_matching_is_accent_case_normalized_but_never_fuzzy() -> None:
@@ -113,13 +127,17 @@ def test_product_matching_is_accent_case_normalized_but_never_fuzzy() -> None:
     adapter = eon.EonTariffCatalogAdapter(clock=_clock)
 
     matched = __import__("asyncio").run(
-        adapter.async_discover(_query(sources, "ELEKTRINA VYHODNE PRO NA 3 ROKY"))
+        adapter.async_discover(
+            _query(sources, "ELEKTRINA VYHODNE PRO NA 3 ROKY")
+        )
     )
     fuzzy = __import__("asyncio").run(
         adapter.async_discover(_query(sources, "Variant PRO"))
     )
 
-    assert [item.product_name for item in matched] == ["Elektřina výhodně PRO na 3 roky"]
+    assert [item.product_name for item in matched] == [
+        "Elektřina výhodně PRO na 3 roky"
+    ]
     assert fuzzy == ()
 
 
@@ -128,10 +146,14 @@ def test_distribution_territory_is_part_of_fail_closed_match() -> None:
     adapter = eon.EonTariffCatalogAdapter(clock=_clock)
 
     egd = __import__("asyncio").run(
-        adapter.async_discover(_query(sources, "Variant PRO na 2 roky", distributor="eg_d"))
+        adapter.async_discover(
+            _query(sources, "Variant PRO na 2 roky", distributor="eg_d")
+        )
     )
     pre = __import__("asyncio").run(
-        adapter.async_discover(_query(sources, "Variant PRO na 2 roky", distributor="pre_distribuce"))
+        adapter.async_discover(
+            _query(sources, "Variant PRO na 2 roky", distributor="pre_distribuce")
+        )
     )
 
     assert len(egd) == 1
@@ -146,45 +168,56 @@ def test_fixed_contract_kind_is_required() -> None:
     adapter = eon.EonTariffCatalogAdapter(clock=_clock)
 
     fixed = __import__("asyncio").run(
-        adapter.async_discover(_query(sources, "Variant PRO na 2 roky", contract_kind="fixed"))
+        adapter.async_discover(
+            _query(sources, "Variant PRO na 2 roky", contract_kind="fixed")
+        )
     )
     indefinite = __import__("asyncio").run(
-        adapter.async_discover(_query(sources, "Variant PRO na 2 roky", contract_kind="indefinite"))
+        adapter.async_discover(
+            _query(sources, "Variant PRO na 2 roky", contract_kind="indefinite")
+        )
     )
 
     assert len(fixed) == 1
     assert indefinite == ()
 
 
-def test_catalog_respects_document_start_and_2026_regulated_end() -> None:
+def test_catalog_respects_commercial_price_start_without_regulated_year_cutoff() -> None:
     sources, eon = load_modules()
     adapter = eon.EonTariffCatalogAdapter(clock=_clock)
 
     before = __import__("asyncio").run(
         adapter.async_discover(
-            _query(sources, "Variant PRO na 2 roky", valid_on=date(2026, 3, 29))
+            _query(
+                sources,
+                "Variant PRO na 2 roky",
+                valid_on=date(2026, 3, 29),
+            )
         )
     )
     first_day = __import__("asyncio").run(
         adapter.async_discover(
-            _query(sources, "Variant PRO na 2 roky", valid_on=date(2026, 3, 30))
-        )
-    )
-    last_day = __import__("asyncio").run(
-        adapter.async_discover(
-            _query(sources, "Variant PRO na 2 roky", valid_on=date(2026, 12, 31))
+            _query(
+                sources,
+                "Variant PRO na 2 roky",
+                valid_on=date(2026, 3, 30),
+            )
         )
     )
     next_year = __import__("asyncio").run(
         adapter.async_discover(
-            _query(sources, "Variant PRO na 2 roky", valid_on=date(2027, 1, 1))
+            _query(
+                sources,
+                "Variant PRO na 2 roky",
+                valid_on=date(2027, 1, 1),
+            )
         )
     )
 
     assert before == ()
     assert len(first_day) == 1
-    assert len(last_day) == 1
-    assert next_year == ()
+    assert len(next_year) == 1
+    assert next_year[0].price_scope == sources.PRICE_SCOPE_SUPPLIER_COMMERCIAL
 
 
 def test_second_verified_product_uses_its_own_official_valid_from() -> None:
@@ -193,18 +226,27 @@ def test_second_verified_product_uses_its_own_official_valid_from() -> None:
 
     before = __import__("asyncio").run(
         adapter.async_discover(
-            _query(sources, "Elektřina výhodně PRO na 3 roky", valid_on=date(2026, 6, 16))
+            _query(
+                sources,
+                "Elektřina výhodně PRO na 3 roky",
+                valid_on=date(2026, 6, 16),
+            )
         )
     )
     active = __import__("asyncio").run(
         adapter.async_discover(
-            _query(sources, "Elektřina výhodně PRO na 3 roky", valid_on=date(2026, 6, 17))
+            _query(
+                sources,
+                "Elektřina výhodně PRO na 3 roky",
+                valid_on=date(2026, 6, 17),
+            )
         )
     )
 
     assert before == ()
     assert len(active) == 1
     assert active[0].valid_from == date(2026, 6, 17)
+    assert active[0].price_scope == sources.PRICE_SCOPE_SUPPLIER_COMMERCIAL
 
 
 def test_registry_verifies_eon_output_against_eon_official_domain() -> None:
@@ -214,12 +256,18 @@ def test_registry_verifies_eon_output_against_eon_official_domain() -> None:
 
     candidates = __import__("asyncio").run(
         registry.async_discover_verified(
-            _query(sources, "Elektřina výhodně PRO na 3 roky", distributor="pre_distribuce")
+            _query(
+                sources,
+                "Elektřina výhodně PRO na 3 roky",
+                distributor="pre_distribuce",
+            )
         )
     )
 
     assert len(candidates) == 1
-    assert candidates[0].document.source_url.startswith("https://www.eon.cz/getmedia/")
+    assert candidates[0].document.source_url.startswith(
+        "https://www.eon.cz/getmedia/"
+    )
     assert "distribucni--uzemi--pre.pdf" in candidates[0].document.source_url
 
 
