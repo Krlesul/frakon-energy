@@ -180,30 +180,76 @@ def test_ha_update_adapter_uses_shared_session_and_persists_changed_options_once
         "existing": True,
         "tariff_source_watches": [{"schema_version": 1}],
     }
-    adapter, HomeAssistant, ConfigEntry, shared_session, session_calls, orchestrator_calls, _ = load_modules(updated_options=new_options)
+    (
+        adapter,
+        HomeAssistant,
+        ConfigEntry,
+        shared_session,
+        session_calls,
+        orchestrator_calls,
+        _cadence_calls,
+    ) = load_modules(updated_options=new_options)
     hass = HomeAssistant()
     entry = ConfigEntry({"existing": True})
     day = date(2026, 8, 14)
     checked_at = datetime(2026, 8, 14, 8, 45, tzinfo=timezone.utc)
 
-    run = asyncio.run(adapter.async_check_active_tariff_source_ha(hass, entry, day=day, checked_at=checked_at, timeout_seconds=8.5))
+    run = asyncio.run(
+        adapter.async_check_active_tariff_source_ha(
+            hass,
+            entry,
+            day=day,
+            checked_at=checked_at,
+            timeout_seconds=8.5,
+        )
+    )
 
     assert run.updated_options == new_options
     assert run.activation_performed is False
     assert session_calls == [hass]
-    assert orchestrator_calls == [(entry.options, {"day": day, "session": shared_session, "checked_at": checked_at, "timeout_seconds": 8.5})]
-    assert hass.config_entries.update_calls == [(entry, {"options": new_options})]
+    assert orchestrator_calls == [
+        (
+            entry.options,
+            {
+                "day": day,
+                "session": shared_session,
+                "checked_at": checked_at,
+                "timeout_seconds": 8.5,
+            },
+        )
+    ]
+    assert hass.config_entries.update_calls == [
+        (entry, {"options": new_options})
+    ]
 
 
 def test_ha_update_adapter_does_not_write_when_options_are_unchanged() -> None:
-    existing = {"existing": True, "tariff_source_watches": [{"schema_version": 1}]}
-    adapter, HomeAssistant, ConfigEntry, shared_session, session_calls, orchestrator_calls, _ = load_modules(updated_options=dict(existing))
+    existing = {
+        "existing": True,
+        "tariff_source_watches": [{"schema_version": 1}],
+    }
+    (
+        adapter,
+        HomeAssistant,
+        ConfigEntry,
+        shared_session,
+        session_calls,
+        orchestrator_calls,
+        _cadence_calls,
+    ) = load_modules(updated_options=dict(existing))
     hass = HomeAssistant()
     entry = ConfigEntry(existing)
     day = date(2026, 8, 14)
     checked_at = datetime(2026, 8, 14, 8, 50, tzinfo=timezone.utc)
 
-    run = asyncio.run(adapter.async_check_active_tariff_source_ha(hass, entry, day=day, checked_at=checked_at))
+    run = asyncio.run(
+        adapter.async_check_active_tariff_source_ha(
+            hass,
+            entry,
+            day=day,
+            checked_at=checked_at,
+        )
+    )
 
     assert run.updated_options == existing
     assert session_calls == [hass]
@@ -213,12 +259,27 @@ def test_ha_update_adapter_does_not_write_when_options_are_unchanged() -> None:
 
 
 def test_ha_update_adapter_rejects_naive_checked_at_before_network_or_write() -> None:
-    adapter, HomeAssistant, ConfigEntry, _, session_calls, orchestrator_calls, _ = load_modules(updated_options={})
+    (
+        adapter,
+        HomeAssistant,
+        ConfigEntry,
+        _shared_session,
+        session_calls,
+        orchestrator_calls,
+        _cadence_calls,
+    ) = load_modules(updated_options={})
     hass = HomeAssistant()
     entry = ConfigEntry({})
 
     try:
-        asyncio.run(adapter.async_check_active_tariff_source_ha(hass, entry, day=date(2026, 8, 14), checked_at=datetime(2026, 8, 14, 8, 55)))
+        asyncio.run(
+            adapter.async_check_active_tariff_source_ha(
+                hass,
+                entry,
+                day=date(2026, 8, 14),
+                checked_at=datetime(2026, 8, 14, 8, 55),
+            )
+        )
     except ValueError as err:
         assert "timezone-aware" in str(err)
     else:
@@ -230,16 +291,40 @@ def test_ha_update_adapter_rejects_naive_checked_at_before_network_or_write() ->
 
 
 def test_due_adapter_skips_network_write_and_notification_state_before_boundary() -> None:
-    adapter, HomeAssistant, ConfigEntry, _, session_calls, orchestrator_calls, cadence_calls = load_modules(updated_options={}, due=False)
+    (
+        adapter,
+        HomeAssistant,
+        ConfigEntry,
+        _shared_session,
+        session_calls,
+        orchestrator_calls,
+        cadence_calls,
+    ) = load_modules(updated_options={}, due=False)
     hass = HomeAssistant()
     entry = ConfigEntry({"existing": True})
     day = date(2026, 8, 14)
     checked_at = datetime(2026, 8, 14, 9, 0, tzinfo=timezone.utc)
 
-    result = asyncio.run(adapter.async_check_active_tariff_source_if_due_ha(hass, entry, day=day, checked_at=checked_at))
+    result = asyncio.run(
+        adapter.async_check_active_tariff_source_if_due_ha(
+            hass,
+            entry,
+            day=day,
+            checked_at=checked_at,
+        )
+    )
 
     assert result is None
-    assert cadence_calls == [(entry.options, {"day": day, "checked_at": checked_at, "interval": timedelta(days=7)})]
+    assert cadence_calls == [
+        (
+            entry.options,
+            {
+                "day": day,
+                "checked_at": checked_at,
+                "interval": timedelta(days=7),
+            },
+        )
+    ]
     assert adapter._test_notifications.pending_calls == []
     assert adapter._test_notifications.decision_calls == []
     assert adapter._test_persistent_notification.calls == []
@@ -250,33 +335,103 @@ def test_due_adapter_skips_network_write_and_notification_state_before_boundary(
 
 def test_due_adapter_runs_existing_safe_check_when_cadence_is_due() -> None:
     new_options = {"tariff_source_watches": [{"schema_version": 1}]}
-    adapter, HomeAssistant, ConfigEntry, shared_session, session_calls, orchestrator_calls, cadence_calls = load_modules(updated_options=new_options, due=True)
+    (
+        adapter,
+        HomeAssistant,
+        ConfigEntry,
+        shared_session,
+        session_calls,
+        orchestrator_calls,
+        cadence_calls,
+    ) = load_modules(updated_options=new_options, due=True)
     hass = HomeAssistant()
     entry = ConfigEntry({})
     day = date(2026, 8, 14)
     checked_at = datetime(2026, 8, 14, 9, 5, tzinfo=timezone.utc)
 
-    result = asyncio.run(adapter.async_check_active_tariff_source_if_due_ha(hass, entry, day=day, checked_at=checked_at, interval=timedelta(days=3), timeout_seconds=7.0))
+    result = asyncio.run(
+        adapter.async_check_active_tariff_source_if_due_ha(
+            hass,
+            entry,
+            day=day,
+            checked_at=checked_at,
+            interval=timedelta(days=3),
+            timeout_seconds=7.0,
+        )
+    )
 
     assert result is not None
-    assert cadence_calls == [(entry.options, {"day": day, "checked_at": checked_at, "interval": timedelta(days=3)})]
+    assert cadence_calls == [
+        (
+            entry.options,
+            {
+                "day": day,
+                "checked_at": checked_at,
+                "interval": timedelta(days=3),
+            },
+        )
+    ]
     assert adapter._test_notifications.pending_calls == [{}]
     assert adapter._test_notifications.decision_calls == [(result, {})]
     assert session_calls == [hass]
-    assert orchestrator_calls == [(entry.options, {"day": day, "session": shared_session, "checked_at": checked_at, "timeout_seconds": 7.0})]
-    assert hass.config_entries.update_calls == [(entry, {"options": new_options})]
+    assert orchestrator_calls == [
+        (
+            entry.options,
+            {
+                "day": day,
+                "session": shared_session,
+                "checked_at": checked_at,
+                "timeout_seconds": 7.0,
+            },
+        )
+    ]
+    assert hass.config_entries.update_calls == [
+        (entry, {"options": new_options})
+    ]
     assert adapter._test_persistent_notification.calls == []
 
 
 def test_due_adapter_creates_stable_notification_for_new_pending_tariff() -> None:
-    adapter, HomeAssistant, ConfigEntry, _, _, _, _ = load_modules(updated_options={"updated": True}, due=True)
+    (
+        adapter,
+        HomeAssistant,
+        ConfigEntry,
+        _shared_session,
+        _session_calls,
+        _orchestrator_calls,
+        _cadence_calls,
+    ) = load_modules(updated_options={"updated": True}, due=True)
     hass = HomeAssistant()
-    entry = ConfigEntry({"_pending_before": {"f" * 64: None}}, entry_id="tariff-entry")
-    adapter._test_notifications.result = types.SimpleNamespace(title="FRAKON Energy: tariff update available", message="New tariff requires review")
+    entry = ConfigEntry(
+        {"_pending_before": {"f" * 64: None}},
+        entry_id="tariff-entry",
+    )
+    adapter._test_notifications.result = types.SimpleNamespace(
+        title="FRAKON Energy: tariff update available",
+        message="New tariff requires review",
+    )
 
-    run = asyncio.run(adapter.async_check_active_tariff_source_if_due_ha(hass, entry, day=date(2026, 8, 14), checked_at=datetime(2026, 8, 14, 9, 10, tzinfo=timezone.utc)))
+    run = asyncio.run(
+        adapter.async_check_active_tariff_source_if_due_ha(
+            hass,
+            entry,
+            day=date(2026, 8, 14),
+            checked_at=datetime(2026, 8, 14, 9, 10, tzinfo=timezone.utc),
+        )
+    )
 
     assert run is not None
-    assert adapter._test_notifications.pending_calls == [{"_pending_before": {"f" * 64: None}}]
-    assert adapter._test_notifications.decision_calls == [(run, {"f" * 64: None})]
-    assert adapter._test_persistent_notification.calls == [{"hass": hass, "message": "New tariff requires review", "title": "FRAKON Energy: tariff update available", "notification_id": "frakon_energy_tariff_update_tariff-entry"}]
+    assert adapter._test_notifications.pending_calls == [
+        {"_pending_before": {"f" * 64: None}}
+    ]
+    assert adapter._test_notifications.decision_calls == [
+        (run, {"f" * 64: None})
+    ]
+    assert adapter._test_persistent_notification.calls == [
+        {
+            "hass": hass,
+            "message": "New tariff requires review",
+            "title": "FRAKON Energy: tariff update available",
+            "notification_id": "frakon_energy_tariff_update_tariff-entry",
+        }
+    ]
