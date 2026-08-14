@@ -97,6 +97,7 @@ jobs:
           tests/test_tariff_parser_preview.py
           tests/test_tariff_parse_preview_ws_api.py
           tests/test_tariff_parse_preview_wiring.py
+          tests/test_tariff_all_in_preview.py
           tests/test_regulated_pricing.py
           tests/test_tariff_provenance.py
           tests/test_tariff_assembly.py
