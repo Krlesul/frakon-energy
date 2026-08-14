@@ -109,6 +109,7 @@ def test_document_requires_safe_https_metadata() -> None:
     for url in (
         "http://www.cez.cz/cenik.pdf",
         "https://user:password@www.cez.cz/cenik.pdf",
+        "https://www.cez.cz:8443/cenik.pdf",
     ):
         try:
             module.OfficialTariffDocument(
