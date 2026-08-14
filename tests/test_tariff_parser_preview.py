@@ -169,7 +169,7 @@ def test_cez_preview_returns_exact_validated_supplier_prices_without_authority()
     assert result.valid_from == date(2026, 1, 1)
     assert result.distribution_tariff == "D25d"
     assert str(result.high_rate_czk_per_kwh) == "3.96"
-    assert str(result.low_rate_czk_per_kwh) == "3.7"
+    assert str(result.low_rate_czk_per_kwh) == "3.70"
     assert str(result.supplier_standing_czk_month) == "130.68"
     assert result.includes_vat is True
     assert result.document_sha256 == validated.document.sha256
@@ -184,7 +184,7 @@ def test_cez_preview_returns_exact_validated_supplier_prices_without_authority()
 
     payload = result.as_dict()
     assert payload["high_rate_czk_per_kwh"] == "3.96"
-    assert payload["low_rate_czk_per_kwh"] == "3.7"
+    assert payload["low_rate_czk_per_kwh"] == "3.70"
     assert payload["supplier_standing_czk_month"] == "130.68"
     assert payload["validation_reasons"] == [
         "validated selected supplier-commercial PDF",
