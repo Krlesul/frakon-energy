@@ -1,0 +1,56 @@
+name: Frontend Sync 291
+
+on:
+  push:
+    branches:
+      - agent/tariff-wizard-parse-preview-ui
+    paths:
+      - "frontend/**"
+      - ".github/workflows/frontend-sync-291.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v5
+        with:
+          ref: agent/tariff-wizard-parse-preview-ui
+          persist-credentials: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm install
+
+      - name: Type-check and build
+        working-directory: frontend
+        run: npm run build
+
+      - name: Package dashboard
+        run: |
+          rm -rf custom_components/frakon_energy/frontend_app
+          mkdir -p custom_components/frakon_energy/frontend_app
+          cp -R frontend/dist/. custom_components/frakon_energy/frontend_app/
+          test -f custom_components/frakon_energy/frontend_app/index.html
+
+      - name: Commit generated dashboard only
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- custom_components/frakon_energy/frontend_app; then
+            echo "Generated dashboard already current"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add custom_components/frakon_energy/frontend_app
+          git commit -m "build: sync tariff wizard frontend"
+          git push origin HEAD:agent/tariff-wizard-parse-preview-ui
