@@ -55,6 +55,12 @@ def _url_host(value: str) -> str:
         raise ValueError("source_url must use HTTPS and contain a hostname")
     if parsed.username is not None or parsed.password is not None:
         raise ValueError("source_url must not contain embedded credentials")
+    try:
+        port = parsed.port
+    except ValueError as err:
+        raise ValueError("source_url contains an invalid port") from err
+    if port not in (None, 443):
+        raise ValueError("source_url must not use a nonstandard HTTPS port")
     return parsed.hostname.lower().rstrip(".")
 
 
