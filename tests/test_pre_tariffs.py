@@ -102,7 +102,7 @@ def test_nefix_is_indefinite_and_favorit_products_are_fixed() -> None:
             assert item.valid_from == date(2026, 1, 1)
         else:
             assert item.contract_kind == "fixed"
-            assert item.valid_from == date(2026, 8, 1)
+            assert item.valid_from == date(2026, 7, 1)
 
 
 def test_exact_product_and_alias_return_supplier_commercial_candidate() -> None:
@@ -178,7 +178,7 @@ def test_contract_kind_is_fail_closed() -> None:
     assert wrong_favorit == ()
 
 
-def test_august_favorit_catalog_never_applies_before_validity() -> None:
+def test_july_favorit_catalog_never_applies_before_validity() -> None:
     sources, pre = load_modules()
     adapter = pre.PreTariffCatalogAdapter(clock=_clock)
 
@@ -188,7 +188,7 @@ def test_august_favorit_catalog_never_applies_before_validity() -> None:
                 sources,
                 "PRE PROUD FAVORIT 3",
                 contract_kind="fixed",
-                valid_on=date(2026, 7, 31),
+                valid_on=date(2026, 6, 30),
             )
         )
     )
@@ -198,7 +198,7 @@ def test_august_favorit_catalog_never_applies_before_validity() -> None:
                 sources,
                 "PRE PROUD FAVORIT 3",
                 contract_kind="fixed",
-                valid_on=date(2026, 8, 1),
+                valid_on=date(2026, 7, 1),
             )
         )
     )
