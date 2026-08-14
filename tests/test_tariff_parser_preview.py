@@ -46,6 +46,7 @@ def load_modules():
         "custom_components.frakon_energy.tariff_candidate_selection",
         "custom_components.frakon_energy.tariff_download",
         "custom_components.frakon_energy.tariff_pdf_text",
+        "custom_components.frakon_energy.providers.cez_tariffs",
         "custom_components.frakon_energy.providers.cez_tariff_parser",
         "custom_components.frakon_energy.tariff_parser_preview",
     )
@@ -80,6 +81,10 @@ def load_modules():
     pdf_text = _load(
         "custom_components.frakon_energy.tariff_pdf_text",
         "custom_components/frakon_energy/tariff_pdf_text.py",
+    )
+    _load(
+        "custom_components.frakon_energy.providers.cez_tariffs",
+        "custom_components/frakon_energy/providers/cez_tariffs.py",
     )
     _load(
         "custom_components.frakon_energy.providers.cez_tariff_parser",
@@ -189,10 +194,29 @@ def test_cez_preview_returns_exact_validated_supplier_prices_without_authority()
     assert payload["validation_reasons"] == [
         "validated selected supplier-commercial PDF",
         "exact document source URL and SHA-256 match",
-        "exact ČEZ product match",
+        "exact ČEZ parsed product matches selected canonical candidate",
+        "verified ČEZ contract product or official alias match",
         "exact distribution tariff match",
         "exact commercial-price validity match",
     ]
+
+
+def test_cez_preview_accepts_explicit_verified_catalog_alias() -> None:
+    contracts, sources, selection, download_module, pdf_text, preview = load_modules()
+    contract, _candidate, validated, extracted = _cez_inputs(
+        contracts,
+        sources,
+        selection,
+        download_module,
+        pdf_text,
+        candidate_product="Basic",
+        contract_product="Elektřina Basic",
+    )
+
+    result = preview.parse_supplier_tariff_preview(validated, extracted, contract)
+
+    assert result.product_name == "Basic"
+    assert result.extraction_confidence == 100
 
 
 def test_preview_rejects_parsed_product_drift() -> None:
