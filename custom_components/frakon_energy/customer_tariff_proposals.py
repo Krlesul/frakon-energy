@@ -252,6 +252,10 @@ def stage_customer_tariff_proposal(
 
     updated = append_electricity_contract(options, unconfirmed_contract)
     updated = append_all_in_tariff(updated, assembly)
+    # Validate the complete immutable graph before the proposal itself becomes
+    # durable. Failure returns no options object to the caller, so no partial state
+    # can be written by the WebSocket boundary.
+    _proposal_targets(updated, proposal)
     updated = append_customer_tariff_proposal(updated, proposal)
     return updated, proposal
 
