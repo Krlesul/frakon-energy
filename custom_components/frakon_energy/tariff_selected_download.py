@@ -55,7 +55,12 @@ class SelectedTariffDownloadRun:
             raise ValueError("request source does not match selected candidate")
         if self.outcome.selected_fingerprint != self.selected_fingerprint:
             raise ValueError("fetch outcome fingerprint does not match selection")
-        if self.outcome.source_url != self.candidate.document.source_url:
+        outcome_source = (
+            self.outcome.document.source_url
+            if isinstance(self.outcome, ValidatedTariffDownload)
+            else self.outcome.source_url
+        )
+        if outcome_source != self.candidate.document.source_url:
             raise ValueError("fetch outcome source does not match selected candidate")
 
     @property
