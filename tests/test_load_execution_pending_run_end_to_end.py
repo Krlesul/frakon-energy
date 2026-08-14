@@ -81,6 +81,11 @@ class _Store:
         self.data = data
 
 
+class _CancellationRepo:
+    async def async_get_by_attempt_id(self, attempt_id: str):
+        return None
+
+
 class _States:
     def __init__(self) -> None:
         self.value = "off"
@@ -395,6 +400,11 @@ def _wire_pending_scheduler(
         "lifecycle_repository",
         lambda hass, entry_id: start_repo,
     )
+    monkeypatch.setattr(
+        pending_scheduler_mod,
+        "cancellation_repository",
+        lambda hass, entry_id: _CancellationRepo(),
+    )
     ok = SimpleNamespace(status="ok")
     monkeypatch.setattr(
         pending_scheduler_mod,
@@ -608,9 +618,6 @@ async def test_pending_timer_disarmed_prepares_stop_lease_without_call_then_arm_
     assert start_runtime.statuses()[0].status == STATUS_DISARMED
     assert stop_timers == []
 
-    # Commissioning ARM is a separate deliberate action. It does not trust the
-    # pending scheduler result; the existing start scheduler reruns its exact
-    # bounded gate and the dispatcher proves durable stop ownership before call.
     hass.execution_armed = True
     await start_runtime.async_refresh(now=START + timedelta(seconds=1))
 
@@ -622,7 +629,6 @@ async def test_pending_timer_disarmed_prepares_stop_lease_without_call_then_arm_
     assert stop is not None and stop.state == STOP_STATE_OWNED
     assert stop_timers and stop_timers[-1][1] == END.astimezone(timezone.utc)
 
-    # DISARM after start must never disable the already-owned safety stop.
     hass.execution_armed = False
     stop_timers[-1][0](END)
     await asyncio.gather(*hass.tasks)

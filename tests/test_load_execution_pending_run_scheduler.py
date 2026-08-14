@@ -50,6 +50,11 @@ class _LifecycleRepo:
         return self.record
 
 
+class _CancellationRepo:
+    async def async_get_by_attempt_id(self, attempt_id: str):
+        return None
+
+
 class _Hass:
     def __init__(self) -> None:
         self.data: dict[str, Any] = {}
@@ -130,6 +135,11 @@ def _wire(
         scheduler_mod,
         "lifecycle_repository",
         lambda hass, entry_id: lifecycle_repo,
+    )
+    monkeypatch.setattr(
+        scheduler_mod,
+        "cancellation_repository",
+        lambda hass, entry_id: _CancellationRepo(),
     )
     monkeypatch.setattr(
         scheduler_mod,

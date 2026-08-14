@@ -203,8 +203,11 @@ def _score(entity: EntityDescriptor, role: EntityRole) -> tuple[int, tuple[str, 
             score += 40
             reasons.append("limit name")
     elif role in (EntityRole.GRID_IMPORT, EntityRole.GRID_EXPORT):
-        if entity.device_class in ("power", "energy"):
+        if entity.device_class == "power":
             score += 35
+            reasons.append("power flow device class")
+        elif entity.device_class == "energy":
+            score += 25
             reasons.append("energy flow device class")
         words = ("import", "odběr", "odber", "grid_in") if role == EntityRole.GRID_IMPORT else ("export", "přetok", "pretok", "grid_out")
         if any(word in text for word in words):
@@ -228,6 +231,16 @@ def _score(entity: EntityDescriptor, role: EntityRole) -> tuple[int, tuple[str, 
     return min(score, 100), tuple(reasons)
 
 
+def _technology_source_rank(
+    technology: HouseTechnology,
+    entity: EntityDescriptor,
+) -> int:
+    """Prefer explicit technology integrations when otherwise equally confident."""
+    if technology == HouseTechnology.ELECTRIC_VEHICLE and entity.integration:
+        return 1
+    return 0
+
+
 def discover_existing_entities(
     technology: HouseTechnology,
     entities: Iterable[EntityDescriptor],
@@ -235,10 +248,25 @@ def discover_existing_entities(
     """Rank existing Home Assistant entities for the selected technology."""
     result: dict[EntityRole, tuple[EntityMatch, ...]] = {}
     for role in ROLE_RULES.get(technology, ()):
-        matches: list[EntityMatch] = []
+        matches: list[tuple[EntityMatch, int]] = []
         for entity in entities:
             score, reasons = _score(entity, role)
             if score >= 50:
-                matches.append(EntityMatch(role, entity.entity_id, score, reasons))
-        result[role] = tuple(sorted(matches, key=lambda item: (-item.confidence, item.entity_id)))
+                matches.append(
+                    (
+                        EntityMatch(role, entity.entity_id, score, reasons),
+                        _technology_source_rank(technology, entity),
+                    )
+                )
+        result[role] = tuple(
+            match
+            for match, _source_rank in sorted(
+                matches,
+                key=lambda item: (
+                    -item[0].confidence,
+                    -item[1],
+                    item[0].entity_id,
+                ),
+            )
+        )
     return result

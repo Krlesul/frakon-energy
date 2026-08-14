@@ -47,6 +47,11 @@ class _LifecycleRepo:
         return self.record
 
 
+class _CancellationRepo:
+    async def async_get_by_attempt_id(self, attempt_id: str):
+        return None
+
+
 class _Hass:
     def __init__(self) -> None:
         self.data: dict[str, Any] = {}
@@ -147,6 +152,7 @@ def _wire(
     lifecycle_repo: _LifecycleRepo,
 ) -> list[str]:
     refreshes: list[str] = []
+    cancellation_repo = _CancellationRepo()
     monkeypatch.setattr(
         pending_ws,
         "pending_run_repository",
@@ -156,6 +162,11 @@ def _wire(
         pending_ws,
         "lifecycle_repository",
         lambda hass, entry_id: lifecycle_repo,
+    )
+    monkeypatch.setattr(
+        pending_ws,
+        "cancellation_repository",
+        lambda hass, entry_id: cancellation_repo,
     )
     monkeypatch.setattr(
         pending_ws,

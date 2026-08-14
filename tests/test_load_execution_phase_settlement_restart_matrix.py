@@ -154,6 +154,7 @@ def _wire_release(
         "phase_capacity_reservation_repository",
         lambda hass, entry_id: reservation_repo,
     )
+    monkeypatch.setattr(release.time, "time", lambda: 201)
 
     async def final_proof(hass, *, entry_id: str, lifecycle_id: str):
         value = SimpleNamespace(candidate=True, reason="candidate_after_restart")

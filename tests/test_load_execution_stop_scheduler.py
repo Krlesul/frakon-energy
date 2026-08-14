@@ -108,7 +108,7 @@ class _Repo:
 
 def _owned() -> ExecutionStopLifecycleRecord:
     return ExecutionStopLifecycleRecord(
-        stop_lifecycle_id="e" * 32,
+        stop_lifecycle_id="f76d6da2c879fda8c5fae44f6cdc897a",
         lease_id="a" * 32,
         entry_id="entry-1",
         start_lifecycle_id="b" * 32,
@@ -470,7 +470,7 @@ async def test_timer_fire_dispatches_due_stop_once(
 
     monkeypatch.setattr(scheduler_mod, "async_track_point_in_utc_time", track)
     scheduler = ExecutionStopScheduler(hass, "entry-1")  # type: ignore[arg-type]
-    await scheduler.async_start()
+    scheduler._started = True
     await scheduler.async_refresh(now=START)
 
     captured["action"](END)
@@ -496,7 +496,7 @@ async def test_unload_cancels_timer_and_queued_callback_cannot_dispatch(
 
     monkeypatch.setattr(scheduler_mod, "async_track_point_in_utc_time", track)
     scheduler = ExecutionStopScheduler(hass, "entry-1")  # type: ignore[arg-type]
-    await scheduler.async_start()
+    scheduler._started = True
     await scheduler.async_refresh(now=START)
     await scheduler.async_stop()
 

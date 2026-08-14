@@ -13,10 +13,16 @@ class _States:
         return SimpleNamespace(state=self.value) if self.value is not None else None
 
 
+class _ConfigEntries:
+    def async_get_entry(self, entry_id: str):
+        return SimpleNamespace(options={}) if entry_id == "entry-1" else None
+
+
 class _Hass:
     def __init__(self, value: str | None = "off") -> None:
         self.data = {}
         self.states = _States(value)
+        self.config_entries = _ConfigEntries()
 
 
 class _Record:

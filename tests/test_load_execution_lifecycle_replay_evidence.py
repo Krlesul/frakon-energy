@@ -148,7 +148,7 @@ async def test_verified_recovery_replay_does_not_claim_confirmed_execution(
     )
 
     result = await lifecycle_ws.async_prepare_execution_lifecycle(
-        SimpleNamespace(),  # type: ignore[arg-type]
+        SimpleNamespace(data={}),  # type: ignore[arg-type]
         entry_id="entry-1",
         attempt_id="attempt-1",
         plan_value=_plan().as_dict(),
