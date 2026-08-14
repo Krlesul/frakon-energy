@@ -11,7 +11,7 @@ from typing import Any, Mapping
 
 from .pricing import FixedPriceComponent, PriceComponentKind, VariablePriceComponent
 from .regulated_pricing import RegulatedTariffBundle
-from .tariff_provenance import PriceEvidence, evidence_fingerprint
+from .tariff_provenance import PriceEvidence, price_evidence_fingerprint
 from .tariff_sources import PRICE_SCOPE_REGULATED
 
 REGULATED_CATALOG_SCHEMA_VERSION = 1
@@ -165,7 +165,7 @@ def regulated_version_fingerprint(
         "bundle": _bundle_to_dict(bundle),
         "evidence": [
             item.as_dict()
-            for item in sorted(evidence, key=evidence_fingerprint)
+            for item in sorted(evidence, key=price_evidence_fingerprint)
         ],
     }
     encoded = json.dumps(
@@ -206,7 +206,7 @@ class ConfirmedRegulatedTariffVersion:
         }
 
     @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> ConfirmedRegulatedTariffVersion:
+    def from_dict(cls, value: Mapping[str, Any]) -> "ConfirmedRegulatedTariffVersion":
         if not isinstance(value, Mapping):
             raise ValueError("confirmed regulated tariff version must be an object")
         if value.get("schema_version") != REGULATED_CATALOG_SCHEMA_VERSION:
