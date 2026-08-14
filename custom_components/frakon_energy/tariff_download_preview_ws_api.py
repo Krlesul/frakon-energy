@@ -120,7 +120,7 @@ def async_register_tariff_download_preview_websocket(hass: HomeAssistant) -> Non
                 request=request,
                 checked_at=checked_at,
             )
-        except (OSError, TimeoutError, ValueError) as err:
+        except Exception as err:  # transport/client errors remain a read-only failure
             connection.send_error(msg["id"], "download_failed", str(err))
             return
 
