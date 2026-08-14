@@ -18,6 +18,7 @@ from .tariff_sources import PRICE_SCOPE_REGULATED
 _TARIFF_RE = re.compile(r"^D\d{2}d$")
 _BREAKER_RE = re.compile(r"^(?:1|3)x[1-9]\d*A$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+NON_NETWORK_INFRASTRUCTURE_COMPONENT_NAME = "Provoz nesíťové infrastruktury"
 
 _REGULATED_VARIABLE_KINDS = frozenset(
     {
@@ -64,6 +65,15 @@ def _validate_https_url(value: str) -> str:
     if port not in (None, 443):
         raise ValueError("source_url must not use a nonstandard HTTPS port")
     return url
+
+
+def _supported_regulated_fixed_component(item: FixedPriceComponent) -> bool:
+    if item.kind in _REGULATED_FIXED_KINDS:
+        return True
+    return (
+        item.kind == PriceComponentKind.OTHER_FIXED
+        and item.name == NON_NETWORK_INFRASTRUCTURE_COMPONENT_NAME
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,7 +138,7 @@ class RegulatedTariffBundle:
             raise ValueError("fixed_components contains an invalid item")
         if any(item.kind not in _REGULATED_VARIABLE_KINDS for item in variable):
             raise ValueError("regulated variable components contain a supplier or unsupported kind")
-        if any(item.kind not in _REGULATED_FIXED_KINDS for item in fixed):
+        if any(not _supported_regulated_fixed_component(item) for item in fixed):
             raise ValueError("regulated fixed components contain a supplier or unsupported kind")
 
         names = [item.name for item in (*variable, *fixed)]
