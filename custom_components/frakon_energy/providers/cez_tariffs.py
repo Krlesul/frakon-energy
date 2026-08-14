@@ -1,8 +1,8 @@
 """Verified ČEZ household commercial price-list catalog.
 
-The entries in this module point to official ČEZ Prodej PDF documents.  They
+The entries in this module point to official ČEZ Prodej PDF documents. They
 contain only the supplier's commercial (unregulated) energy price and supplier
-standing charge.  They are deliberately classified as supplier-commercial
+standing charge. They are deliberately classified as supplier-commercial
 sources and must be combined with regulated distribution components before an
 all-in tariff can be produced.
 """
@@ -27,6 +27,9 @@ CEZ_OFFICIAL_DOMAINS = ("cez.cz",)
 CEZ_CURRENT_PRICES_INDEX_URL = "https://www.cez.cz/cs/nove-ceny"
 CEZ_2026_COMMERCIAL_VALID_FROM = date(2026, 1, 1)
 
+CONTRACT_KIND_INDEFINITE = "indefinite"
+CONTRACT_KIND_FIXED = "fixed"
+
 
 @dataclass(frozen=True, slots=True)
 class CezCatalogEntry:
@@ -35,6 +38,7 @@ class CezCatalogEntry:
     product_name: str
     source_url: str
     valid_from: date
+    contract_kind: str
     aliases: tuple[str, ...] = ()
 
 
@@ -43,40 +47,47 @@ CEZ_2026_COMMERCIAL_CATALOG: tuple[CezCatalogEntry, ...] = (
         product_name="Elektřina na dobu neurčitou",
         source_url="https://www.cez.cz/file/edee/2025/10/x01_moo_ee_na_dobu_neurcitou.pdf",
         valid_from=CEZ_2026_COMMERCIAL_VALID_FROM,
+        contract_kind=CONTRACT_KIND_INDEFINITE,
         aliases=("Na dobu neurčitou",),
     ),
     CezCatalogEntry(
         product_name="Basic",
         source_url="https://www.cez.cz/file/edee/2025/10/x02_moo_ee_basic.pdf",
         valid_from=CEZ_2026_COMMERCIAL_VALID_FROM,
+        contract_kind=CONTRACT_KIND_INDEFINITE,
         aliases=("Elektřina Basic",),
     ),
     CezCatalogEntry(
         product_name="eTarif",
         source_url="https://www.cez.cz/file/edee/2025/10/x03_moo_ee_etarif.pdf",
         valid_from=CEZ_2026_COMMERCIAL_VALID_FROM,
+        contract_kind=CONTRACT_KIND_INDEFINITE,
         aliases=("Elektřina eTarif",),
     ),
     CezCatalogEntry(
         product_name="Zelená elektřina",
         source_url="https://www.cez.cz/file/edee/2025/10/x05_moo_ee_zelena_elektrina.pdf",
         valid_from=CEZ_2026_COMMERCIAL_VALID_FROM,
+        contract_kind=CONTRACT_KIND_INDEFINITE,
     ),
     CezCatalogEntry(
         product_name="Elektřina pro ZTP",
         source_url="https://www.cez.cz/file/edee/2025/10/x06_moo_ee_pro_ztp.pdf",
         valid_from=CEZ_2026_COMMERCIAL_VALID_FROM,
+        contract_kind=CONTRACT_KIND_INDEFINITE,
     ),
     CezCatalogEntry(
         product_name="Krátko odběr",
         source_url="https://www.cez.cz/file/edee/2025/10/x07_moo_ee_kratko-odber.pdf",
         valid_from=CEZ_2026_COMMERCIAL_VALID_FROM,
+        contract_kind=CONTRACT_KIND_FIXED,
         aliases=("Elektřina Krátko odběr",),
     ),
     CezCatalogEntry(
         product_name="Elektřina bez závazku",
         source_url="https://www.cez.cz/file/edee/2025/10/x08_moo_ee_bez-zavazku.pdf",
         valid_from=CEZ_2026_COMMERCIAL_VALID_FROM,
+        contract_kind=CONTRACT_KIND_INDEFINITE,
     ),
 )
 
@@ -133,6 +144,8 @@ class CezTariffCatalogAdapter:
         for entry in self._catalog:
             if query.valid_on < entry.valid_from:
                 continue
+            if query.contract_kind != entry.contract_kind:
+                continue
             match = _match_entry(entry, query.product_name)
             if match is None:
                 continue
@@ -150,6 +163,7 @@ class CezTariffCatalogAdapter:
                     match_score=score,
                     match_reasons=(
                         reason,
+                        "exact contract kind from official ČEZ price list",
                         "official ČEZ household price-list PDF",
                         "supplier commercial price only; regulated components are separate",
                     ),
