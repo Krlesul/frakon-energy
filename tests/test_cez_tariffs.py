@@ -42,12 +42,18 @@ def load_modules():
     return source_module, cez_module
 
 
-def _query(source_module, product: str, *, valid_on: date = date(2026, 8, 14)):
+def _query(
+    source_module,
+    product: str,
+    *,
+    valid_on: date = date(2026, 8, 14),
+    contract_kind: str = "indefinite",
+):
     return source_module.TariffSourceQuery(
         supplier="cez",
         product_name=product,
         distributor="cez_distribuce",
-        contract_kind="indefinite",
+        contract_kind=contract_kind,
         distribution_tariff="D25d",
         breaker_code="3x25A",
         valid_on=valid_on,
@@ -75,6 +81,15 @@ def test_verified_catalog_contains_seven_official_cez_pdfs() -> None:
         assert item.source_url.startswith("https://www.cez.cz/file/")
         assert item.source_url.endswith(".pdf")
         assert item.valid_from == date(2026, 1, 1)
+    assert {
+        item.product_name: item.contract_kind
+        for item in cez.CEZ_2026_COMMERCIAL_CATALOG
+    }["Krátko odběr"] == "fixed"
+    assert all(
+        item.contract_kind == "indefinite"
+        for item in cez.CEZ_2026_COMMERCIAL_CATALOG
+        if item.product_name != "Krátko odběr"
+    )
 
 
 def test_exact_product_and_official_alias_return_commercial_only_candidate() -> None:
@@ -97,6 +112,7 @@ def test_exact_product_and_official_alias_return_commercial_only_candidate() -> 
         assert candidate.price_scope == sources.PRICE_SCOPE_SUPPLIER_COMMERCIAL
         assert candidate.document.supplier == "cez"
         assert candidate.document.content_type == "application/pdf"
+        assert "exact contract kind" in candidate.match_reasons[1]
         assert "regulated components are separate" in candidate.match_reasons[-1]
 
 
@@ -113,6 +129,25 @@ def test_product_matching_is_accent_case_normalized_but_fail_closed() -> None:
 
     assert [item.product_name for item in matched] == ["Zelená elektřina"]
     assert unknown == ()
+
+
+def test_contract_kind_must_match_official_cez_document() -> None:
+    sources, cez = load_modules()
+    adapter = cez.CezTariffCatalogAdapter(clock=_clock)
+
+    wrong_indefinite = __import__("asyncio").run(
+        adapter.async_discover(_query(sources, "Krátko odběr", contract_kind="indefinite"))
+    )
+    fixed = __import__("asyncio").run(
+        adapter.async_discover(_query(sources, "Krátko odběr", contract_kind="fixed"))
+    )
+    wrong_fixed = __import__("asyncio").run(
+        adapter.async_discover(_query(sources, "Basic", contract_kind="fixed"))
+    )
+
+    assert wrong_indefinite == ()
+    assert [item.product_name for item in fixed] == ["Krátko odběr"]
+    assert wrong_fixed == ()
 
 
 def test_catalog_never_applies_before_document_validity() -> None:
