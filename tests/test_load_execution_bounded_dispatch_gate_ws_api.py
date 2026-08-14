@@ -26,7 +26,11 @@ from custom_components.frakon_energy.load_execution_stop_lease import (
     ExecutionStopLease,
     ExecutionStopLeaseRepository,
 )
-from custom_components.frakon_energy.load_profiles import PROFILE_KIND_EV, LoadProfile
+from custom_components.frakon_energy.load_profiles import (
+    PROFILE_KIND_EV,
+    LoadProfile,
+    upsert_profile,
+)
 
 TZ = timezone(timedelta(hours=2))
 START = datetime(2026, 8, 8, 1, 0, tzinfo=TZ)
@@ -43,6 +47,25 @@ class _FakeStore:
     async def async_save(self, data: dict[str, Any]) -> None:
         self.data = data
         self.saves += 1
+
+
+class _States:
+    def get(self, entity_id: str):
+        return None
+
+
+class _ConfigEntries:
+    def async_get_entry(self, entry_id: str):
+        if entry_id != "entry-1":
+            return None
+        return SimpleNamespace(options=upsert_profile({}, _profile()))
+
+
+class _Hass:
+    def __init__(self) -> None:
+        self.data: dict[str, Any] = {}
+        self.states = _States()
+        self.config_entries = _ConfigEntries()
 
 
 def _profile() -> LoadProfile:
@@ -170,7 +193,7 @@ async def test_endpoint_requires_matching_persisted_stop_lease_without_mutation(
     )
 
     result = await gate_ws.async_bounded_dispatch_gate(
-        SimpleNamespace(),  # type: ignore[arg-type]
+        _Hass(),  # type: ignore[arg-type]
         entry_id="entry-1",
         attempt_id="attempt-1",
         now=START,
@@ -208,7 +231,7 @@ async def test_endpoint_blocks_ready_dispatch_when_stop_lease_missing(
     )
 
     result = await gate_ws.async_bounded_dispatch_gate(
-        SimpleNamespace(),  # type: ignore[arg-type]
+        _Hass(),  # type: ignore[arg-type]
         entry_id="entry-1",
         attempt_id="attempt-1",
         now=START,
