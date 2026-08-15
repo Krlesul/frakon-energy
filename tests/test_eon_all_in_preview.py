@@ -283,12 +283,19 @@ def test_eon_supplier_preview_combines_only_with_independent_confirmed_regulatio
     assert payload["fixed_monthly_total_czk"] == "425.5727"
     assert payload["variable_components"][0]["name"] == "E.ON – obchodní cena elektřiny"
     assert payload["fixed_components"][0]["name"] == "E.ON – stálá platba dodavatele"
-    supplier_evidence, regulated_evidence = payload["provenance"]["evidence"]
-    assert supplier_evidence["scope"] == sources.PRICE_SCOPE_SUPPLIER_COMMERCIAL
+
+    evidence_by_scope = {
+        item["scope"]: item for item in payload["provenance"]["evidence"]
+    }
+    assert set(evidence_by_scope) == {
+        sources.PRICE_SCOPE_SUPPLIER_COMMERCIAL,
+        sources.PRICE_SCOPE_REGULATED,
+    }
+    supplier_evidence = evidence_by_scope[sources.PRICE_SCOPE_SUPPLIER_COMMERCIAL]
+    regulated_evidence = evidence_by_scope[sources.PRICE_SCOPE_REGULATED]
     assert supplier_evidence["source_name"] == "E.ON Energie"
     assert supplier_evidence["source_url"] == document.source_url
     assert supplier_evidence["checksum"] == sha256
-    assert regulated_evidence["scope"] == sources.PRICE_SCOPE_REGULATED
     assert regulated_evidence["source_url"] == regulated_url
     assert regulated_evidence["checksum"] == regulated_checksum
     assert result.persistence_performed is False
