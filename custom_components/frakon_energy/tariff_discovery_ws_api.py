@@ -13,11 +13,16 @@ from .const import DOMAIN
 from .contracts import ElectricityContract, contract_fingerprint
 from .tariff_adapter_registry import build_default_tariff_adapter_registry
 from .tariff_discovery import async_discover_contract_tariff_review
+from .tariff_source_context import (
+    TariffSourceResolutionContext,
+    tariff_source_context_fingerprint,
+)
 from .tariff_sources import TariffAdapterRegistry
 
 COMMAND_TARIFF_DISCOVER = "frakon_energy/tariff/discover"
 _REGISTERED_KEY = "tariff_discovery_websocket_registered"
 _REGISTRY_KEY = "tariff_adapter_registry"
+_VOL_OPTIONAL = getattr(vol, "Optional", lambda key: key)
 
 
 def _entry_or_error(
@@ -76,6 +81,7 @@ def async_register_tariff_discovery_websocket(
             vol.Required("entry_id"): str,
             vol.Required("contract"): dict,
             vol.Required("day"): str,
+            _VOL_OPTIONAL("source_context"): dict,
         }
     )
     @websocket_api.async_response
@@ -110,10 +116,23 @@ def async_register_tariff_discovery_websocket(
             return
 
         try:
+            source_context = TariffSourceResolutionContext.from_value(
+                msg.get("source_context")
+            )
+        except (TypeError, ValueError) as err:
+            connection.send_error(
+                msg["id"],
+                "invalid_source_context",
+                str(err),
+            )
+            return
+
+        try:
             review = await async_discover_contract_tariff_review(
                 contract,
                 day=discovery_day,
                 registry=active_registry,
+                source_context=source_context,
             )
         except LookupError as err:
             connection.send_error(
@@ -135,6 +154,9 @@ def async_register_tariff_discovery_websocket(
             {
                 "entry_id": entry.entry_id,
                 "contract_fingerprint": contract_fingerprint(contract),
+                "source_context_fingerprint": tariff_source_context_fingerprint(
+                    source_context
+                ),
                 "day": discovery_day.isoformat(),
                 "supported_suppliers": list(active_registry.supported_suppliers()),
                 "candidates": [item.as_dict() for item in review],
