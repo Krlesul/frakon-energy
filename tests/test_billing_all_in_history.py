@@ -184,16 +184,26 @@ def test_missing_authority_for_any_historical_version_fails_closed() -> None:
 
 
 def test_missing_confirmed_tariff_for_any_cycle_day_fails_closed() -> None:
-    history, _authority, _first, _second, _proposal, _second_fingerprint, options = _fixture()
+    history, authority, _first, _second, _proposal, _second_fingerprint, options = _fixture()
     all_in = sys.modules["custom_components.frakon_energy.all_in_catalog"]
-    broken = dict(options)
-    broken[all_in.OPTION_ALL_IN_TARIFF_CATALOG] = [
+    first_item = next(
         item
-        for item in broken[all_in.OPTION_ALL_IN_TARIFF_CATALOG]
-        if item["assembly"]["valid_from"] != "2026-07-01"
-    ]
-    first_raw = broken[all_in.OPTION_ALL_IN_TARIFF_CATALOG][0]
-    first_raw["assembly"]["valid_to"] = "2026-06-30"
+        for item in all_in.all_in_tariffs_from_options(options)
+        if item.assembly.valid_from == date(2026, 1, 1)
+    )
+    limited_item = all_in.PersistedAllInTariff(
+        assembly=replace(first_item.assembly, valid_to=date(2026, 6, 30)),
+        confirmed=True,
+    )
+    limited_fingerprint = all_in.all_in_tariff_fingerprint(limited_item)
+    broken = dict(options)
+    broken[all_in.OPTION_ALL_IN_TARIFF_CATALOG] = [limited_item.as_dict()]
+    broken[authority.OPTION_ALL_IN_TARIFF_AUTHORITIES] = []
+    broken = authority.append_all_in_tariff_authority(
+        broken,
+        all_in_fingerprint=limited_fingerprint,
+        method=authority.AllInTariffAuthorityMethod.VERIFIED_PARSER,
+    )
 
     with pytest.raises(LookupError, match="No confirmed all-in tariff applies"):
         history.confirmed_all_in_billing_schedule(
