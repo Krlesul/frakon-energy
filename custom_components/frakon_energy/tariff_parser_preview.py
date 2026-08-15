@@ -10,12 +10,24 @@ import re
 from .contracts import ElectricityContract, Supplier
 from .providers.cez_tariff_parser import parse_cez_commercial_price_text
 from .providers.cez_tariffs import cez_contract_product_matches_candidate
+from .providers.eon_tariff_parser import parse_eon_supplier_tariff
+from .providers.eon_tariffs import eon_contract_product_matches_candidate
 from .tariff_download import ValidatedTariffDownload
 from .tariff_pdf_text import ExtractedTariffPdfText
 from .tariff_sources import PRICE_SCOPE_SUPPLIER_COMMERCIAL
 
 CONFIDENCE_EXACT = 100
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_PARSER_NAMES = {
+    Supplier.CEZ.value: "cez_commercial_v1",
+    Supplier.EON.value: "eon_commercial_v1",
+}
+
+
+def supplier_parser_supported(supplier: Supplier | str) -> bool:
+    """Return whether an exact supplier-commercial parser is production-authorized."""
+    value = supplier.value if isinstance(supplier, Supplier) else supplier
+    return isinstance(value, str) and value in _PARSER_NAMES
 
 
 def _decimal_string(value: Decimal | None) -> str | None:
@@ -51,7 +63,8 @@ class SupplierTariffParsePreview:
     activation_performed: bool = False
 
     def __post_init__(self) -> None:
-        if self.supplier != Supplier.CEZ.value:
+        expected_parser = _PARSER_NAMES.get(self.supplier)
+        if expected_parser is None:
             raise ValueError("unsupported supplier parser preview")
         if not isinstance(self.product_name, str) or not self.product_name.strip():
             raise ValueError("product_name must not be empty")
@@ -76,7 +89,7 @@ class SupplierTariffParsePreview:
             or self.page_count < 1
         ):
             raise ValueError("page_count must be a positive integer")
-        if self.parser_name != "cez_commercial_v1":
+        if self.parser_name != expected_parser:
             raise ValueError("unsupported parser_name")
         if self.extraction_method != "pypdf_layout":
             raise ValueError("unsupported extraction_method")
@@ -124,6 +137,108 @@ class SupplierTariffParsePreview:
         }
 
 
+def _cez_preview(
+    download: ValidatedTariffDownload,
+    extracted: ExtractedTariffPdfText,
+    contract: ElectricityContract,
+) -> SupplierTariffParsePreview:
+    candidate = download.candidate
+    parsed = parse_cez_commercial_price_text(
+        extracted.text,
+        distribution_tariff=contract.distribution_tariff,
+    )
+    if parsed.product_name.strip().casefold() != candidate.product_name.strip().casefold():
+        raise ValueError("parsed ČEZ product does not match selected candidate")
+    if not cez_contract_product_matches_candidate(
+        candidate_product_name=candidate.product_name,
+        contract_product_name=contract.product_name,
+        contract_kind=contract.contract_kind.value,
+    ):
+        raise ValueError("selected ČEZ product does not match verified contract catalog identity")
+    if parsed.distribution_tariff != contract.distribution_tariff:
+        raise ValueError("parsed ČEZ distribution tariff does not match contract")
+    if parsed.valid_from != candidate.valid_from:
+        raise ValueError("parsed ČEZ validity does not match selected candidate")
+
+    return SupplierTariffParsePreview(
+        supplier=Supplier.CEZ.value,
+        product_name=parsed.product_name,
+        valid_from=parsed.valid_from,
+        distribution_tariff=parsed.distribution_tariff,
+        high_rate_czk_per_kwh=parsed.high_rate_czk_per_kwh,
+        low_rate_czk_per_kwh=parsed.low_rate_czk_per_kwh,
+        supplier_standing_czk_month=parsed.supplier_standing_czk_month,
+        includes_vat=parsed.includes_vat,
+        source_url=download.document.source_url,
+        document_sha256=download.document.sha256 or "",
+        page_count=extracted.page_count,
+        parser_name=_PARSER_NAMES[Supplier.CEZ.value],
+        extraction_method=extracted.extraction_method,
+        extraction_confidence=CONFIDENCE_EXACT,
+        validation_reasons=(
+            "validated selected supplier-commercial PDF",
+            "exact document source URL and SHA-256 match",
+            "exact ČEZ parsed product matches selected canonical candidate",
+            "verified ČEZ contract product or official alias match",
+            "exact distribution tariff match",
+            "exact commercial-price validity match",
+        ),
+    )
+
+
+def _eon_preview(
+    download: ValidatedTariffDownload,
+    extracted: ExtractedTariffPdfText,
+    contract: ElectricityContract,
+) -> SupplierTariffParsePreview:
+    candidate = download.candidate
+    parsed = parse_eon_supplier_tariff(
+        extracted.text,
+        expected_product_name=candidate.product_name,
+        expected_distribution_tariff=contract.distribution_tariff,
+        expected_valid_from=candidate.valid_from,
+        expected_valid_to=candidate.valid_to,
+    )
+    if parsed.product_name != candidate.product_name:
+        raise ValueError("parsed E.ON product does not match selected candidate")
+    if not eon_contract_product_matches_candidate(
+        candidate_product_name=candidate.product_name,
+        contract_product_name=contract.product_name,
+        contract_kind=contract.contract_kind.value,
+    ):
+        raise ValueError("selected E.ON product does not match verified contract catalog identity")
+    if parsed.distribution_tariff != contract.distribution_tariff:
+        raise ValueError("parsed E.ON distribution tariff does not match contract")
+    if parsed.valid_from != candidate.valid_from or parsed.valid_to != candidate.valid_to:
+        raise ValueError("parsed E.ON validity does not match selected candidate")
+
+    return SupplierTariffParsePreview(
+        supplier=Supplier.EON.value,
+        product_name=parsed.product_name,
+        valid_from=parsed.valid_from,
+        distribution_tariff=parsed.distribution_tariff,
+        high_rate_czk_per_kwh=parsed.high_rate_czk_per_kwh,
+        low_rate_czk_per_kwh=parsed.low_rate_czk_per_kwh,
+        supplier_standing_czk_month=parsed.supplier_standing_czk_month,
+        includes_vat=parsed.includes_vat,
+        source_url=download.document.source_url,
+        document_sha256=download.document.sha256 or "",
+        page_count=extracted.page_count,
+        parser_name=_PARSER_NAMES[Supplier.EON.value],
+        extraction_method=extracted.extraction_method,
+        extraction_confidence=CONFIDENCE_EXACT,
+        validation_reasons=(
+            "validated selected supplier-commercial PDF",
+            "exact document source URL and SHA-256 match",
+            "exact E.ON parsed product matches selected canonical candidate",
+            "verified E.ON contract product and contract kind match",
+            "exact distribution tariff match",
+            "exact immutable commercial-price period match",
+            "regulated rows in the supplier PDF were excluded from parsing authority",
+        ),
+    )
+
+
 def parse_supplier_tariff_preview(
     download: ValidatedTariffDownload,
     extracted: ExtractedTariffPdfText,
@@ -155,50 +270,10 @@ def parse_supplier_tariff_preview(
     if extracted.document_sha256 != download.document.sha256:
         raise ValueError("extracted text SHA-256 does not match validated document")
 
-    if contract.supplier is not Supplier.CEZ:
-        raise LookupError(
-            f"supplier parser preview is not implemented: {contract.supplier.value}"
-        )
-
-    parsed = parse_cez_commercial_price_text(
-        extracted.text,
-        distribution_tariff=contract.distribution_tariff,
-    )
-
-    if parsed.product_name.strip().casefold() != candidate.product_name.strip().casefold():
-        raise ValueError("parsed ČEZ product does not match selected candidate")
-    if not cez_contract_product_matches_candidate(
-        candidate_product_name=candidate.product_name,
-        contract_product_name=contract.product_name,
-        contract_kind=contract.contract_kind.value,
-    ):
-        raise ValueError("selected ČEZ product does not match verified contract catalog identity")
-    if parsed.distribution_tariff != contract.distribution_tariff:
-        raise ValueError("parsed ČEZ distribution tariff does not match contract")
-    if parsed.valid_from != candidate.valid_from:
-        raise ValueError("parsed ČEZ validity does not match selected candidate")
-
-    return SupplierTariffParsePreview(
-        supplier=Supplier.CEZ.value,
-        product_name=parsed.product_name,
-        valid_from=parsed.valid_from,
-        distribution_tariff=parsed.distribution_tariff,
-        high_rate_czk_per_kwh=parsed.high_rate_czk_per_kwh,
-        low_rate_czk_per_kwh=parsed.low_rate_czk_per_kwh,
-        supplier_standing_czk_month=parsed.supplier_standing_czk_month,
-        includes_vat=parsed.includes_vat,
-        source_url=download.document.source_url,
-        document_sha256=download.document.sha256 or "",
-        page_count=extracted.page_count,
-        parser_name="cez_commercial_v1",
-        extraction_method=extracted.extraction_method,
-        extraction_confidence=CONFIDENCE_EXACT,
-        validation_reasons=(
-            "validated selected supplier-commercial PDF",
-            "exact document source URL and SHA-256 match",
-            "exact ČEZ parsed product matches selected canonical candidate",
-            "verified ČEZ contract product or official alias match",
-            "exact distribution tariff match",
-            "exact commercial-price validity match",
-        ),
+    if contract.supplier is Supplier.CEZ:
+        return _cez_preview(download, extracted, contract)
+    if contract.supplier is Supplier.EON:
+        return _eon_preview(download, extracted, contract)
+    raise LookupError(
+        f"supplier parser preview is not implemented: {contract.supplier.value}"
     )
