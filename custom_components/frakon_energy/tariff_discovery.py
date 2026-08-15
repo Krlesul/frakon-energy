@@ -6,6 +6,7 @@ from datetime import date
 
 from .contracts import ElectricityContract, lookup_key
 from .tariff_candidate_selection import TariffCandidateReviewItem, candidate_review_items
+from .tariff_source_context import TariffSourceResolutionContext
 from .tariff_sources import (
     TariffAdapterRegistry,
     TariffDocumentCandidate,
@@ -17,13 +18,15 @@ def tariff_source_query_from_contract(
     contract: ElectricityContract,
     *,
     day: date,
+    source_context: TariffSourceResolutionContext | None = None,
 ) -> TariffSourceQuery:
     """Create the canonical supplier-discovery query from one contract version.
 
     Discovery is only meaningful while the immutable contract version applies.
+    Source-resolution context is operational input only; it remains separate
+    from the immutable contract and therefore cannot alter contract identity.
     Confirmation is deliberately not required here because this bridge is also
-    used by the pre-activation review wizard. Confirmation remains mandatory
-    before any tariff becomes active elsewhere in the pricing pipeline.
+    used by the pre-activation review wizard.
     """
     if not isinstance(contract, ElectricityContract):
         raise ValueError("contract must be ElectricityContract")
@@ -31,6 +34,10 @@ def tariff_source_query_from_contract(
         raise ValueError("day must be a date")
     if not contract.applies_on(day):
         raise ValueError("contract does not apply on requested discovery day")
+    if source_context is None:
+        source_context = TariffSourceResolutionContext()
+    if not isinstance(source_context, TariffSourceResolutionContext):
+        raise ValueError("source_context must be TariffSourceResolutionContext")
 
     key = lookup_key(contract, day)
     return TariffSourceQuery(
@@ -41,6 +48,7 @@ def tariff_source_query_from_contract(
         distribution_tariff=key.distribution_tariff,
         breaker_code=key.breaker_code,
         valid_on=key.valid_on,
+        source_context=source_context,
     )
 
 
@@ -49,11 +57,16 @@ async def async_discover_contract_tariff_candidates(
     *,
     day: date,
     registry: TariffAdapterRegistry,
+    source_context: TariffSourceResolutionContext | None = None,
 ) -> tuple[TariffDocumentCandidate, ...]:
     """Discover official candidates for one exact stored contract version."""
     if not isinstance(registry, TariffAdapterRegistry):
         raise ValueError("registry must be TariffAdapterRegistry")
-    query = tariff_source_query_from_contract(contract, day=day)
+    query = tariff_source_query_from_contract(
+        contract,
+        day=day,
+        source_context=source_context,
+    )
     return await registry.async_discover_verified(query)
 
 
@@ -62,11 +75,13 @@ async def async_discover_contract_tariff_review(
     *,
     day: date,
     registry: TariffAdapterRegistry,
+    source_context: TariffSourceResolutionContext | None = None,
 ) -> tuple[TariffCandidateReviewItem, ...]:
     """Return UI-safe review records without download, parsing or activation."""
     candidates = await async_discover_contract_tariff_candidates(
         contract,
         day=day,
         registry=registry,
+        source_context=source_context,
     )
     return candidate_review_items(candidates)
