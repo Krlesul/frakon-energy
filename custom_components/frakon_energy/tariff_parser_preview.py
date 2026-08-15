@@ -19,6 +19,7 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _PARSER_NAMES = {
     Supplier.CEZ.value: "cez_commercial_v1",
     Supplier.EON.value: "eon_commercial_v1",
+    Supplier.PRE.value: "pre_commercial_v1",
 }
 
 
@@ -250,6 +251,70 @@ def _eon_preview(
     )
 
 
+def _pre_preview(
+    download: ValidatedTariffDownload,
+    extracted: ExtractedTariffPdfText,
+    contract: ElectricityContract,
+) -> SupplierTariffParsePreview:
+    try:
+        from .providers.pre_tariff_parser import parse_pre_supplier_tariff
+        from .providers.pre_tariffs import pre_contract_product_matches_candidate
+    except ModuleNotFoundError as err:
+        if err.name in {
+            "custom_components.frakon_energy.providers.pre_tariff_parser",
+            "custom_components.frakon_energy.providers.pre_tariffs",
+        }:
+            raise LookupError("supplier parser preview is not implemented: pre") from err
+        raise
+
+    candidate = download.candidate
+    parsed = parse_pre_supplier_tariff(
+        extracted.text,
+        expected_product_name=candidate.product_name,
+        expected_distribution_tariff=contract.distribution_tariff,
+        expected_distributor=contract.distributor.value,
+        expected_valid_from=candidate.valid_from,
+    )
+    if parsed.product_name != candidate.product_name:
+        raise ValueError("parsed PRE product does not match selected candidate")
+    if not pre_contract_product_matches_candidate(
+        candidate_product_name=candidate.product_name,
+        contract_product_name=contract.product_name,
+        contract_kind=contract.contract_kind.value,
+    ):
+        raise ValueError("selected PRE product does not match verified contract catalog identity")
+    if parsed.distribution_tariff != contract.distribution_tariff:
+        raise ValueError("parsed PRE distribution tariff does not match contract")
+    if parsed.valid_from != candidate.valid_from:
+        raise ValueError("parsed PRE validity does not match selected candidate")
+
+    return SupplierTariffParsePreview(
+        supplier=Supplier.PRE.value,
+        product_name=parsed.product_name,
+        valid_from=parsed.valid_from,
+        distribution_tariff=parsed.distribution_tariff,
+        high_rate_czk_per_kwh=parsed.high_rate_czk_per_kwh,
+        low_rate_czk_per_kwh=parsed.low_rate_czk_per_kwh,
+        supplier_standing_czk_month=parsed.supplier_standing_czk_month,
+        includes_vat=parsed.includes_vat,
+        source_url=download.document.source_url,
+        document_sha256=download.document.sha256 or "",
+        page_count=extracted.page_count,
+        parser_name=_PARSER_NAMES[Supplier.PRE.value],
+        extraction_method=extracted.extraction_method,
+        extraction_confidence=CONFIDENCE_EXACT,
+        validation_reasons=(
+            "validated selected supplier-commercial PDF",
+            "exact document source URL and SHA-256 match",
+            "exact PRE parsed product matches selected canonical candidate",
+            "verified PRE contract product or official alias and contract kind match",
+            "exact PRE distribution territory match",
+            "exact immutable commercial-price validity match",
+            "regulated rows in the supplier PDF were excluded from parsing authority",
+        ),
+    )
+
+
 def parse_supplier_tariff_preview(
     download: ValidatedTariffDownload,
     extracted: ExtractedTariffPdfText,
@@ -285,6 +350,8 @@ def parse_supplier_tariff_preview(
         return _cez_preview(download, extracted, contract)
     if contract.supplier is Supplier.EON:
         return _eon_preview(download, extracted, contract)
+    if contract.supplier is Supplier.PRE:
+        return _pre_preview(download, extracted, contract)
     raise LookupError(
         f"supplier parser preview is not implemented: {contract.supplier.value}"
     )

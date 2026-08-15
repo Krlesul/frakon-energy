@@ -131,6 +131,7 @@ def load_module():
     parser.supplier_parser_supported = lambda supplier: getattr(supplier, "value", supplier) in {
         "cez",
         "eon",
+        "pre",
     }
     sys.modules[parser.__name__] = parser
 
@@ -233,15 +234,14 @@ def test_unsupported_supplier_fails_before_discovery_http_or_executor() -> None:
     hass = Hass(entry)
     connection = Connection()
     contract = contracts.ElectricityContract(
-        supplier=contracts.Supplier.PRE,
-        distributor=contracts.Distributor.PRE_DISTRIBUCE,
-        product_name="PRE PROUD FIX",
-        contract_kind=contracts.ContractKind.FIXED,
+        supplier=contracts.Supplier.MND,
+        distributor=contracts.Distributor.CEZ_DISTRIBUCE,
+        product_name="MND fixture",
+        contract_kind=contracts.ContractKind.INDEFINITE,
         distribution_tariff="D25d",
         breaker=contracts.Breaker(phases=3, amperes=25),
-        valid_from=date(2026, 7, 1),
+        valid_from=date(2026, 1, 1),
         valid_to=date(2026, 12, 31),
-        fixation_end=date(2028, 6, 30),
         customer_confirmed=False,
     )
 
@@ -264,7 +264,7 @@ def test_unsupported_supplier_fails_before_discovery_http_or_executor() -> None:
     assert connection.admin_calls == 1
     assert connection.results == []
     assert connection.errors == [
-        (91, "parser_not_supported", "supplier parser preview is not implemented: pre")
+        (91, "parser_not_supported", "supplier parser preview is not implemented: mnd")
     ]
     assert registry_calls == [hass]
     assert discovery_calls == []

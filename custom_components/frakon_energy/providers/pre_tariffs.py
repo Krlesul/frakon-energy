@@ -147,6 +147,29 @@ def _match_entry(entry: PreCatalogEntry, product_name: str) -> tuple[int, str] |
     return None
 
 
+def pre_contract_product_matches_candidate(
+    *,
+    candidate_product_name: str,
+    contract_product_name: str,
+    contract_kind: str,
+    catalog: tuple[PreCatalogEntry, ...] = PRE_CURRENT_COMMERCIAL_CATALOG,
+) -> bool:
+    """Validate contract identity using the same exact PRE catalog rules."""
+    canonical = _normalized_product(candidate_product_name)
+    if not canonical or not isinstance(contract_kind, str) or not contract_kind.strip():
+        return False
+    entries = tuple(
+        entry
+        for entry in catalog
+        if _normalized_product(entry.product_name) == canonical
+        and entry.contract_kind == contract_kind.strip()
+    )
+    if not entries:
+        return False
+    decisions = {_match_entry(entry, contract_product_name) is not None for entry in entries}
+    return decisions == {True}
+
+
 class PreTariffCatalogAdapter:
     """Fail-closed catalog adapter for verified PRE household PDFs."""
 

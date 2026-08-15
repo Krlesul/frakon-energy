@@ -285,11 +285,12 @@ def test_parser_support_registry_is_explicit() -> None:
 
     assert preview.supplier_parser_supported(contracts.Supplier.CEZ)
     assert preview.supplier_parser_supported(contracts.Supplier.EON)
-    assert not preview.supplier_parser_supported(contracts.Supplier.PRE)
+    assert preview.supplier_parser_supported(contracts.Supplier.PRE)
     assert not preview.supplier_parser_supported(contracts.Supplier.MND)
     assert preview.supplier_parser_supported("cez")
     assert preview.supplier_parser_supported("eon")
-    assert not preview.supplier_parser_supported("pre")
+    assert preview.supplier_parser_supported("pre")
+    assert not preview.supplier_parser_supported("mnd")
 
 
 def test_cez_preview_returns_exact_validated_supplier_prices_without_authority() -> None:
@@ -465,14 +466,14 @@ def test_preview_rejects_extracted_source_or_sha_drift_before_parsing() -> None:
 def test_unsupported_supplier_fails_explicitly_instead_of_guessing_parser() -> None:
     contracts, sources, selection, download_module, pdf_text, preview = load_modules()
     contract = contracts.ElectricityContract(
-        supplier=contracts.Supplier.PRE,
-        distributor=contracts.Distributor.PRE_DISTRIBUCE,
-        product_name="PRE PROUD FIX",
-        contract_kind=contracts.ContractKind.FIXED,
+        supplier=contracts.Supplier.MND,
+        distributor=contracts.Distributor.CEZ_DISTRIBUCE,
+        product_name="MND fixture",
+        contract_kind=contracts.ContractKind.INDEFINITE,
         distribution_tariff="D25d",
         breaker=contracts.Breaker(phases=3, amperes=25),
-        valid_from=date(2026, 7, 1),
-        fixation_end=date(2028, 6, 30),
+        valid_from=date(2026, 1, 1),
+        valid_to=date(2026, 12, 31),
         customer_confirmed=False,
     )
     _candidate, validated, extracted = _validated_inputs(
@@ -480,14 +481,14 @@ def test_unsupported_supplier_fails_explicitly_instead_of_guessing_parser() -> N
         selection,
         download_module,
         pdf_text,
-        supplier="pre",
-        source_url="https://www.pre.cz/fixture.pdf",
+        supplier="mnd",
+        source_url="https://www.mnd.cz/fixture.pdf",
         product_name=contract.product_name,
-        valid_from=date(2026, 7, 1),
+        valid_from=date(2026, 1, 1),
         valid_to=None,
-        text="PRE fixture text",
+        text="MND fixture text",
         page_count=1,
     )
 
-    with pytest.raises(LookupError, match="not implemented: pre"):
+    with pytest.raises(LookupError, match="not implemented: mnd"):
         preview.parse_supplier_tariff_preview(validated, extracted, contract)
