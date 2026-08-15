@@ -17,9 +17,14 @@ from .tariff_discovery import async_discover_contract_tariff_candidates
 from .tariff_discovery_ws_api import _registry_for_hass
 from .tariff_fetch import TariffNotModified, build_tariff_fetch_request
 from .tariff_http_ha import async_fetch_selected_tariff_document_ha
+from .tariff_source_context import (
+    TariffSourceResolutionContext,
+    tariff_source_context_fingerprint,
+)
 
 COMMAND_TARIFF_DOWNLOAD_PREVIEW = "frakon_energy/tariff/download_preview"
 _REGISTERED_KEY = "tariff_download_preview_websocket_registered"
+_VOL_OPTIONAL = getattr(vol, "Optional", lambda key: key)
 
 
 def _entry_or_error(
@@ -53,6 +58,7 @@ def async_register_tariff_download_preview_websocket(hass: HomeAssistant) -> Non
             vol.Required("contract"): dict,
             vol.Required("day"): str,
             vol.Required("candidate_fingerprint"): str,
+            _VOL_OPTIONAL("source_context"): dict,
         }
     )
     @websocket_api.async_response
@@ -83,10 +89,19 @@ def async_register_tariff_download_preview_websocket(hass: HomeAssistant) -> Non
             return
 
         try:
+            source_context = TariffSourceResolutionContext.from_value(
+                msg.get("source_context")
+            )
+        except (TypeError, ValueError) as err:
+            connection.send_error(msg["id"], "invalid_source_context", str(err))
+            return
+
+        try:
             candidates = await async_discover_contract_tariff_candidates(
                 contract,
                 day=discovery_day,
                 registry=registry,
+                source_context=source_context,
             )
         except LookupError as err:
             connection.send_error(msg["id"], "supplier_not_supported", str(err))
@@ -124,12 +139,14 @@ def async_register_tariff_download_preview_websocket(hass: HomeAssistant) -> Non
             connection.send_error(msg["id"], "download_failed", str(err))
             return
 
+        context_fingerprint = tariff_source_context_fingerprint(source_context)
         if isinstance(result, TariffNotModified):
             connection.send_result(
                 msg["id"],
                 {
                     "entry_id": entry.entry_id,
                     "contract_fingerprint": contract_fingerprint(contract),
+                    "source_context_fingerprint": context_fingerprint,
                     "candidate_fingerprint": selected_fingerprint,
                     "source_url": result.source_url,
                     "checked_at": result.checked_at.isoformat(),
@@ -152,6 +169,7 @@ def async_register_tariff_download_preview_websocket(hass: HomeAssistant) -> Non
             {
                 "entry_id": entry.entry_id,
                 "contract_fingerprint": contract_fingerprint(contract),
+                "source_context_fingerprint": context_fingerprint,
                 "candidate_fingerprint": result.selected_fingerprint,
                 "source_url": result.document.source_url,
                 "checked_at": result.validated_at.isoformat(),
