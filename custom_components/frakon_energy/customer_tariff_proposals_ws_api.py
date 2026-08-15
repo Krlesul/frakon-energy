@@ -71,6 +71,28 @@ def _extract_parse_and_assemble(download: ValidatedTariffDownload, contract: Ele
     )
 
 
+async def _discover_candidates(
+    contract: ElectricityContract,
+    *,
+    discovery_day: date,
+    registry: object,
+    source_context: TariffSourceResolutionContext,
+):
+    """Preserve the legacy call shape when there is no operational context."""
+    if source_context.is_empty:
+        return await async_discover_contract_tariff_candidates(
+            contract,
+            day=discovery_day,
+            registry=registry,
+        )
+    return await async_discover_contract_tariff_candidates(
+        contract,
+        day=discovery_day,
+        registry=registry,
+        source_context=source_context,
+    )
+
+
 @callback
 def async_register_customer_tariff_proposals_websocket(hass: HomeAssistant) -> None:
     domain_data = hass.data.setdefault(DOMAIN, {})
@@ -130,9 +152,9 @@ def async_register_customer_tariff_proposals_websocket(hass: HomeAssistant) -> N
             return
 
         try:
-            candidates = await async_discover_contract_tariff_candidates(
+            candidates = await _discover_candidates(
                 contract,
-                day=discovery_day,
+                discovery_day=discovery_day,
                 registry=registry,
                 source_context=source_context,
             )
