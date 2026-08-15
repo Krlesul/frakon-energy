@@ -15,8 +15,9 @@ Without a resolver, or without an explicit normalized postcode in the operationa
 source context, the adapter returns no candidate and does not invoke the resolver.
 A resolver result is accepted only when product, contract kind, distribution
 territory, public validity boundary and an official ``/documents/view/<uuid>``
-HTTPS URL all agree. The postcode and public evidence URL are never copied into
-tariff price provenance.
+HTTPS URL all agree. A resolver may additionally pin the exact document SHA-256;
+when present, the existing download boundary enforces it before parsing. The
+postcode and public evidence URL are never copied into tariff price provenance.
 """
 
 from __future__ import annotations
@@ -46,6 +47,7 @@ MND_PRODUCT_COMPARISON_URL = (
 
 CONTRACT_KIND_FIXED = "fixed"
 CONTRACT_KIND_INDEFINITE = "indefinite"
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _is_mnd_host(host: str) -> bool:
@@ -134,6 +136,7 @@ class MndResolvedTariffSource:
     discovered_at: datetime
     valid_to: date | None = None
     document_date: date | None = None
+    sha256: str | None = None
 
     def __post_init__(self) -> None:
         for field_name in ("product_name", "distributor", "contract_kind", "source_url"):
@@ -151,6 +154,9 @@ class MndResolvedTariffSource:
             raise ValueError("discovered_at must be a timezone-aware datetime")
         if self.document_date is not None and not isinstance(self.document_date, date):
             raise ValueError("document_date must be a date")
+        if self.sha256 is not None:
+            if not isinstance(self.sha256, str) or not _SHA256_RE.fullmatch(self.sha256):
+                raise ValueError("sha256 must be a lowercase SHA-256 digest")
         _validate_mnd_document_url(self.source_url)
 
 
@@ -263,8 +269,6 @@ class MndTariffCatalogAdapter:
         if product is None or self._resolver is None:
             return ()
         if query.source_context.postcode is None:
-            # Do not invoke a dynamic MND resolver without the customer-supplied
-            # lookup key that MND itself requires. No postcode inference is allowed.
             return ()
 
         resolved = await self._resolver.async_resolve(query, product)
@@ -299,6 +303,8 @@ class MndTariffCatalogAdapter:
         ]
         if product.advertised_valid_to is not None:
             reasons.append("resolver validity end matches public MND product evidence")
+        if resolved.sha256 is not None:
+            reasons.append("resolver pinned exact MND document SHA-256")
 
         return (
             TariffDocumentCandidate(
@@ -307,6 +313,7 @@ class MndTariffCatalogAdapter:
                     source_url=resolved.source_url,
                     discovered_at=resolved.discovered_at,
                     document_date=resolved.document_date,
+                    sha256=resolved.sha256,
                     content_type="application/pdf",
                 ),
                 product_name=product.product_name,
