@@ -1,10 +1,10 @@
 """Immutable authority metadata for durable all-in tariff versions.
 
-The all-in tariff fingerprint identifies price content and provenance.  How those
+The all-in tariff fingerprint identifies price content and provenance. How those
 supplier-commercial values were obtained is a separate authority dimension and
 must never silently change an existing tariff identity.
 
-New automatic parser paths use ``verified_parser``.  A later manual fallback can
+New automatic parser paths use ``verified_parser``. A later manual fallback can
 use ``manual_user_entry`` while still pointing at the exact same immutable
 all-in catalog record and official document provenance.
 """
@@ -84,7 +84,7 @@ class AllInTariffAuthority:
 def all_in_tariff_authorities_from_options(
     options: Mapping[str, Any],
 ) -> tuple[AllInTariffAuthority, ...]:
-    """Load explicit authority records and reject duplicate tariff targets."""
+    """Load authority records with exact referential integrity to all-in history."""
 
     raw = options.get(OPTION_ALL_IN_TARIFF_AUTHORITIES, [])
     if raw is None:
@@ -92,16 +92,22 @@ def all_in_tariff_authorities_from_options(
     if not isinstance(raw, list):
         raise ValueError("all_in_tariff_authorities must be a list")
 
+    target_fingerprints = {
+        all_in_tariff_fingerprint(item) for item in all_in_tariffs_from_options(options)
+    }
     records: list[AllInTariffAuthority] = []
     seen: set[str] = set()
     for raw_item in raw:
         record = AllInTariffAuthority.from_dict(raw_item)
-        if record.all_in_tariff_fingerprint in seen:
+        fingerprint = record.all_in_tariff_fingerprint
+        if fingerprint in seen:
             raise ValueError(
                 "duplicate all-in tariff authority target: "
-                f"{record.all_in_tariff_fingerprint}"
+                f"{fingerprint}"
             )
-        seen.add(record.all_in_tariff_fingerprint)
+        if fingerprint not in target_fingerprints:
+            raise LookupError(f"all-in tariff authority target not found: {fingerprint}")
+        seen.add(fingerprint)
         records.append(record)
     return tuple(records)
 
