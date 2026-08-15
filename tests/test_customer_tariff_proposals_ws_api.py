@@ -365,7 +365,14 @@ def test_registration_is_idempotent_and_schemas_expose_no_price_or_url_authority
     ws.async_register_customer_tariff_proposals_websocket(hass)
 
     assert len(registered) == 2
-    assert set(schemas[0]) == {"type", "entry_id", "contract", "day", "candidate_fingerprint"}
+    assert set(schemas[0]) == {
+        "type",
+        "entry_id",
+        "contract",
+        "day",
+        "candidate_fingerprint",
+        "source_context",
+    }
     assert set(schemas[1]) == {"type", "entry_id", "proposal_fingerprint"}
     for forbidden in ("source_url", "price", "bundle", "evidence", "all_in_vt_czk_kwh"):
         assert forbidden not in schemas[0]

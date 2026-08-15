@@ -27,15 +27,18 @@ from .tariff_parser_preview import parse_supplier_tariff_preview
 try:
     from .tariff_parser_preview import supplier_parser_supported
 except ImportError:
-    # A stale in-process parser module must stay fail-closed: the legacy
-    # implementation authorized ČEZ only and cannot implicitly open E.ON.
     def supplier_parser_supported(supplier: object) -> bool:
         return getattr(supplier, "value", supplier) == "cez"
 
 from .tariff_pdf_text import extract_validated_tariff_pdf_text
+from .tariff_source_context import (
+    TariffSourceResolutionContext,
+    tariff_source_context_fingerprint,
+)
 
 COMMAND_TARIFF_ALL_IN_PREVIEW = "frakon_energy/tariff/all_in_preview"
 _REGISTERED_KEY = "tariff_all_in_preview_websocket_registered"
+_VOL_OPTIONAL = getattr(vol, "Optional", lambda key: key)
 
 
 def _entry_or_error(
@@ -86,6 +89,7 @@ def async_register_tariff_all_in_preview_websocket(hass: HomeAssistant) -> None:
             vol.Required("contract"): dict,
             vol.Required("day"): str,
             vol.Required("candidate_fingerprint"): str,
+            _VOL_OPTIONAL("source_context"): dict,
         }
     )
     @websocket_api.async_response
@@ -131,6 +135,14 @@ def async_register_tariff_all_in_preview_websocket(hass: HomeAssistant) -> None:
             return
 
         try:
+            source_context = TariffSourceResolutionContext.from_value(
+                msg.get("source_context")
+            )
+        except (TypeError, ValueError) as err:
+            connection.send_error(msg["id"], "invalid_source_context", str(err))
+            return
+
+        try:
             regulated_version = select_confirmed_regulated_tariff_for_day(
                 entry.options,
                 distributor=contract.distributor.value,
@@ -158,6 +170,7 @@ def async_register_tariff_all_in_preview_websocket(hass: HomeAssistant) -> None:
                 contract,
                 day=discovery_day,
                 registry=registry,
+                source_context=source_context,
             )
         except LookupError as err:
             connection.send_error(msg["id"], "supplier_not_supported", str(err))
@@ -191,7 +204,7 @@ def async_register_tariff_all_in_preview_websocket(hass: HomeAssistant) -> None:
                 request=request,
                 checked_at=checked_at,
             )
-        except Exception as err:  # transport validation remains read-only
+        except Exception as err:
             connection.send_error(msg["id"], "download_failed", str(err))
             return
 
@@ -223,7 +236,7 @@ def async_register_tariff_all_in_preview_websocket(hass: HomeAssistant) -> None:
         except ValueError as err:
             connection.send_error(msg["id"], "all_in_preview_failed", str(err))
             return
-        except Exception as err:  # defensive PDF/parser/assembly boundary
+        except Exception as err:
             connection.send_error(msg["id"], "all_in_preview_failed", str(err))
             return
 
@@ -232,6 +245,9 @@ def async_register_tariff_all_in_preview_websocket(hass: HomeAssistant) -> None:
             {
                 "entry_id": entry.entry_id,
                 "contract_fingerprint": contract_fingerprint(contract),
+                "source_context_fingerprint": tariff_source_context_fingerprint(
+                    source_context
+                ),
                 "candidate_fingerprint": download.selected_fingerprint,
                 "regulated_version_fingerprint": regulated_version.fingerprint,
                 "checked_at": download.validated_at.isoformat(),

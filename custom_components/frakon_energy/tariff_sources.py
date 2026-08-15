@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
+import hashlib
+import json
 import re
-from typing import Iterable, Protocol, runtime_checkable
+from typing import Any, Iterable, Mapping, Protocol, runtime_checkable
 from urllib.parse import urlparse
 
 PRICE_SCOPE_UNKNOWN = "unknown"
@@ -26,6 +28,101 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _DOMAIN_RE = re.compile(
     r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$"
 )
+_CZECH_POSTCODE_RE = re.compile(r"^[1-7]\d{4}$")
+
+
+def normalize_czech_postcode(value: str) -> str:
+    """Normalize a Czech PSČ to five digits without inferring location."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("postcode must not be empty")
+    normalized = re.sub(r"\s+", "", value)
+    if not _CZECH_POSTCODE_RE.fullmatch(normalized):
+        raise ValueError("postcode must be a valid five-digit Czech PSČ")
+    return normalized
+
+
+@dataclass(frozen=True, slots=True)
+class TariffSourceResolutionContext:
+    """Operational lookup context that is never tariff price authority."""
+
+    postcode: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.postcode is not None:
+            object.__setattr__(self, "postcode", normalize_czech_postcode(self.postcode))
+
+    @property
+    def is_empty(self) -> bool:
+        return self.postcode is None
+
+    def as_dict(self) -> dict[str, str]:
+        return {} if self.postcode is None else {"postcode": self.postcode}
+
+    @classmethod
+    def from_value(cls, value: Mapping[str, Any] | None) -> TariffSourceResolutionContext:
+        if value is None:
+            return cls()
+        if not isinstance(value, Mapping):
+            raise ValueError("source_context must be an object")
+        unexpected = set(value) - {"postcode"}
+        if unexpected:
+            raise ValueError(
+                "source_context contains unsupported fields: "
+                + ", ".join(sorted(str(item) for item in unexpected))
+            )
+        postcode = value.get("postcode")
+        if postcode in (None, ""):
+            return cls()
+        return cls(postcode=postcode)
+
+
+def _canonical_source_context(value: object) -> TariffSourceResolutionContext:
+    """Canonicalize only FRAKON's declared source-context type variants.
+
+    Isolated tests can load ``tariff_sources`` and ``tariff_source_context`` as
+    separate modules, producing different Python class identities for the same
+    declared operational context. Accept only those two FRAKON module identities,
+    then re-validate the serialized allowed fields. Arbitrary mappings and
+    duck-typed objects remain rejected here; external WS payloads must enter
+    explicitly through ``from_value`` first.
+    """
+    if isinstance(value, TariffSourceResolutionContext):
+        return value
+    value_type = type(value)
+    allowed_modules = {
+        __name__,
+        "custom_components.frakon_energy.tariff_source_context",
+    }
+    if (
+        value_type.__module__ not in allowed_modules
+        or value_type.__name__ != "TariffSourceResolutionContext"
+    ):
+        raise ValueError("source_context must be TariffSourceResolutionContext")
+    as_dict = getattr(value, "as_dict", None)
+    if not callable(as_dict):
+        raise ValueError("source_context must be TariffSourceResolutionContext")
+    try:
+        payload = as_dict()
+    except Exception as err:
+        raise ValueError("source_context must be TariffSourceResolutionContext") from err
+    if not isinstance(payload, Mapping):
+        raise ValueError("source_context must be TariffSourceResolutionContext")
+    try:
+        return TariffSourceResolutionContext.from_value(payload)
+    except (TypeError, ValueError) as err:
+        raise ValueError("source_context must be TariffSourceResolutionContext") from err
+
+
+def tariff_source_context_fingerprint(context: TariffSourceResolutionContext) -> str:
+    """Return a stable operational fingerprint, never a price fingerprint."""
+    canonical = _canonical_source_context(context)
+    encoded = json.dumps(
+        canonical.as_dict(),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _non_empty(value: str, field: str) -> str:
@@ -70,7 +167,7 @@ def _host_matches_domain(host: str, domain: str) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class TariffSourceQuery:
-    """Normalized customer contract fields used to search official price lists."""
+    """Normalized contract fields plus non-price context for official discovery."""
 
     supplier: str
     product_name: str
@@ -79,6 +176,9 @@ class TariffSourceQuery:
     distribution_tariff: str
     breaker_code: str
     valid_on: date
+    source_context: TariffSourceResolutionContext = field(
+        default_factory=TariffSourceResolutionContext
+    )
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "supplier", _supplier_slug(self.supplier))
@@ -96,6 +196,11 @@ class TariffSourceQuery:
         object.__setattr__(self, "breaker_code", breaker)
         if not isinstance(self.valid_on, date):
             raise ValueError("valid_on must be a date")
+        object.__setattr__(
+            self,
+            "source_context",
+            _canonical_source_context(self.source_context),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,10 +276,7 @@ class SupplierTariffAdapter(Protocol):
     supplier: str
     official_domains: tuple[str, ...]
 
-    async def async_discover(
-        self, query: TariffSourceQuery
-    ) -> Iterable[TariffDocumentCandidate]:
-        """Return candidate documents for the normalized customer contract."""
+    async def async_discover(self, query: TariffSourceQuery) -> Iterable[TariffDocumentCandidate]:
         ...
 
 
@@ -208,10 +310,7 @@ class TariffAdapterRegistry:
         except KeyError as err:
             raise LookupError(f"no tariff adapter registered for supplier: {slug}") from err
 
-    async def async_discover_verified(
-        self, query: TariffSourceQuery
-    ) -> tuple[TariffDocumentCandidate, ...]:
-        """Discover candidates and reject anything outside the adapter's official domains."""
+    async def async_discover_verified(self, query: TariffSourceQuery) -> tuple[TariffDocumentCandidate, ...]:
         if not isinstance(query, TariffSourceQuery):
             raise ValueError("query must be TariffSourceQuery")
         adapter = self.for_supplier(query.supplier)

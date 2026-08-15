@@ -10,10 +10,11 @@ This adapter deliberately separates two authorities:
 * an injected resolver that must return the exact official MND document selected
   for the already-normalized customer query.
 
-Without a resolver the adapter returns no candidate. A resolver result is
-accepted only when product, contract kind, distribution territory, validity and
-an official ``/documents/view/<uuid>`` HTTPS URL all agree. The resulting source
-is supplier-commercial only; regulated pricing remains independently verified.
+Without a resolver, or without an explicit normalized postcode in the operational
+source context, the adapter returns no candidate and does not invoke the resolver.
+A resolver result is accepted only when product, contract kind, distribution
+territory, validity and an official ``/documents/view/<uuid>`` HTTPS URL all
+agree. The postcode is never copied into the candidate or price provenance.
 """
 
 from __future__ import annotations
@@ -56,18 +57,9 @@ class MndProductDefinition:
 
 
 MND_CURRENT_ELECTRICITY_PRODUCTS: tuple[MndProductDefinition, ...] = (
-    MndProductDefinition(
-        product_name="Proud - Ceník Říjen 28",
-        contract_kind=CONTRACT_KIND_FIXED,
-    ),
-    MndProductDefinition(
-        product_name="Proud - Klesající ceník Duben 29",
-        contract_kind=CONTRACT_KIND_FIXED,
-    ),
-    MndProductDefinition(
-        product_name="Proud - Domácnosti",
-        contract_kind=CONTRACT_KIND_INDEFINITE,
-    ),
+    MndProductDefinition(product_name="Proud - Ceník Říjen 28", contract_kind=CONTRACT_KIND_FIXED),
+    MndProductDefinition(product_name="Proud - Klesající ceník Duben 29", contract_kind=CONTRACT_KIND_FIXED),
+    MndProductDefinition(product_name="Proud - Domácnosti", contract_kind=CONTRACT_KIND_INDEFINITE),
 )
 
 
@@ -135,7 +127,6 @@ def _is_mnd_host(host: str) -> bool:
 
 
 def _validate_mnd_document_url(source_url: str) -> None:
-    """Require the stable official MND document route, never a guessed page URL."""
     parsed = urlparse(source_url)
     if parsed.scheme.lower() != "https" or not parsed.hostname:
         raise ValueError("MND source URL must use HTTPS")
@@ -208,10 +199,7 @@ class MndTariffCatalogAdapter:
                 raise ValueError("duplicate MND product identity in catalog")
             normalized_keys.add(key)
 
-    async def async_discover(
-        self,
-        query: TariffSourceQuery,
-    ) -> tuple[TariffDocumentCandidate, ...]:
+    async def async_discover(self, query: TariffSourceQuery) -> tuple[TariffDocumentCandidate, ...]:
         if not isinstance(query, TariffSourceQuery):
             raise ValueError("query must be TariffSourceQuery")
         if query.supplier != self.supplier:
@@ -220,16 +208,17 @@ class MndTariffCatalogAdapter:
         product = _matching_product(self._products, query)
         if product is None or self._resolver is None:
             return ()
+        if query.source_context.postcode is None:
+            # Do not invoke a dynamic MND resolver without the customer-supplied
+            # lookup key that MND itself requires. No postcode inference is allowed.
+            return ()
 
         resolved = await self._resolver.async_resolve(query, product)
         if resolved is None:
             return ()
         if not isinstance(resolved, MndResolvedTariffSource):
             raise ValueError("MND resolver returned an invalid source")
-
-        if _normalized_product(resolved.product_name) != _normalized_product(
-            product.product_name
-        ):
+        if _normalized_product(resolved.product_name) != _normalized_product(product.product_name):
             raise ValueError("MND resolver product does not match verified product")
         if resolved.contract_kind != product.contract_kind:
             raise ValueError("MND resolver contract kind does not match query")
