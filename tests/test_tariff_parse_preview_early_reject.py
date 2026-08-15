@@ -128,6 +128,10 @@ def load_module():
     parser.parse_supplier_tariff_preview = lambda *args, **kwargs: (_ for _ in ()).throw(
         AssertionError("unsupported supplier must stop before parser")
     )
+    parser.supplier_parser_supported = lambda supplier: getattr(supplier, "value", supplier) in {
+        "cez",
+        "eon",
+    }
     sys.modules[parser.__name__] = parser
 
     pdf = types.ModuleType("custom_components.frakon_energy.tariff_pdf_text")
@@ -229,15 +233,15 @@ def test_unsupported_supplier_fails_before_discovery_http_or_executor() -> None:
     hass = Hass(entry)
     connection = Connection()
     contract = contracts.ElectricityContract(
-        supplier=contracts.Supplier.EON,
-        distributor=contracts.Distributor.EG_D,
-        product_name="Variant PRO na 2 roky",
+        supplier=contracts.Supplier.PRE,
+        distributor=contracts.Distributor.PRE_DISTRIBUCE,
+        product_name="PRE PROUD FIX",
         contract_kind=contracts.ContractKind.FIXED,
         distribution_tariff="D25d",
         breaker=contracts.Breaker(phases=3, amperes=25),
-        valid_from=date(2026, 3, 30),
+        valid_from=date(2026, 7, 1),
         valid_to=date(2026, 12, 31),
-        fixation_end=date(2028, 3, 29),
+        fixation_end=date(2028, 6, 30),
         customer_confirmed=False,
     )
 
@@ -260,7 +264,7 @@ def test_unsupported_supplier_fails_before_discovery_http_or_executor() -> None:
     assert connection.admin_calls == 1
     assert connection.results == []
     assert connection.errors == [
-        (91, "parser_not_supported", "supplier parser preview is not implemented: eon")
+        (91, "parser_not_supported", "supplier parser preview is not implemented: pre")
     ]
     assert registry_calls == [hass]
     assert discovery_calls == []
