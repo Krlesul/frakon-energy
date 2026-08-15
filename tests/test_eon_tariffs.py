@@ -69,28 +69,32 @@ def _clock():
 def test_verified_catalog_contains_two_products_for_all_three_distributors() -> None:
     _, eon = load_modules()
 
-    assert len(eon.EON_2026_ELECTRICITY_CATALOG) == 6
-    assert {item.product_name for item in eon.EON_2026_ELECTRICITY_CATALOG} == {
+    catalog = eon.EON_2026_ELECTRICITY_CATALOG
+    assert len(catalog) == 9
+    assert {item.product_name for item in catalog} == {
         "Variant PRO na 2 roky",
         "Elektřina výhodně PRO na 3 roky",
     }
-    assert {item.distributor for item in eon.EON_2026_ELECTRICITY_CATALOG} == {
+    assert {item.distributor for item in catalog} == {
         "eg_d",
         "cez_distribuce",
         "pre_distribuce",
     }
-    assert all(
-        item.contract_kind == "fixed"
-        for item in eon.EON_2026_ELECTRICITY_CATALOG
-    )
-    assert all(
-        item.source_url.startswith("https://www.eon.cz/getmedia/")
-        for item in eon.EON_2026_ELECTRICITY_CATALOG
-    )
-    assert all(
-        item.source_url.endswith(".pdf")
-        for item in eon.EON_2026_ELECTRICITY_CATALOG
-    )
+    assert sum(item.product_name == "Variant PRO na 2 roky" for item in catalog) == 3
+    assert sum(
+        item.product_name == "Elektřina výhodně PRO na 3 roky" for item in catalog
+    ) == 6
+    assert {
+        (item.valid_from, item.valid_to)
+        for item in catalog
+        if item.product_name == "Elektřina výhodně PRO na 3 roky"
+    } == {
+        (date(2026, 6, 17), date(2026, 12, 31)),
+        (date(2027, 1, 1), None),
+    }
+    assert all(item.contract_kind == "fixed" for item in catalog)
+    assert all(item.source_url.startswith("https://www.eon.cz/getmedia/") for item in catalog)
+    assert all(item.source_url.endswith(".pdf") for item in catalog)
 
 
 def test_variant_pro_exact_match_returns_territory_specific_commercial_candidate() -> None:
