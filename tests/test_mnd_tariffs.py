@@ -9,6 +9,10 @@ import pytest
 
 DOCUMENT_UUID = "12345678-1234-4234-8234-123456789abc"
 OFFICIAL_URL = f"https://prod.mnd.cz/documents/view/{DOCUMENT_UUID}"
+PUBLIC_EVIDENCE_URL = (
+    "https://www.mnd.cz/caste-dotazy/ceniky-a-slozeni-platby-za-energie/"
+    "jak-si-vybrat-cenik-plynu-a-elektriny"
+)
 
 
 def _load(name: str, path: str):
@@ -113,14 +117,28 @@ class FakeResolver:
         return self.result
 
 
-def test_current_product_identities_are_explicit_and_contract_typed() -> None:
+def test_current_product_identities_are_explicit_contract_typed_and_publicly_bounded() -> None:
     _, _, mnd = load_modules()
-    assert [(item.product_name, item.contract_kind) for item in mnd.MND_CURRENT_ELECTRICITY_PRODUCTS] == [
-        ("Proud - Ceník Říjen 28", "fixed"),
-        ("Proud - Klesající ceník Duben 29", "fixed"),
-        ("Proud - Domácnosti", "indefinite"),
+    assert [
+        (
+            item.product_name,
+            item.contract_kind,
+            item.advertised_valid_to,
+            item.public_evidence_url,
+        )
+        for item in mnd.MND_CURRENT_ELECTRICITY_PRODUCTS
+    ] == [
+        ("Proud - Ceník Říjen 28", "fixed", date(2028, 10, 31), PUBLIC_EVIDENCE_URL),
+        (
+            "Proud - Klesající ceník Duben 29",
+            "fixed",
+            date(2029, 4, 30),
+            PUBLIC_EVIDENCE_URL,
+        ),
+        ("Proud - Domácnosti", "indefinite", None, PUBLIC_EVIDENCE_URL),
     ]
     assert mnd.MND_ELECTRICITY_INDEX_URL == "https://prod.mnd.cz/elektrina-domacnosti"
+    assert mnd.MND_PRODUCT_COMPARISON_URL == PUBLIC_EVIDENCE_URL
     assert mnd.MND_OFFICIAL_DOMAINS == ("mnd.cz",)
 
 
@@ -143,7 +161,7 @@ def test_resolver_is_not_invoked_without_explicit_postcode_context() -> None:
     assert resolver.calls == []
 
 
-def test_exact_resolved_document_becomes_supplier_commercial_candidate_without_postcode_leak() -> None:
+def test_exact_resolved_document_becomes_supplier_commercial_candidate_without_postcode_or_evidence_leak() -> None:
     context, sources, mnd = load_modules()
     resolver = FakeResolver(_resolved(mnd))
     adapter = mnd.MndTariffCatalogAdapter(resolver=resolver)
@@ -164,6 +182,8 @@ def test_exact_resolved_document_becomes_supplier_commercial_candidate_without_p
     assert candidate.document.content_type == "application/pdf"
     assert candidate.document.document_date == date(2026, 6, 11)
     assert "41201" not in repr(candidate)
+    assert PUBLIC_EVIDENCE_URL not in repr(candidate)
+    assert "resolver validity end matches public MND product evidence" in candidate.match_reasons
     assert resolver.calls == [(query, mnd.MND_CURRENT_ELECTRICITY_PRODUCTS[0])]
 
 
@@ -171,8 +191,14 @@ def test_product_match_is_normalized_exact_but_never_fuzzy() -> None:
     context, sources, mnd = load_modules()
     resolver = FakeResolver(_resolved(mnd))
     adapter = mnd.MndTariffCatalogAdapter(resolver=resolver)
-    exact = __import__("asyncio").run(adapter.async_discover(_query(context, sources, product="PROUD - CENIK RIJEN 28")))
-    fuzzy = __import__("asyncio").run(adapter.async_discover(_query(context, sources, product="Proud Říjen 28")))
+    exact = __import__("asyncio").run(
+        adapter.async_discover(
+            _query(context, sources, product="PROUD - CENIK RIJEN 28")
+        )
+    )
+    fuzzy = __import__("asyncio").run(
+        adapter.async_discover(_query(context, sources, product="Proud Říjen 28"))
+    )
     assert len(exact) == 1
     assert fuzzy == ()
     assert len(resolver.calls) == 1
@@ -182,31 +208,65 @@ def test_contract_kind_must_match_verified_product_before_resolver_runs() -> Non
     context, sources, mnd = load_modules()
     resolver = FakeResolver(_resolved(mnd))
     adapter = mnd.MndTariffCatalogAdapter(resolver=resolver)
-    assert __import__("asyncio").run(adapter.async_discover(_query(context, sources, contract_kind="indefinite"))) == ()
-    assert __import__("asyncio").run(adapter.async_discover(_query(context, sources, product="Proud - Domácnosti", contract_kind="fixed"))) == ()
+    assert __import__("asyncio").run(
+        adapter.async_discover(_query(context, sources, contract_kind="indefinite"))
+    ) == ()
+    assert __import__("asyncio").run(
+        adapter.async_discover(
+            _query(
+                context,
+                sources,
+                product="Proud - Domácnosti",
+                contract_kind="fixed",
+            )
+        )
+    ) == ()
     assert resolver.calls == []
 
 
 def test_resolver_must_return_exact_distribution_territory() -> None:
     context, sources, mnd = load_modules()
-    adapter = mnd.MndTariffCatalogAdapter(resolver=FakeResolver(_resolved(mnd, distributor="eg_d")))
+    adapter = mnd.MndTariffCatalogAdapter(
+        resolver=FakeResolver(_resolved(mnd, distributor="eg_d"))
+    )
     with pytest.raises(ValueError, match="distribution territory"):
         __import__("asyncio").run(adapter.async_discover(_query(context, sources)))
 
 
 def test_resolver_must_return_exact_verified_product_and_contract_kind() -> None:
     context, sources, mnd = load_modules()
-    wrong_product = mnd.MndTariffCatalogAdapter(resolver=FakeResolver(_resolved(mnd, product_name="Proud - Domácnosti")))
+    wrong_product = mnd.MndTariffCatalogAdapter(
+        resolver=FakeResolver(_resolved(mnd, product_name="Proud - Domácnosti"))
+    )
     with pytest.raises(ValueError, match="product does not match"):
         __import__("asyncio").run(wrong_product.async_discover(_query(context, sources)))
-    wrong_contract = mnd.MndTariffCatalogAdapter(resolver=FakeResolver(_resolved(mnd, contract_kind="indefinite")))
+    wrong_contract = mnd.MndTariffCatalogAdapter(
+        resolver=FakeResolver(_resolved(mnd, contract_kind="indefinite"))
+    )
     with pytest.raises(ValueError, match="contract kind"):
         __import__("asyncio").run(wrong_contract.async_discover(_query(context, sources)))
 
 
+def test_resolver_fixed_validity_end_must_match_public_mnd_evidence() -> None:
+    context, sources, mnd = load_modules()
+    wrong_end = mnd.MndTariffCatalogAdapter(
+        resolver=FakeResolver(_resolved(mnd, valid_to=date(2028, 12, 31)))
+    )
+    with pytest.raises(ValueError, match="public product evidence"):
+        __import__("asyncio").run(wrong_end.async_discover(_query(context, sources)))
+
+    missing_end = mnd.MndTariffCatalogAdapter(
+        resolver=FakeResolver(_resolved(mnd, valid_to=None))
+    )
+    with pytest.raises(ValueError, match="public product evidence"):
+        __import__("asyncio").run(missing_end.async_discover(_query(context, sources)))
+
+
 def test_resolved_document_validity_must_cover_requested_day() -> None:
     context, sources, mnd = load_modules()
-    resolver = FakeResolver(_resolved(mnd, valid_from=date(2026, 9, 1), valid_to=date(2028, 10, 31)))
+    resolver = FakeResolver(
+        _resolved(mnd, valid_from=date(2026, 9, 1), valid_to=date(2028, 10, 31))
+    )
     adapter = mnd.MndTariffCatalogAdapter(resolver=resolver)
     assert __import__("asyncio").run(adapter.async_discover(_query(context, sources))) == ()
 
@@ -226,8 +286,12 @@ def test_resolved_source_rejects_non_mnd_and_non_document_urls() -> None:
 def test_registry_revalidates_mnd_candidate_against_official_domain() -> None:
     context, sources, mnd = load_modules()
     registry = sources.TariffAdapterRegistry()
-    registry.register(mnd.MndTariffCatalogAdapter(resolver=FakeResolver(_resolved(mnd))))
-    candidates = __import__("asyncio").run(registry.async_discover_verified(_query(context, sources)))
+    registry.register(
+        mnd.MndTariffCatalogAdapter(resolver=FakeResolver(_resolved(mnd)))
+    )
+    candidates = __import__("asyncio").run(
+        registry.async_discover_verified(_query(context, sources))
+    )
     assert len(candidates) == 1
     assert candidates[0].document.source_url == OFFICIAL_URL
 
@@ -236,15 +300,49 @@ def test_wrong_supplier_never_invokes_mnd_resolver() -> None:
     context, sources, mnd = load_modules()
     resolver = FakeResolver(_resolved(mnd))
     adapter = mnd.MndTariffCatalogAdapter(resolver=resolver)
-    assert __import__("asyncio").run(adapter.async_discover(_query(context, sources, supplier="eon"))) == ()
+    assert __import__("asyncio").run(
+        adapter.async_discover(_query(context, sources, supplier="eon"))
+    ) == ()
     assert resolver.calls == []
 
 
 def test_invalid_or_duplicate_product_catalog_fails_at_construction() -> None:
     _, _, mnd = load_modules()
+    with pytest.raises(ValueError, match="advertised validity end"):
+        mnd.MndProductDefinition(
+            "Fixed without end",
+            "fixed",
+            None,
+            PUBLIC_EVIDENCE_URL,
+        )
+    with pytest.raises(ValueError, match="cannot have an advertised validity end"):
+        mnd.MndProductDefinition(
+            "Indefinite with end",
+            "indefinite",
+            date(2028, 10, 31),
+            PUBLIC_EVIDENCE_URL,
+        )
+    with pytest.raises(ValueError, match="official mnd.cz host"):
+        mnd.MndProductDefinition(
+            "Bad evidence",
+            "fixed",
+            date(2028, 10, 31),
+            "https://example.com/mnd",
+        )
+
     duplicate = (
-        mnd.MndProductDefinition("Proud - Ceník Říjen 28", "fixed"),
-        mnd.MndProductDefinition("PROUD CENIK RIJEN 28", "fixed"),
+        mnd.MndProductDefinition(
+            "Proud - Ceník Říjen 28",
+            "fixed",
+            date(2028, 10, 31),
+            PUBLIC_EVIDENCE_URL,
+        ),
+        mnd.MndProductDefinition(
+            "PROUD CENIK RIJEN 28",
+            "fixed",
+            date(2028, 10, 31),
+            PUBLIC_EVIDENCE_URL,
+        ),
     )
     with pytest.raises(ValueError, match="duplicate MND product identity"):
         mnd.MndTariffCatalogAdapter(products=duplicate)
