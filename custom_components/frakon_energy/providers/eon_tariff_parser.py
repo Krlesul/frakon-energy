@@ -22,8 +22,12 @@ _OVERALL_VALID_FROM_RE = re.compile(
 # Price-cell separators are deliberately horizontal only. Using ``\s`` here
 # would let a regex consume a newline and merge independent PDF table rows.
 _HORIZONTAL_SPACE = r"[ \u00a0\u202f]"
-_CONCATENATED_PRICE_RE = re.compile(
-    rf"(?P<first>\d{{1,3}}{_HORIZONTAL_SPACE}\d{{3}})(?P<second>\d{{1,3}}{_HORIZONTAL_SPACE}\d{{3}})"
+_HORIZONTAL_PADDING = r"[ \t\u00a0\u202f]*"
+_CONCATENATED_PRICE_LINE_RE = re.compile(
+    rf"^{_HORIZONTAL_PADDING}"
+    rf"(?P<first>\d{{1,3}}{_HORIZONTAL_SPACE}\d{{3}})"
+    rf"(?P<second>\d{{1,3}}{_HORIZONTAL_SPACE}\d{{3}})"
+    rf"{_HORIZONTAL_PADDING}$"
 )
 _PRICE_TOKEN_RE = re.compile(
     rf"(?<!\d)(?:\d{{1,3}}(?:{_HORIZONTAL_SPACE}\d{{3}})+|\d{{1,4}})(?:,\d{{1,2}})?(?!\d)|[–—]"
@@ -151,16 +155,15 @@ def _target_rate_segment(commercial_text: str, distribution_tariff: str) -> str:
 
 
 def _separate_concatenated_prices(value: str) -> str:
-    """Split adjacent PDF cells such as ``3 3202 744`` deterministically."""
-    previous = value
-    while True:
-        separated = _CONCATENATED_PRICE_RE.sub(
-            lambda match: f"{match.group('first')}\n{match.group('second')}",
-            previous,
-        )
-        if separated == previous:
-            return separated
-        previous = separated
+    """Split adjacent PDF cells such as ``3 3202 744`` on exact rows only."""
+    separated_lines: list[str] = []
+    for line in value.splitlines():
+        match = _CONCATENATED_PRICE_LINE_RE.fullmatch(line)
+        if match is None:
+            separated_lines.append(line)
+            continue
+        separated_lines.extend((match.group("first"), match.group("second")))
+    return "\n".join(separated_lines)
 
 
 def _price_or_dash(token: str) -> Decimal | None:
