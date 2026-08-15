@@ -19,11 +19,14 @@ _OVERALL_VALID_FROM_RE = re.compile(
     r"Obchodní\s+cena\s+za\s+elektřinu\s+platná\s+od\s+(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})",
     re.IGNORECASE,
 )
+# Price-cell separators are deliberately horizontal only. Using ``\s`` here
+# would let a regex consume a newline and merge independent PDF table rows.
+_HORIZONTAL_SPACE = r"[ \u00a0\u202f]"
 _CONCATENATED_PRICE_RE = re.compile(
-    r"(?P<first>\d{1,3}[\s\u00a0]\d{3})(?P<second>\d{1,3}[\s\u00a0]\d{3})"
+    rf"(?P<first>\d{{1,3}}{_HORIZONTAL_SPACE}\d{{3}})(?P<second>\d{{1,3}}{_HORIZONTAL_SPACE}\d{{3}})"
 )
 _PRICE_TOKEN_RE = re.compile(
-    r"(?<!\d)(?:\d{1,3}(?:[\s\u00a0]\d{3})+|\d{1,4})(?:,\d{1,2})?(?!\d)|[–—]"
+    rf"(?<!\d)(?:\d{{1,3}}(?:{_HORIZONTAL_SPACE}\d{{3}})+|\d{{1,4}})(?:,\d{{1,2}})?(?!\d)|[–—]"
 )
 
 _RATE_GROUPS: tuple[tuple[str, ...], ...] = (
@@ -69,7 +72,7 @@ class _GrossPriceBlock:
 def _fold(value: str) -> str:
     normalized = unicodedata.normalize("NFKD", value).casefold()
     normalized = "".join(char for char in normalized if not unicodedata.combining(char))
-    return " ".join(normalized.replace("\u00a0", " ").split())
+    return " ".join(normalized.replace("\u00a0", " ").replace("\u202f", " ").split())
 
 
 def _parse_date_match(match: re.Match[str]) -> date:
@@ -163,7 +166,12 @@ def _separate_concatenated_prices(value: str) -> str:
 def _price_or_dash(token: str) -> Decimal | None:
     if token in {"–", "—"}:
         return None
-    normalized = token.replace("\u00a0", " ").replace(" ", "").replace(",", ".")
+    normalized = (
+        token.replace("\u00a0", " ")
+        .replace("\u202f", " ")
+        .replace(" ", "")
+        .replace(",", ".")
+    )
     try:
         value = Decimal(normalized)
     except InvalidOperation as err:
@@ -284,7 +292,7 @@ def parse_eon_supplier_tariff(
     if _fold(_VAT_MARKER) not in folded:
         raise ValueError("E.ON tariff document is missing explicit 21% VAT convention")
 
-    validity_match = _OVERALL_VALID_FROM_RE.search(text.replace("\u00a0", " "))
+    validity_match = _OVERALL_VALID_FROM_RE.search(text.replace("\u00a0", " ").replace("\u202f", " "))
     if validity_match is None:
         raise ValueError("E.ON tariff document is missing commercial validity marker")
     document_valid_from = _parse_date_match(validity_match)
