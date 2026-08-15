@@ -26,10 +26,10 @@ from .tariff_sources import PRICE_SCOPE_REGULATED, PRICE_SCOPE_SUPPLIER_COMMERCI
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _SUPPLIER_IDENTITIES = {
-    Supplier.CEZ.value: ("ČEZ", "ČEZ Prodej"),
-    Supplier.EON.value: ("E.ON", "E.ON Energie"),
-    Supplier.PRE.value: ("PRE", "Pražská energetika"),
-    Supplier.MND.value: ("MND", "MND Energie"),
+    Supplier.CEZ.value: ("ČEZ", "ČEZ Prodej", ("cez.cz",)),
+    Supplier.EON.value: ("E.ON", "E.ON Energie", ("eon.cz",)),
+    Supplier.PRE.value: ("PRE", "Pražská energetika", ("pre.cz",)),
+    Supplier.MND.value: ("MND", "MND Energie", ("mnd.cz",)),
 }
 
 
@@ -179,13 +179,37 @@ def _supplier_document_name(download: ValidatedTariffDownload) -> str:
     return path.name or "official-supplier-price-list"
 
 
-def _supplier_identity(supplier: str) -> tuple[str, str]:
+def _supplier_identity(supplier: str) -> tuple[str, str, tuple[str, ...]]:
     try:
         return _SUPPLIER_IDENTITIES[supplier]
     except KeyError as err:
         raise LookupError(
             f"manual commercial preview is not implemented for supplier: {supplier}"
         ) from err
+
+
+def _host_matches_domain(host: str, domain: str) -> bool:
+    return host == domain or host.endswith(f".{domain}")
+
+
+def _validate_official_supplier_url(supplier: str, source_url: str) -> None:
+    _display_name, _source_name, domains = _supplier_identity(supplier)
+    if not isinstance(source_url, str) or not source_url.strip():
+        raise ValueError("supplier source URL must not be empty")
+    parsed = urlparse(source_url)
+    if parsed.scheme.lower() != "https" or not parsed.hostname:
+        raise ValueError("supplier source URL must use HTTPS")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("supplier source URL must not contain embedded credentials")
+    try:
+        port = parsed.port
+    except ValueError as err:
+        raise ValueError("supplier source URL contains an invalid port") from err
+    if port not in (None, 443):
+        raise ValueError("supplier source URL must use the standard HTTPS port")
+    host = parsed.hostname.lower().rstrip(".")
+    if not any(_host_matches_domain(host, domain) for domain in domains):
+        raise ValueError("supplier source URL is not on the supplier's official domain")
 
 
 def _validate_regulated_evidence(
@@ -232,6 +256,8 @@ def build_manual_all_in_tariff_preview(
     expected_fingerprint = tariff_candidate_selection_fingerprint(candidate)
     if download.selected_fingerprint != expected_fingerprint:
         raise ValueError("selected fingerprint does not match tariff candidate")
+    if candidate.match_score != 100:
+        raise ValueError("manual preview requires an exact 100-score supplier candidate")
     if candidate.price_scope != PRICE_SCOPE_SUPPLIER_COMMERCIAL:
         raise ValueError("manual preview requires a supplier-commercial candidate")
     if candidate.document.supplier != contract.supplier.value:
@@ -250,8 +276,18 @@ def build_manual_all_in_tariff_preview(
         candidate.document.sha256 != download.document.sha256
     ):
         raise ValueError("validated supplier SHA-256 does not match pinned candidate")
+    _validate_official_supplier_url(contract.supplier.value, download.document.source_url)
 
-    display_name, supplier_source_name = _supplier_identity(contract.supplier.value)
+    if regulated.distributor != contract.distributor.value:
+        raise ValueError("regulated distributor does not match customer contract")
+    if regulated.distribution_tariff != contract.distribution_tariff:
+        raise ValueError("regulated distribution tariff does not match customer contract")
+    if regulated.breaker_code != contract.breaker.code:
+        raise ValueError("regulated breaker does not match customer contract")
+
+    display_name, supplier_source_name, _domains = _supplier_identity(
+        contract.supplier.value
+    )
     evidence = tuple(regulated_evidence)
     _validate_regulated_evidence(regulated, evidence)
 
@@ -299,11 +335,12 @@ def build_manual_all_in_tariff_preview(
         regulated_source_url=regulated.source_url,
         regulated_checksum=regulated.checksum,
         validation_reasons=(
-            "validated supplier-commercial PDF and exact candidate fingerprint",
+            "validated supplier-commercial PDF and exact 100-score candidate fingerprint",
+            "supplier source revalidated on its official HTTPS domain",
             "supplier document pinned by SHA-256",
             "manual supplier-commercial values explicitly marked as user entry",
             "confirmed regulated tariff bundle",
-            "exact customer distribution tariff and breaker",
+            "exact customer distributor, distribution tariff and breaker",
             "supplier and regulated provenance linked to official sources",
             "commercial and regulated validity periods overlap",
         ),
