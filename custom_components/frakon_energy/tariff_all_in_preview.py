@@ -16,6 +16,11 @@ from .tariff_parser_preview import SupplierTariffParsePreview
 from .tariff_provenance import MultiSourceTariffProvenance, PriceEvidence
 from .tariff_sources import PRICE_SCOPE_REGULATED, PRICE_SCOPE_SUPPLIER_COMMERCIAL
 
+_SUPPLIER_IDENTITIES = {
+    Supplier.CEZ.value: ("ČEZ", "ČEZ Prodej"),
+    Supplier.EON.value: ("E.ON", "E.ON Energie"),
+}
+
 
 @dataclass(frozen=True, slots=True)
 class AllInTariffPreview:
@@ -95,9 +100,15 @@ def _supplier_document_name(download: ValidatedTariffDownload) -> str:
     return path.name or "official-supplier-price-list"
 
 
+def _supplier_identity(supplier: str) -> tuple[str, str]:
+    try:
+        return _SUPPLIER_IDENTITIES[supplier]
+    except KeyError as err:
+        raise LookupError(f"all-in preview is not implemented for supplier: {supplier}") from err
+
+
 def _commercial_components(parsed: SupplierTariffParsePreview) -> tuple[VariablePriceComponent, FixedPriceComponent]:
-    if parsed.supplier != Supplier.CEZ.value:
-        raise LookupError(f"all-in preview is not implemented for supplier: {parsed.supplier}")
+    display_name, _source_name = _supplier_identity(parsed.supplier)
     if parsed.low_rate_czk_per_kwh is None:
         raise ValueError("all-in preview requires an explicit low-rate supplier price")
     if parsed.includes_vat is not True:
@@ -105,14 +116,14 @@ def _commercial_components(parsed: SupplierTariffParsePreview) -> tuple[Variable
     return (
         VariablePriceComponent(
             kind=PriceComponentKind.COMMODITY,
-            name="ČEZ – obchodní cena elektřiny",
+            name=f"{display_name} – obchodní cena elektřiny",
             high_rate_czk_per_kwh=parsed.high_rate_czk_per_kwh,
             low_rate_czk_per_kwh=parsed.low_rate_czk_per_kwh,
             includes_vat=True,
         ),
         FixedPriceComponent(
             kind=PriceComponentKind.SUPPLIER_FIXED,
-            name="ČEZ – stálá platba dodavatele",
+            name=f"{display_name} – stálá platba dodavatele",
             monthly_czk=parsed.supplier_standing_czk_month,
             includes_vat=True,
         ),
@@ -161,6 +172,8 @@ def build_all_in_tariff_preview(
     if parsed.document_sha256 != download.document.sha256:
         raise ValueError("parsed supplier SHA-256 does not match validated document")
 
+    _display_name, supplier_source_name = _supplier_identity(parsed.supplier)
+
     evidence = tuple(regulated_evidence)
     if not evidence or any(not isinstance(item, PriceEvidence) for item in evidence):
         raise ValueError("regulated_evidence must contain PriceEvidence records")
@@ -176,7 +189,7 @@ def build_all_in_tariff_preview(
 
     supplier_evidence = PriceEvidence(
         scope=PRICE_SCOPE_SUPPLIER_COMMERCIAL,
-        source_name="ČEZ Prodej",
+        source_name=supplier_source_name,
         document_name=_supplier_document_name(download),
         source_url=download.document.source_url,
         valid_from=candidate.valid_from,
