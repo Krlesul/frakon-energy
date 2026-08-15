@@ -29,6 +29,7 @@ def load_modules():
         "custom_components.frakon_energy.tariff_assembly",
         "custom_components.frakon_energy.regulated_catalog",
         "custom_components.frakon_energy.all_in_catalog",
+        "custom_components.frakon_energy.all_in_authority",
         "custom_components.frakon_energy.customer_tariff_proposals",
     )
     for name in names:
@@ -69,6 +70,10 @@ def load_modules():
     all_in = _load(
         "custom_components.frakon_energy.all_in_catalog",
         "custom_components/frakon_energy/all_in_catalog.py",
+    )
+    _load(
+        "custom_components.frakon_energy.all_in_authority",
+        "custom_components/frakon_energy/all_in_authority.py",
     )
     customer = _load(
         "custom_components.frakon_energy.customer_tariff_proposals",
@@ -257,6 +262,7 @@ def test_stage_strips_ui_confirmation_and_persists_only_unconfirmed_customer_tar
     modules = load_modules()
     contracts = modules[1]
     all_in = modules[-2]
+    authority = sys.modules["custom_components.frakon_energy.all_in_authority"]
     options, proposal, _version = _staged(modules, input_confirmed=True)
 
     stored_contract = next(
@@ -269,8 +275,13 @@ def test_stage_strips_ui_confirmation_and_persists_only_unconfirmed_customer_tar
         for item in all_in.all_in_tariffs_from_options(options)
         if all_in.all_in_tariff_fingerprint(item) == proposal.all_in_tariff_fingerprint
     )
+    stored_authority = authority.all_in_tariff_authority_from_options(
+        options,
+        proposal.all_in_tariff_fingerprint,
+    )
     assert stored_contract.customer_confirmed is False
     assert stored_all_in.confirmed is False
+    assert stored_authority.method is authority.AllInTariffAuthorityMethod.VERIFIED_PARSER
 
 
 def test_stage_is_idempotent_and_preserves_first_proposal_timestamp() -> None:
@@ -297,6 +308,7 @@ def test_confirm_atomically_confirms_linked_contract_and_all_in_and_keeps_propos
     modules = load_modules()
     contracts = modules[1]
     all_in = modules[-2]
+    authority = sys.modules["custom_components.frakon_energy.all_in_authority"]
     customer = modules[-1]
     options, proposal, _version = _staged(modules)
 
@@ -319,12 +331,33 @@ def test_confirm_atomically_confirms_linked_contract_and_all_in_and_keeps_propos
     )
     assert stored_contract.customer_confirmed is True
     assert stored_all_in.confirmed is True
+    assert authority.all_in_tariff_authority_from_options(
+        confirmed,
+        proposal.all_in_tariff_fingerprint,
+    ).method is authority.AllInTariffAuthorityMethod.VERIFIED_PARSER
 
     repeated, _ = customer.confirm_customer_tariff_proposal(
         confirmed,
         proposal.fingerprint,
     )
     assert repeated == confirmed
+
+
+def test_confirm_legacy_proposal_without_authority_metadata_remains_compatible() -> None:
+    modules = load_modules()
+    customer = modules[-1]
+    authority = sys.modules["custom_components.frakon_energy.all_in_authority"]
+    options, proposal, _version = _staged(modules)
+    legacy = deepcopy(options)
+    legacy.pop(authority.OPTION_ALL_IN_TARIFF_AUTHORITIES)
+
+    confirmed, returned = customer.confirm_customer_tariff_proposal(
+        legacy,
+        proposal.fingerprint,
+    )
+
+    assert returned == proposal
+    assert authority.OPTION_ALL_IN_TARIFF_AUTHORITIES not in confirmed
 
 
 def test_stage_requires_existing_confirmed_regulator_and_matching_provenance() -> None:
