@@ -218,8 +218,16 @@ def stage_customer_tariff_proposal(
     regulated_version_fingerprint: str,
     proposed_for_day: date,
     proposed_at: datetime,
+    authority_method: AllInTariffAuthorityMethod | str = (
+        AllInTariffAuthorityMethod.VERIFIED_PARSER
+    ),
 ) -> tuple[dict[str, Any], CustomerTariffProposal]:
-    """Atomically stage parser-verified contract/all-in records and their link."""
+    """Atomically stage customer tariff targets with server-selected authority.
+
+    ``authority_method`` is an internal server parameter. WebSocket clients must
+    never choose it; automatic parser flows use the default and the dedicated
+    manual flow passes ``manual_user_entry`` after building a manual preview.
+    """
     if not isinstance(contract, ElectricityContract):
         raise ValueError("contract must be ElectricityContract")
     if not isinstance(assembly, AllInTariffAssembly):
@@ -259,7 +267,7 @@ def stage_customer_tariff_proposal(
     updated = append_all_in_tariff_authority(
         updated,
         all_in_fingerprint=all_in_fp,
-        method=AllInTariffAuthorityMethod.VERIFIED_PARSER,
+        method=authority_method,
     )
     # Validate the complete immutable graph before the proposal itself becomes
     # durable. Failure returns no options object to the caller, so no partial state
