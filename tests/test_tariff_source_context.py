@@ -7,10 +7,11 @@ import types
 import pytest
 
 
-def load_sources():
+def _reset_packages() -> None:
     for name in (
         "custom_components",
         "custom_components.frakon_energy",
+        "custom_components.frakon_energy.tariff_source_context",
         "custom_components.frakon_energy.tariff_sources",
     ):
         sys.modules.pop(name, None)
@@ -18,6 +19,10 @@ def load_sources():
         package = types.ModuleType(name)
         package.__path__ = []
         sys.modules[name] = package
+
+
+def load_sources():
+    _reset_packages()
     name = "custom_components.frakon_energy.tariff_sources"
     spec = importlib.util.spec_from_file_location(
         name,
@@ -27,6 +32,28 @@ def load_sources():
     sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def load_context_then_sources():
+    _reset_packages()
+    context_name = "custom_components.frakon_energy.tariff_source_context"
+    context_spec = importlib.util.spec_from_file_location(
+        context_name,
+        Path("custom_components/frakon_energy/tariff_source_context.py"),
+    )
+    context_module = importlib.util.module_from_spec(context_spec)
+    sys.modules[context_name] = context_module
+    context_spec.loader.exec_module(context_module)
+
+    sources_name = "custom_components.frakon_energy.tariff_sources"
+    sources_spec = importlib.util.spec_from_file_location(
+        sources_name,
+        Path("custom_components/frakon_energy/tariff_sources.py"),
+    )
+    sources_module = importlib.util.module_from_spec(sources_spec)
+    sys.modules[sources_name] = sources_module
+    sources_spec.loader.exec_module(sources_module)
+    return context_module, sources_module
 
 
 def test_czech_postcode_normalizes_without_location_inference() -> None:
@@ -106,3 +133,23 @@ def test_query_requires_typed_context_and_keeps_it_operational() -> None:
             valid_on=date(2026, 8, 15),
             source_context={"postcode": "41201"},
         )
+
+
+def test_query_normalizes_independently_loaded_context_by_allowed_fields_only() -> None:
+    context_module, sources = load_context_then_sources()
+    external = context_module.TariffSourceResolutionContext(postcode=" 412 01 ")
+
+    query = sources.TariffSourceQuery(
+        supplier="mnd",
+        product_name="Proud - Ceník Říjen 28",
+        distributor="cez_distribuce",
+        contract_kind="fixed",
+        distribution_tariff="D25d",
+        breaker_code="3x25A",
+        valid_on=date(2026, 8, 15),
+        source_context=external,
+    )
+
+    assert isinstance(query.source_context, sources.TariffSourceResolutionContext)
+    assert query.source_context.as_dict() == {"postcode": "41201"}
+    assert query.source_context is not external
