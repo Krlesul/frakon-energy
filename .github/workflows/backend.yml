@@ -119,6 +119,7 @@ jobs:
           tests/test_regulated_proposals_ws_api.py
           tests/test_regulated_proposals_wiring.py
           tests/test_customer_tariff_proposals.py
+          tests/test_manual_customer_tariff_staging.py
           tests/test_customer_tariff_proposals_ws_api.py
           tests/test_customer_tariff_proposals_wiring.py
           tests/test_tariff_provenance.py
