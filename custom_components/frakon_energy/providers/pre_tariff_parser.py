@@ -17,6 +17,12 @@ _VALID_FROM_RE = re.compile(
 _PRICE_TOKEN_RE = re.compile(
     r"(?<!\d)(?:\d{1,3}(?:[ \u00a0\u202f]\d{3})*|\d+),\d{2}(?!\d)|[–—]"
 )
+_REGULATED_SECTION_RE = re.compile(
+    r"(?:^\s*DISTRIBUČNÍ\s+SAZBA\s*$|"
+    r"CENA\s+ZA\s+DISTRIBUOVANÉ\s+MNOŽSTVÍ\s+ELEKTŘINY|"
+    r"CENA\s+ZA\s+SOUVISEJÍCÍ\s+SLUŽBY\s+V\s+ELEKTROENERGETICE)",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 # PRE's first-page supplier table has eight commercial columns. Some columns
 # cover more than one distribution tariff but share one supplier price.
@@ -116,12 +122,13 @@ def _parse_valid_from(folded: str) -> date:
 
 
 def _commercial_tokens(text: str) -> tuple[str, ...]:
-    """Return the exact first-page supplier matrix before page-two authorities.
+    """Return only the exact supplier matrix before any regulated authority.
 
     The first occurrence of the monthly supplier heading is followed by exactly:
     8 gross/net VT pairs, then one single-rate dash + 7 gross/net NT pairs, then
-    one gross/net supplier standing charge. We stop after those 33 logical cells,
-    so regulated values appearing later in the PDF can never become parser input.
+    one gross/net supplier standing charge. The tail is structurally cut at the
+    first regulated-section marker before tokenization, so a missing supplier
+    cell can never be filled by a later regulated price.
     """
     folded = _fold(text)
     heading = "mesicni plat za odberne misto"
@@ -139,10 +146,16 @@ def _commercial_tokens(text: str) -> tuple[str, ...]:
     if original_heading is None:
         raise ValueError("PRE supplier standing-charge heading was not found")
     tail = text[original_heading.end() :]
+    regulated = _REGULATED_SECTION_RE.search(tail)
+    if regulated is not None:
+        tail = tail[: regulated.start()]
+
     tokens = tuple(match.group(0) for match in _PRICE_TOKEN_RE.finditer(tail))
     if len(tokens) < 33:
         raise ValueError("PRE supplier-commercial price matrix is incomplete")
-    return tokens[:33]
+    if len(tokens) > 33:
+        raise ValueError("PRE supplier-commercial price matrix is ambiguous")
+    return tokens
 
 
 def _decode_matrix(
