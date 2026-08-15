@@ -21,8 +21,16 @@ from .tariff_http_ha import async_fetch_selected_tariff_document_ha
 from .tariff_parser_preview import (
     SupplierTariffParsePreview,
     parse_supplier_tariff_preview,
-    supplier_parser_supported,
 )
+try:
+    from .tariff_parser_preview import supplier_parser_supported
+except ImportError:
+    # Fail-closed compatibility for an older in-process parser module during a
+    # partial hot reload. The legacy parser authorized ČEZ only; E.ON must not
+    # be opened unless the current registry helper is present.
+    def supplier_parser_supported(supplier: object) -> bool:
+        return getattr(supplier, "value", supplier) == "cez"
+
 from .tariff_pdf_text import extract_validated_tariff_pdf_text
 
 COMMAND_TARIFF_PARSE_PREVIEW = "frakon_energy/tariff/parse_preview"
