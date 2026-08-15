@@ -90,6 +90,9 @@ jobs:
           tests/test_pre_all_in_preview.py
           tests/test_mnd_tariffs.py
           tests/test_mnd_confirmed_source_resolver.py
+          tests/test_mnd_source_proposals.py
+          tests/test_mnd_source_proposals_ws_api.py
+          tests/test_mnd_source_proposals_wiring.py
           tests/test_tariff_source_context.py
           tests/test_tariff_adapter_registry.py
           tests/test_tariff_product_catalog.py

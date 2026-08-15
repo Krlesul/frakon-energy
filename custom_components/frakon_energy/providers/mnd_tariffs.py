@@ -186,6 +186,27 @@ def _normalized_product(value: str) -> str:
     return " ".join(part for part in _NON_ALNUM_RE.split(ascii_text) if part)
 
 
+def mnd_product_definition(
+    product_name: str,
+    contract_kind: str,
+    *,
+    products: tuple[MndProductDefinition, ...] = MND_CURRENT_ELECTRICITY_PRODUCTS,
+) -> MndProductDefinition | None:
+    """Return the one exact normalized MND product/contract identity, or None."""
+    requested = _normalized_product(product_name)
+    if not requested or not isinstance(contract_kind, str) or not contract_kind.strip():
+        return None
+    matches = tuple(
+        product
+        for product in tuple(products)
+        if _normalized_product(product.product_name) == requested
+        and product.contract_kind == contract_kind
+    )
+    if len(matches) > 1:
+        raise ValueError("duplicate MND product identity in catalog")
+    return matches[0] if matches else None
+
+
 def _validate_mnd_document_url(source_url: str) -> None:
     parsed = urlparse(source_url)
     if parsed.scheme.lower() != "https" or not parsed.hostname:
@@ -221,16 +242,11 @@ def _matching_product(
     products: tuple[MndProductDefinition, ...],
     query: TariffSourceQuery,
 ) -> MndProductDefinition | None:
-    requested = _normalized_product(query.product_name)
-    matches = tuple(
-        product
-        for product in products
-        if _normalized_product(product.product_name) == requested
-        and product.contract_kind == query.contract_kind
+    return mnd_product_definition(
+        query.product_name,
+        query.contract_kind,
+        products=products,
     )
-    if len(matches) > 1:
-        raise ValueError("duplicate MND product identity in catalog")
-    return matches[0] if matches else None
 
 
 class MndTariffCatalogAdapter:
