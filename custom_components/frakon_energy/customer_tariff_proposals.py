@@ -9,6 +9,10 @@ import json
 from typing import Any, Mapping
 import unicodedata
 
+from .all_in_authority import (
+    AllInTariffAuthorityMethod,
+    append_all_in_tariff_authority,
+)
 from .all_in_catalog import (
     PersistedAllInTariff,
     all_in_tariff_fingerprint,
@@ -215,7 +219,7 @@ def stage_customer_tariff_proposal(
     proposed_for_day: date,
     proposed_at: datetime,
 ) -> tuple[dict[str, Any], CustomerTariffProposal]:
-    """Atomically stage unconfirmed contract/all-in records and their immutable link."""
+    """Atomically stage parser-verified contract/all-in records and their link."""
     if not isinstance(contract, ElectricityContract):
         raise ValueError("contract must be ElectricityContract")
     if not isinstance(assembly, AllInTariffAssembly):
@@ -252,6 +256,11 @@ def stage_customer_tariff_proposal(
 
     updated = append_electricity_contract(options, unconfirmed_contract)
     updated = append_all_in_tariff(updated, assembly)
+    updated = append_all_in_tariff_authority(
+        updated,
+        all_in_fingerprint=all_in_fp,
+        method=AllInTariffAuthorityMethod.VERIFIED_PARSER,
+    )
     # Validate the complete immutable graph before the proposal itself becomes
     # durable. Failure returns no options object to the caller, so no partial state
     # can be written by the WebSocket boundary.
