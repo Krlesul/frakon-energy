@@ -171,6 +171,35 @@ def _match_entry(entry: EonCatalogEntry, product_name: str) -> tuple[int, str] |
     return None
 
 
+def eon_contract_product_matches_candidate(
+    *,
+    candidate_product_name: str,
+    contract_product_name: str,
+    contract_kind: str,
+    catalog: tuple[EonCatalogEntry, ...] = EON_2026_ELECTRICITY_CATALOG,
+) -> bool:
+    """Verify contract identity against the same exact E.ON catalog rules.
+
+    The catalog contains duplicate canonical product names because territories
+    and immutable price periods are separate entries. They are acceptable only
+    when all matching entries agree on the exact product/alias contract rule.
+    No fuzzy, substring or cross-product matching is performed here.
+    """
+    canonical = _normalized_product(candidate_product_name)
+    if not canonical or not isinstance(contract_kind, str) or not contract_kind.strip():
+        return False
+    entries = tuple(
+        entry
+        for entry in catalog
+        if _normalized_product(entry.product_name) == canonical
+        and entry.contract_kind == contract_kind.strip()
+    )
+    if not entries:
+        return False
+    decisions = {_match_entry(entry, contract_product_name) is not None for entry in entries}
+    return decisions == {True}
+
+
 class EonTariffCatalogAdapter:
     """Fail-closed adapter for currently verified E.ON household price lists."""
 
