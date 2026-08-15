@@ -28,10 +28,15 @@ from .tariff_discovery_ws_api import _registry_for_hass
 from .tariff_download import ValidatedTariffDownload
 from .tariff_fetch import TariffNotModified, build_tariff_fetch_request
 from .tariff_http_ha import async_fetch_selected_tariff_document_ha
-from .tariff_parser_preview import (
-    parse_supplier_tariff_preview,
-    supplier_parser_supported,
-)
+from .tariff_parser_preview import parse_supplier_tariff_preview
+try:
+    from .tariff_parser_preview import supplier_parser_supported
+except ImportError:
+    # Keep a partial hot reload fail-closed. The pre-registry parser authorized
+    # ČEZ only; new suppliers require the current registry helper to be present.
+    def supplier_parser_supported(supplier: object) -> bool:
+        return getattr(supplier, "value", supplier) == "cez"
+
 from .tariff_pdf_text import extract_validated_tariff_pdf_text
 
 COMMAND_CUSTOMER_TARIFF_PROPOSE = "frakon_energy/tariff/customer/propose"
