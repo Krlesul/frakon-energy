@@ -77,20 +77,24 @@ class TariffSourceResolutionContext:
 
 
 def _canonical_source_context(value: object) -> TariffSourceResolutionContext:
-    """Canonicalize only the same context type surviving an isolated reload.
+    """Canonicalize only FRAKON's declared source-context type variants.
 
-    Pure tests reload ``tariff_sources`` with ``importlib``. An object created by
-    the previous module instance then has a different Python class identity even
-    though it is the same declared type. Accept exactly that case by requiring
-    the same module/name identity and re-validating its serialized payload.
-    Arbitrary mappings and duck-typed objects remain rejected here; external WS
-    payloads must enter explicitly through ``from_value`` first.
+    Isolated tests can load ``tariff_sources`` and ``tariff_source_context`` as
+    separate modules, producing different Python class identities for the same
+    declared operational context. Accept only those two FRAKON module identities,
+    then re-validate the serialized allowed fields. Arbitrary mappings and
+    duck-typed objects remain rejected here; external WS payloads must enter
+    explicitly through ``from_value`` first.
     """
     if isinstance(value, TariffSourceResolutionContext):
         return value
     value_type = type(value)
+    allowed_modules = {
+        __name__,
+        "custom_components.frakon_energy.tariff_source_context",
+    }
     if (
-        value_type.__module__ != __name__
+        value_type.__module__ not in allowed_modules
         or value_type.__name__ != "TariffSourceResolutionContext"
     ):
         raise ValueError("source_context must be TariffSourceResolutionContext")
