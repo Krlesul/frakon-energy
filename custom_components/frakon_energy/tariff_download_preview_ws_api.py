@@ -14,7 +14,16 @@ from .const import DOMAIN
 from .contracts import ElectricityContract, contract_fingerprint
 from .tariff_candidate_selection import select_tariff_candidate
 from .tariff_discovery import async_discover_contract_tariff_candidates
-from .tariff_discovery_ws_api import _registry_for_entry, _registry_for_hass
+from .tariff_discovery_ws_api import _registry_for_hass
+try:
+    from .tariff_discovery_ws_api import _registry_for_entry
+except ImportError:
+    def _registry_for_entry(hass, entry, *, registry=None):
+        # Partial hot reload without the entry-isolation helper must not invent
+        # MND authority. The legacy base registry has no confirmed MND resolver,
+        # so falling back to it is fail-closed for MND while preserving CEZ/EON/PRE.
+        return registry if registry is not None else _registry_for_hass(hass)
+
 from .tariff_fetch import TariffNotModified, build_tariff_fetch_request
 from .tariff_http_ha import async_fetch_selected_tariff_document_ha
 from .tariff_source_context import (
