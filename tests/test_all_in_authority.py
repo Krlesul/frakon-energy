@@ -104,7 +104,7 @@ def test_authority_append_is_idempotent_but_method_is_immutable() -> None:
     ).method is authority.AllInTariffAuthorityMethod.MANUAL_USER_ENTRY
 
 
-def test_reload_rejects_duplicate_corrupt_and_unknown_authority_records() -> None:
+def test_reload_rejects_duplicate_dangling_corrupt_and_unknown_records() -> None:
     _catalog, authority, options, fingerprint = _fixture()
     record = authority.AllInTariffAuthority(
         all_in_tariff_fingerprint=fingerprint,
@@ -115,6 +115,14 @@ def test_reload_rejects_duplicate_corrupt_and_unknown_authority_records() -> Non
     duplicate[authority.OPTION_ALL_IN_TARIFF_AUTHORITIES] = [record, dict(record)]
     with pytest.raises(ValueError, match="duplicate all-in tariff authority target"):
         authority.all_in_tariff_authorities_from_options(duplicate)
+
+    dangling = {
+        authority.OPTION_ALL_IN_TARIFF_AUTHORITIES: [
+            {**record, "all_in_tariff_fingerprint": "0" * 64}
+        ]
+    }
+    with pytest.raises(LookupError, match="all-in tariff authority target not found"):
+        authority.all_in_tariff_authorities_from_options(dangling)
 
     corrupt = dict(options)
     corrupt[authority.OPTION_ALL_IN_TARIFF_AUTHORITIES] = [
