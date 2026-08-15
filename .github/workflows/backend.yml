@@ -73,7 +73,7 @@ jobs:
 
       - name: Run backend tests
         run: >-
-          python -m pytest -q --junitxml=backend-pytest.xml
+          python -m pytest -q
           tests/test_domain.py
           tests/test_pricing.py
           tests/test_contracts.py
@@ -133,11 +133,3 @@ jobs:
           tests/test_tariff_update_runtime.py
           tests/test_tariff_update_notification.py
           tests/test_tariff_runtime_setup_wiring.py
-
-      - name: Upload backend pytest diagnostics
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: backend-pytest
-          path: backend-pytest.xml
-          if-no-files-found: ignore
