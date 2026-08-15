@@ -81,6 +81,8 @@ jobs:
           tests/test_cez_tariffs.py
           tests/test_eon_tariffs.py
           tests/test_cez_tariff_parser.py
+          tests/test_eon_tariff_parser.py
+          tests/test_eon_all_in_preview.py
           tests/test_cez_tariff_components.py
           tests/test_pre_tariffs.py
           tests/test_mnd_tariffs.py

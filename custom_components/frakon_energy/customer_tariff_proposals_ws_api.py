@@ -12,7 +12,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
-from .contracts import ElectricityContract, Supplier
+from .contracts import ElectricityContract
 from .customer_tariff_proposals import (
     confirm_customer_tariff_proposal,
     stage_customer_tariff_proposal,
@@ -29,6 +29,14 @@ from .tariff_download import ValidatedTariffDownload
 from .tariff_fetch import TariffNotModified, build_tariff_fetch_request
 from .tariff_http_ha import async_fetch_selected_tariff_document_ha
 from .tariff_parser_preview import parse_supplier_tariff_preview
+try:
+    from .tariff_parser_preview import supplier_parser_supported
+except ImportError:
+    # Keep a partial hot reload fail-closed. The pre-registry parser authorized
+    # ČEZ only; new suppliers require the current registry helper to be present.
+    def supplier_parser_supported(supplier: object) -> bool:
+        return getattr(supplier, "value", supplier) == "cez"
+
 from .tariff_pdf_text import extract_validated_tariff_pdf_text
 
 COMMAND_CUSTOMER_TARIFF_PROPOSE = "frakon_energy/tariff/customer/propose"
@@ -106,7 +114,7 @@ def async_register_customer_tariff_proposals_websocket(hass: HomeAssistant) -> N
             connection.send_error(msg["id"], "invalid_contract", str(err))
             return
 
-        if contract.supplier is not Supplier.CEZ:
+        if not supplier_parser_supported(contract.supplier):
             connection.send_error(
                 msg["id"],
                 "parser_not_supported",

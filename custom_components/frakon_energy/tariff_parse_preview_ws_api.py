@@ -11,7 +11,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
-from .contracts import ElectricityContract, Supplier, contract_fingerprint
+from .contracts import ElectricityContract, contract_fingerprint
 from .tariff_candidate_selection import select_tariff_candidate
 from .tariff_discovery import async_discover_contract_tariff_candidates
 from .tariff_discovery_ws_api import _registry_for_hass
@@ -22,6 +22,15 @@ from .tariff_parser_preview import (
     SupplierTariffParsePreview,
     parse_supplier_tariff_preview,
 )
+try:
+    from .tariff_parser_preview import supplier_parser_supported
+except ImportError:
+    # Fail-closed compatibility for an older in-process parser module during a
+    # partial hot reload. The legacy parser authorized ČEZ only; E.ON must not
+    # be opened unless the current registry helper is present.
+    def supplier_parser_supported(supplier: object) -> bool:
+        return getattr(supplier, "value", supplier) == "cez"
+
 from .tariff_pdf_text import extract_validated_tariff_pdf_text
 
 COMMAND_TARIFF_PARSE_PREVIEW = "frakon_energy/tariff/parse_preview"
@@ -87,7 +96,7 @@ def async_register_tariff_parse_preview_websocket(hass: HomeAssistant) -> None:
             connection.send_error(msg["id"], "invalid_contract", str(err))
             return
 
-        if contract.supplier is not Supplier.CEZ:
+        if not supplier_parser_supported(contract.supplier):
             connection.send_error(
                 msg["id"],
                 "parser_not_supported",
