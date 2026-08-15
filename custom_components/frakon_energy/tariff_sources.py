@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 import hashlib
 import json
@@ -140,7 +140,9 @@ class TariffSourceQuery:
     distribution_tariff: str
     breaker_code: str
     valid_on: date
-    source_context: TariffSourceResolutionContext = TariffSourceResolutionContext()
+    source_context: TariffSourceResolutionContext = field(
+        default_factory=TariffSourceResolutionContext
+    )
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "supplier", _supplier_slug(self.supplier))
