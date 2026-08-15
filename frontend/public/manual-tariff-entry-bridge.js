@@ -43,6 +43,13 @@ function text(tag, className, value) {
   return node;
 }
 
+function normalizeUrl(rawUrl) {
+  const url = new URL(String(rawUrl), document.baseURI);
+  if (url.protocol !== "https:") throw new Error("Ověřený ceník nemá bezpečnou HTTPS adresu.");
+  url.hash = "";
+  return url.href;
+}
+
 function safeLink(label, rawUrl) {
   let url;
   try {
@@ -56,13 +63,6 @@ function safeLink(label, rawUrl) {
   link.target = "_blank";
   link.rel = "noreferrer";
   return link;
-}
-
-function normalizeUrl(rawUrl) {
-  const url = new URL(String(rawUrl), document.baseURI);
-  if (url.protocol !== "https:") throw new Error("Ověřený ceník nemá bezpečnou HTTPS adresu.");
-  url.hash = "";
-  return url.href;
 }
 
 function wizard() {
@@ -85,8 +85,7 @@ function fieldControl(labelText) {
 }
 
 function requiredValue(labelText) {
-  const control = fieldControl(labelText);
-  const value = control?.value?.trim();
+  const value = fieldControl(labelText)?.value?.trim();
   if (!value) throw new Error(`Chybí hodnota pole „${labelText}“.`);
   return value;
 }
@@ -145,6 +144,7 @@ async function exactWizardContext() {
   ) {
     throw new Error("Katalog dodavatelů neprošel read-only kontrolou.");
   }
+
   const group = catalog.suppliers.find((item) => item?.supplier === supplier);
   const products = Array.isArray(group?.products) ? group.products : [];
   const productMatches = products.filter((item) => item?.product_name === productName);
@@ -191,6 +191,7 @@ async function discoverExactCandidate(context, sourceContext) {
     !discovery ||
     discovery.entry_id !== context.entryId ||
     !SHA256_RE.test(discovery.contract_fingerprint ?? "") ||
+    !SHA256_RE.test(discovery.source_context_fingerprint ?? "") ||
     !Array.isArray(discovery.candidates) ||
     discovery.download_performed ||
     discovery.parsing_performed ||
@@ -199,9 +200,7 @@ async function discoverExactCandidate(context, sourceContext) {
   ) {
     throw new Error("Read-only discovery neprošlo bezpečnostní kontrolou.");
   }
-  if (sourceContext && !SHA256_RE.test(discovery.source_context_fingerprint ?? "")) {
-    throw new Error("Discovery nevrátilo platný fingerprint dočasného source contextu.");
-  }
+
   const matches = discovery.candidates.filter((candidate) => {
     try {
       return (
@@ -220,6 +219,7 @@ async function discoverExactCandidate(context, sourceContext) {
       return false;
     }
   });
+
   if (matches.length !== 1) {
     if (context.contract.supplier === "mnd") {
       throw new Error("Pro toto PSČ není právě jeden potvrzený MND ceník. Nejdřív dokončete MND source-confirmation krok pro stejné PSČ a produkt.");
@@ -304,7 +304,7 @@ function renderIdle() {
   );
   header.append(heading, text("span", "frakon-manual__badge", "Aktivace zamčená"));
   panel.append(header);
-  panel.append(text("p", "frakon-manual__lead", "Ruční režim nikdy nepřebírá regulované složky, URL ani all-in součet z formuláře. Nejdřív backend musí znovu najít právě jeden 100/100 oficiální ceník; až potom se odemknou tři obchodní hodnoty."));
+  panel.append(text("p", "frakon-manual__lead", "Ruční režim nikdy nepřebírá regulované složky, URL ani all-in součet z formuláře. Backend musí znovu najít právě jeden 100/100 oficiální ceník; až potom se odemknou tři obchodní hodnoty."));
 
   if (supplier === "mnd") {
     const form = text("div", "frakon-manual__form one", "");
@@ -319,7 +319,7 @@ function renderIdle() {
   button.type = "button";
   button.addEventListener("click", prepareCandidate);
   const actions = text("div", "frakon-manual__actions", "");
-  actions.append(button, text("span", "frakon-manual__safety", "Tento krok je read-only: nic nestahuje, neukládá ani neaktivuje."));
+  actions.append(button, text("span", "frakon-manual__safety", "Read-only kontrola nic neukládá ani neaktivuje. Ruční režim je dostupný i jako fallback při selhání automatického parseru."));
   panel.append(actions);
   root.append(panel);
 }
@@ -418,6 +418,15 @@ function componentList(title, components, fixed = false) {
   return block;
 }
 
+function sourceBox(title, url, checksum) {
+  const block = text("div", "frakon-manual__source", "");
+  block.append(text("span", "", title));
+  const link = safeLink("Otevřít ověřený zdroj", url);
+  if (link) block.append(link);
+  block.append(text("code", "", checksum ? `SHA-256 ${checksum}` : "Zdroj bez checksumu"));
+  return block;
+}
+
 function renderProposal() {
   const root = ensureRoot();
   if (!root || !currentProposal) return;
@@ -445,6 +454,13 @@ function renderProposal() {
   addValue(manualBox, "Ruční stálý plat", `${manual.supplier_standing_czk_month} Kč/měsíc`);
   panel.append(manualBox);
 
+  const identity = text("div", "frakon-manual__identity", "");
+  addValue(identity, "Dodavatel", SUPPLIER_LABELS[preview.supplier] ?? preview.supplier);
+  addValue(identity, "Produkt", preview.product_name);
+  addValue(identity, "Sazba", preview.distribution_tariff);
+  addValue(identity, "Jistič", preview.breaker_code);
+  panel.append(identity);
+
   const components = text("div", "frakon-manual__components", "");
   components.append(
     componentList("Variabilní složky", Array.isArray(preview.variable_components) ? preview.variable_components : [], false),
@@ -452,12 +468,27 @@ function renderProposal() {
   );
   panel.append(components);
 
-  const source = text("div", "frakon-manual__source", "");
-  source.append(text("span", "", "Supplier document použitý jako provenance"));
-  const link = safeLink("Otevřít ověřený zdroj", preview.supplier_source_url);
-  if (link) source.append(link);
-  source.append(text("code", "", `SHA-256 ${preview.supplier_document_sha256}`));
-  panel.append(source);
+  const sources = text("div", "frakon-manual__sources", "");
+  sources.append(
+    sourceBox("Supplier-commercial provenance", preview.supplier_source_url, preview.supplier_document_sha256),
+    sourceBox("Regulovaná provenance", preview.regulated_source_url, preview.regulated_checksum),
+  );
+  panel.append(sources);
+
+  const fingerprints = text("div", "frakon-manual__fingerprints", "");
+  for (const [label, value] of [
+    ["Proposal", response.proposal_fingerprint],
+    ["Smlouva", response.contract_fingerprint],
+    ["All-in", response.all_in_tariff_fingerprint],
+    ["Candidate", response.candidate_fingerprint],
+    ["Regulace", response.regulated_version_fingerprint],
+    ["Source context", response.source_context_fingerprint],
+  ]) {
+    const row = text("span", "", "");
+    row.append(text("b", "", `${label}: `), text("code", "", value));
+    fingerprints.append(row);
+  }
+  panel.append(fingerprints);
 
   if (confirmed) {
     const success = text("div", "frakon-manual__notice success", "");
@@ -502,16 +533,30 @@ async function prepareCandidate() {
   }
 }
 
+function expectedBreakerCode(contract) {
+  return `${contract.breaker.phases}x${contract.breaker.amperes}A`;
+}
+
 function validateManualProposal(response, exact, manualValues) {
   const { context, discovery, candidate } = exact;
   if (!response || typeof response !== "object" || !response.preview) throw new Error("Backend nevrátil manual customer proposal.");
   if (response.entry_id !== context.entryId) throw new Error("Proposal patří jiné konfiguraci.");
   if (response.candidate_fingerprint !== candidate.fingerprint) throw new Error("Proposal patří jinému ceníku.");
   if (response.contract_fingerprint !== discovery.contract_fingerprint) throw new Error("Proposal patří jiné verzi smlouvy.");
+  if (response.source_context_fingerprint !== discovery.source_context_fingerprint) throw new Error("Proposal patří jinému source contextu.");
+  if (!SHA256_RE.test(response.source_context_fingerprint ?? "")) throw new Error("Proposal nemá platný source-context fingerprint.");
   if (normalizeUrl(response.source_url) !== normalizeUrl(candidate.source_url)) throw new Error("Proposal změnil supplier source URL.");
   if (!SHA256_RE.test(response.document_sha256 ?? "") || response.document_sha256 !== response.preview.supplier_document_sha256) {
     throw new Error("Proposal nemá konzistentní SHA-256 supplier dokumentu.");
   }
+
+  const preview = response.preview;
+  if (preview.supplier !== context.contract.supplier) throw new Error("All-in supplier neodpovídá smlouvě.");
+  if (preview.product_name !== context.contract.product_name) throw new Error("All-in produkt neodpovídá smlouvě.");
+  if (preview.distribution_tariff !== context.contract.distribution_tariff) throw new Error("All-in sazba neodpovídá smlouvě.");
+  if (preview.breaker_code !== expectedBreakerCode(context.contract)) throw new Error("All-in jistič neodpovídá smlouvě.");
+  if (normalizeUrl(preview.supplier_source_url) !== normalizeUrl(candidate.source_url)) throw new Error("All-in provenance patří jinému supplier dokumentu.");
+
   if (
     response.authority_method !== "manual_user_entry" ||
     response.manual_entry !== true ||
@@ -520,19 +565,20 @@ function validateManualProposal(response, exact, manualValues) {
     response.all_in_preview_performed !== true ||
     response.confirmation_performed !== false ||
     response.activation_performed !== false ||
-    response.preview.authority_method !== "manual_user_entry" ||
-    response.preview.manual_entry !== true ||
-    response.preview.all_in_ready !== true ||
-    response.preview.parsing_performed !== false ||
-    response.preview.persistence_performed !== false ||
-    response.preview.activation_performed !== false
+    preview.authority_method !== "manual_user_entry" ||
+    preview.manual_entry !== true ||
+    preview.all_in_ready !== true ||
+    preview.parsing_performed !== false ||
+    preview.persistence_performed !== false ||
+    preview.activation_performed !== false
   ) {
     throw new Error("Backend nevrátil bezpečný manual_user_entry proposal.");
   }
   if (Object.prototype.hasOwnProperty.call(response, "postcode") || Object.prototype.hasOwnProperty.call(response, "source_context")) {
     throw new Error("Backend vrátil raw operational source context v proposal response.");
   }
-  const manual = response.preview.manual_supplier_commercial;
+
+  const manual = preview.manual_supplier_commercial;
   if (!manual || manual.includes_vat !== true) throw new Error("Manual supplier-commercial preview nemá explicitní DPH autoritu.");
   if (
     manual.high_rate_czk_per_kwh !== manualValues.high_rate_czk_per_kwh ||
@@ -541,6 +587,7 @@ function validateManualProposal(response, exact, manualValues) {
   ) {
     throw new Error("Backend změnil ručně zadané supplier-commercial hodnoty.");
   }
+
   for (const field of ["proposal_fingerprint", "contract_fingerprint", "all_in_tariff_fingerprint", "candidate_fingerprint", "regulated_version_fingerprint"]) {
     if (!SHA256_RE.test(response[field] ?? "")) throw new Error(`Proposal má neplatné pole ${field}.`);
   }
@@ -552,7 +599,7 @@ async function prepareProposal() {
   busy = true;
   currentProposal = null;
   currentConfirmation = null;
-  renderLoading("Sestavuji kompletní manual all-in…", "Znovu ověřuji candidate fingerprint, stahuji přesný PDF dokument a kombinuji pouze tři ruční obchodní hodnoty s potvrzenou regulací.");
+  renderLoading("Sestavuji kompletní manual all-in…", "Znovu ověřuji candidate i source-context fingerprint, stahuji přesný PDF dokument a kombinuji jen tři ruční obchodní hodnoty s potvrzenou regulací.");
   try {
     const manualValues = {
       high_rate_czk_per_kwh: normalizeDecimal(draft.highRate, "VT"),
@@ -562,9 +609,14 @@ async function prepareProposal() {
     const context = await exactWizardContext();
     const sourceContext = sourceContextFor(context);
     const exact = await discoverExactCandidate(context, sourceContext);
-    if (exact.candidate.fingerprint !== currentCandidate.candidate.fingerprint || normalizeUrl(exact.candidate.source_url) !== normalizeUrl(currentCandidate.candidate.source_url)) {
-      throw new Error("Přesný candidate se od předchozího ověření změnil. Načtěte jej znovu.");
+    if (
+      exact.candidate.fingerprint !== currentCandidate.candidate.fingerprint ||
+      normalizeUrl(exact.candidate.source_url) !== normalizeUrl(currentCandidate.candidate.source_url) ||
+      exact.discovery.source_context_fingerprint !== currentCandidate.discovery.source_context_fingerprint
+    ) {
+      throw new Error("Přesný candidate nebo source context se od předchozího ověření změnil. Načtěte jej znovu.");
     }
+
     const message = {
       type: "frakon_energy/tariff/customer/manual/propose",
       entry_id: context.entryId,
@@ -625,22 +677,22 @@ async function confirmProposal() {
   }
 }
 
-function manualFallbackEligible() {
-  if (!wizard() || pricePreview()) return false;
-  const supplier = fieldControl("Dodavatel")?.value?.trim();
-  if (!supplier) return false;
-  if (supplier === "mnd") return true;
-  return Boolean(wizard()?.querySelector(".tariff-candidate__parser-pending"));
-}
-
 function installStyles() {
   if (document.getElementById(MANUAL_STYLE_ID)) return;
   const style = document.createElement("style");
   style.id = MANUAL_STYLE_ID;
   style.textContent = `
-.frakon-manual-tariff-bridge{box-sizing:border-box;max-width:1600px;margin:0 auto 32px;padding:0 24px;color:#e2e8f0;font-family:inherit}.frakon-manual__panel{display:grid;gap:16px;padding:22px;border:1px solid rgba(168,85,247,.32);border-radius:22px;background:linear-gradient(145deg,rgba(88,28,135,.14),rgba(2,6,23,.93));box-shadow:0 18px 54px rgba(2,6,23,.2)}.frakon-manual__panel.confirmed{border-color:rgba(34,197,94,.34);background:linear-gradient(145deg,rgba(20,83,45,.16),rgba(2,6,23,.93))}.frakon-manual__header,.frakon-manual__actions,.frakon-manual__confirm{display:flex;align-items:center;justify-content:space-between;gap:18px}.frakon-manual__header h3{margin:4px 0 0;font-size:20px}.frakon-manual__eyebrow{color:#c4b5fd;font-size:11px;font-weight:850;letter-spacing:.08em;text-transform:uppercase}.frakon-manual__badge{display:inline-flex;align-items:center;min-height:30px;padding:0 11px;border-radius:999px;color:#fde68a;background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.24);font-size:12px;font-weight:800;white-space:nowrap}.frakon-manual__badge.ready{color:#ddd6fe;background:rgba(139,92,246,.12);border-color:rgba(167,139,250,.25)}.frakon-manual__badge.confirmed{color:#86efac;background:rgba(34,197,94,.12);border-color:rgba(34,197,94,.24)}.frakon-manual__lead,.frakon-manual__safety{margin:0;color:#94a3b8;font-size:13px;line-height:1.55}.frakon-manual__form{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.frakon-manual__form.one{grid-template-columns:minmax(180px,360px)}.frakon-manual__field{display:grid;gap:7px}.frakon-manual__field>span{color:#c4b5fd;font-size:12px;font-weight:750}.frakon-manual__field input{min-width:0;height:42px;padding:0 12px;border:1px solid rgba(148,163,184,.2);border-radius:10px;color:#f8fafc;background:rgba(2,6,23,.58);font:inherit}.frakon-manual__field input:focus{outline:2px solid rgba(167,139,250,.35);border-color:rgba(167,139,250,.5)}.frakon-manual__primary,.frakon-manual__secondary,.frakon-manual__confirm-button{min-height:42px;padding:0 16px;border:1px solid rgba(167,139,250,.44);border-radius:11px;color:#faf5ff;background:rgba(126,34,206,.25);font:inherit;font-size:13px;font-weight:850;cursor:pointer}.frakon-manual__secondary{background:rgba(15,23,42,.62)}.frakon-manual__confirm-button{border-color:rgba(74,222,128,.46);background:rgba(22,163,74,.26)}.frakon-manual__primary:hover,.frakon-manual__secondary:hover{background:rgba(126,34,206,.38)}.frakon-manual__confirm-button:hover:not(:disabled){background:rgba(22,163,74,.38)}.frakon-manual__confirm-button:disabled{cursor:wait;opacity:.58}.frakon-manual__notice{display:flex;flex-direction:column;gap:5px;padding:15px;border-radius:14px;color:#dbeafe;background:rgba(59,130,246,.08);border:1px solid rgba(59,130,246,.2);line-height:1.45}.frakon-manual__notice span{font-size:12px;color:inherit}.frakon-manual__notice.loading{color:#ddd6fe;background:rgba(139,92,246,.08);border-color:rgba(167,139,250,.24)}.frakon-manual__notice.error{color:#fecaca;background:rgba(239,68,68,.08);border-color:rgba(239,68,68,.22)}.frakon-manual__notice.warning{color:#fde68a;background:rgba(245,158,11,.08);border-color:rgba(245,158,11,.22)}.frakon-manual__notice.success{color:#bbf7d0;background:rgba(34,197,94,.08);border-color:rgba(34,197,94,.22)}.frakon-manual__identity,.frakon-manual__totals,.frakon-manual__manual-values{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.frakon-manual__totals,.frakon-manual__manual-values{grid-template-columns:repeat(3,minmax(0,1fr))}.frakon-manual__identity>div,.frakon-manual__totals>div,.frakon-manual__manual-values>div,.frakon-manual__source,.frakon-manual__component-block{padding:14px;border-radius:13px;background:rgba(2,6,23,.45);border:1px solid rgba(148,163,184,.12)}.frakon-manual__identity>div,.frakon-manual__totals>div,.frakon-manual__manual-values>div{display:flex;flex-direction:column;gap:6px}.frakon-manual__identity span,.frakon-manual__totals span,.frakon-manual__manual-values span,.frakon-manual__source span{color:#94a3b8;font-size:12px}.frakon-manual__totals b{font-size:19px}.frakon-manual__source{display:flex;flex-direction:column;gap:7px}.frakon-manual__source a{width:max-content;color:#c4b5fd;font-size:13px;font-weight:750;text-decoration:none}.frakon-manual__source a:hover{text-decoration:underline}.frakon-manual__source code{color:#ddd6fe;overflow-wrap:anywhere}.frakon-manual__components{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.frakon-manual__component-block h4{margin:0 0 10px}.frakon-manual__component-list{display:grid}.frakon-manual__component-list>div{display:flex;justify-content:space-between;gap:14px;padding:9px 0;border-top:1px solid rgba(148,163,184,.08)}.frakon-manual__component-list>div:first-child{border-top:0}.frakon-manual__component-list span{color:#94a3b8;font-size:12px}.frakon-manual__component-list b{font-size:12px;text-align:right}.frakon-manual__confirm{padding:16px;border-radius:15px;color:#fde68a;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.22)}.frakon-manual__confirm>div{display:flex;flex-direction:column;gap:5px;max-width:800px;line-height:1.45}.frakon-manual__confirm span{color:#d6d3d1;font-size:12px}@media(max-width:900px){.frakon-manual__form,.frakon-manual__identity,.frakon-manual__totals,.frakon-manual__manual-values{grid-template-columns:repeat(2,minmax(0,1fr))}.frakon-manual__components{grid-template-columns:1fr}}@media(max-width:640px){.frakon-manual-tariff-bridge{padding:0 16px}.frakon-manual__header,.frakon-manual__actions,.frakon-manual__confirm{align-items:flex-start;flex-direction:column}.frakon-manual__form,.frakon-manual__identity,.frakon-manual__totals,.frakon-manual__manual-values{grid-template-columns:1fr}.frakon-manual__primary,.frakon-manual__secondary,.frakon-manual__confirm-button{width:100%}.frakon-manual__component-list>div{flex-direction:column;gap:4px}.frakon-manual__component-list b{text-align:left}}
+.frakon-manual-tariff-bridge{box-sizing:border-box;max-width:1600px;margin:0 auto 32px;padding:0 24px;color:#e2e8f0;font-family:inherit}.frakon-manual__panel{display:grid;gap:16px;padding:22px;border:1px solid rgba(168,85,247,.32);border-radius:22px;background:linear-gradient(145deg,rgba(88,28,135,.14),rgba(2,6,23,.93));box-shadow:0 18px 54px rgba(2,6,23,.2)}.frakon-manual__panel.confirmed{border-color:rgba(34,197,94,.34);background:linear-gradient(145deg,rgba(20,83,45,.16),rgba(2,6,23,.93))}.frakon-manual__header,.frakon-manual__actions,.frakon-manual__confirm{display:flex;align-items:center;justify-content:space-between;gap:18px}.frakon-manual__header h3{margin:4px 0 0;font-size:20px}.frakon-manual__eyebrow{color:#c4b5fd;font-size:11px;font-weight:850;letter-spacing:.08em;text-transform:uppercase}.frakon-manual__badge{display:inline-flex;align-items:center;min-height:30px;padding:0 11px;border-radius:999px;color:#fde68a;background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.24);font-size:12px;font-weight:800;white-space:nowrap}.frakon-manual__badge.ready{color:#ddd6fe;background:rgba(139,92,246,.12);border-color:rgba(167,139,250,.25)}.frakon-manual__badge.confirmed{color:#86efac;background:rgba(34,197,94,.12);border-color:rgba(34,197,94,.24)}.frakon-manual__lead,.frakon-manual__safety{margin:0;color:#94a3b8;font-size:13px;line-height:1.55}.frakon-manual__form{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.frakon-manual__form.one{grid-template-columns:minmax(180px,360px)}.frakon-manual__field{display:grid;gap:7px}.frakon-manual__field>span{color:#c4b5fd;font-size:12px;font-weight:750}.frakon-manual__field input{min-width:0;height:42px;padding:0 12px;border:1px solid rgba(148,163,184,.2);border-radius:10px;color:#f8fafc;background:rgba(2,6,23,.58);font:inherit}.frakon-manual__field input:focus{outline:2px solid rgba(167,139,250,.35);border-color:rgba(167,139,250,.5)}.frakon-manual__primary,.frakon-manual__secondary,.frakon-manual__confirm-button{min-height:42px;padding:0 16px;border:1px solid rgba(167,139,250,.44);border-radius:11px;color:#faf5ff;background:rgba(126,34,206,.25);font:inherit;font-size:13px;font-weight:850;cursor:pointer}.frakon-manual__secondary{background:rgba(15,23,42,.62)}.frakon-manual__confirm-button{border-color:rgba(74,222,128,.46);background:rgba(22,163,74,.26)}.frakon-manual__primary:hover,.frakon-manual__secondary:hover{background:rgba(126,34,206,.38)}.frakon-manual__confirm-button:hover:not(:disabled){background:rgba(22,163,74,.38)}.frakon-manual__confirm-button:disabled{cursor:wait;opacity:.58}.frakon-manual__notice{display:flex;flex-direction:column;gap:5px;padding:15px;border-radius:14px;color:#dbeafe;background:rgba(59,130,246,.08);border:1px solid rgba(59,130,246,.2);line-height:1.45}.frakon-manual__notice span{font-size:12px;color:inherit}.frakon-manual__notice.loading{color:#ddd6fe;background:rgba(139,92,246,.08);border-color:rgba(167,139,250,.24)}.frakon-manual__notice.error{color:#fecaca;background:rgba(239,68,68,.08);border-color:rgba(239,68,68,.22)}.frakon-manual__notice.warning{color:#fde68a;background:rgba(245,158,11,.08);border-color:rgba(245,158,11,.22)}.frakon-manual__notice.success{color:#bbf7d0;background:rgba(34,197,94,.08);border-color:rgba(34,197,94,.22)}.frakon-manual__identity,.frakon-manual__totals,.frakon-manual__manual-values{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.frakon-manual__totals,.frakon-manual__manual-values{grid-template-columns:repeat(3,minmax(0,1fr))}.frakon-manual__identity>div,.frakon-manual__totals>div,.frakon-manual__manual-values>div,.frakon-manual__source,.frakon-manual__component-block,.frakon-manual__fingerprints{padding:14px;border-radius:13px;background:rgba(2,6,23,.45);border:1px solid rgba(148,163,184,.12)}.frakon-manual__identity>div,.frakon-manual__totals>div,.frakon-manual__manual-values>div{display:flex;flex-direction:column;gap:6px}.frakon-manual__identity span,.frakon-manual__totals span,.frakon-manual__manual-values span,.frakon-manual__source span,.frakon-manual__fingerprints span{color:#94a3b8;font-size:12px}.frakon-manual__totals b{font-size:19px}.frakon-manual__sources,.frakon-manual__components{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.frakon-manual__source{display:flex;flex-direction:column;gap:7px}.frakon-manual__source a{width:max-content;color:#c4b5fd;font-size:13px;font-weight:750;text-decoration:none}.frakon-manual__source a:hover{text-decoration:underline}.frakon-manual__source code,.frakon-manual__fingerprints code{color:#ddd6fe;overflow-wrap:anywhere}.frakon-manual__component-block h4{margin:0 0 10px}.frakon-manual__component-list{display:grid}.frakon-manual__component-list>div{display:flex;justify-content:space-between;gap:14px;padding:9px 0;border-top:1px solid rgba(148,163,184,.08)}.frakon-manual__component-list>div:first-child{border-top:0}.frakon-manual__component-list span{color:#94a3b8;font-size:12px}.frakon-manual__component-list b{font-size:12px;text-align:right}.frakon-manual__fingerprints{display:grid;gap:6px}.frakon-manual__confirm{padding:16px;border-radius:15px;color:#fde68a;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.22)}.frakon-manual__confirm>div{display:flex;flex-direction:column;gap:5px;max-width:800px;line-height:1.45}.frakon-manual__confirm span{color:#d6d3d1;font-size:12px}@media(max-width:900px){.frakon-manual__form,.frakon-manual__identity,.frakon-manual__totals,.frakon-manual__manual-values{grid-template-columns:repeat(2,minmax(0,1fr))}.frakon-manual__components,.frakon-manual__sources{grid-template-columns:1fr}}@media(max-width:640px){.frakon-manual-tariff-bridge{padding:0 16px}.frakon-manual__header,.frakon-manual__actions,.frakon-manual__confirm{align-items:flex-start;flex-direction:column}.frakon-manual__form,.frakon-manual__identity,.frakon-manual__totals,.frakon-manual__manual-values{grid-template-columns:1fr}.frakon-manual__primary,.frakon-manual__secondary,.frakon-manual__confirm-button{width:100%}.frakon-manual__component-list>div{flex-direction:column;gap:4px}.frakon-manual__component-list b{text-align:left}}
 `;
   document.head.append(style);
+}
+
+function manualFallbackEligible() {
+  if (!wizard() || pricePreview()) return false;
+  const supplier = fieldControl("Dodavatel")?.value?.trim();
+  if (!supplier) return false;
+  if (supplier === "mnd") return true;
+  return Boolean(wizard()?.querySelector(".tariff-candidate"));
 }
 
 function syncBridge() {
