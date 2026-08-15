@@ -40,6 +40,8 @@ jobs:
           node scripts/check-tariff-confirmation-authority.mjs
           node --check public/mnd-source-confirmation-bridge.js
           node scripts/check-mnd-source-confirmation-authority.mjs
+          node --check public/supplier-parser-preview-bridge.js
+          node scripts/check-supplier-parser-preview-authority.mjs
           node --check public/manual-tariff-entry-bridge.js
           node scripts/check-manual-tariff-entry-authority.mjs
 
@@ -55,6 +57,7 @@ jobs:
           test -f custom_components/frakon_energy/frontend_app/index.html
           cmp frontend/public/tariff-confirmation-bridge.js custom_components/frakon_energy/frontend_app/tariff-confirmation-bridge.js
           cmp frontend/public/mnd-source-confirmation-bridge.js custom_components/frakon_energy/frontend_app/mnd-source-confirmation-bridge.js
+          cmp frontend/public/supplier-parser-preview-bridge.js custom_components/frakon_energy/frontend_app/supplier-parser-preview-bridge.js
           cmp frontend/public/manual-tariff-entry-bridge.js custom_components/frakon_energy/frontend_app/manual-tariff-entry-bridge.js
 
       - name: Verify committed dashboard is current
