@@ -71,6 +71,7 @@ def _query(
     product_name: str,
     distributor: str,
     contract_kind: str,
+    postcode: str | None = None,
 ):
     return sources.TariffSourceQuery(
         supplier=supplier,
@@ -80,6 +81,7 @@ def _query(
         distribution_tariff="D25d",
         breaker_code="3x25A",
         valid_on=date(2026, 8, 14),
+        source_context=sources.TariffSourceResolutionContext(postcode=postcode),
     )
 
 
@@ -161,6 +163,7 @@ def test_mnd_is_registered_but_fails_closed_without_document_resolver() -> None:
                 product_name="Proud - Ceník Říjen 28",
                 distributor="cez_distribuce",
                 contract_kind="fixed",
+                postcode="41201",
             )
         )
     )
@@ -173,6 +176,7 @@ def test_default_registry_injects_exact_mnd_resolver_when_available() -> None:
 
     class Resolver:
         async def async_resolve(self, query, product):
+            assert query.source_context.postcode == "41201"
             return mnd.MndResolvedTariffSource(
                 product_name=product.product_name,
                 distributor=query.distributor,
@@ -199,6 +203,7 @@ def test_default_registry_injects_exact_mnd_resolver_when_available() -> None:
                 product_name="Proud - Ceník Říjen 28",
                 distributor="cez_distribuce",
                 contract_kind="fixed",
+                postcode="41201",
             )
         )
     )
