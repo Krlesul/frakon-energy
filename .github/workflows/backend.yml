@@ -80,6 +80,7 @@ jobs:
           tests/test_billing_all_in_wiring.py
           tests/test_load_all_in_estimate.py
           tests/test_load_all_in_wiring.py
+          tests/test_load_plan_ws_api.py
           tests/test_contracts.py
           tests/test_tariff_sources.py
           tests/test_cez_tariffs.py
