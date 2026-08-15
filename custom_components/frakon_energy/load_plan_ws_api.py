@@ -12,6 +12,10 @@ from homeassistant.core import HomeAssistant, callback
 
 from .const import DOMAIN
 from .energy_load_planner import FlexibleLoad, plan_flexible_load
+from .load_all_in_estimate import (
+    build_confirmed_all_in_load_estimate,
+    unavailable_all_in_load_estimate,
+)
 from .load_profiles import LoadProfile, profile_by_id
 from .spot_price_ws_api import async_customer_spot_payload
 
@@ -104,8 +108,9 @@ async def async_preview_profile_plan(
     deadline: datetime | None = None,
     now: datetime | None = None,
 ) -> tuple[LoadProfile, dict[str, Any] | None]:
-    """Calculate a preview using persisted profile defaults."""
-    profile = _enabled_profile(_entry(hass, entry_id), profile_id)
+    """Calculate a persisted-profile preview with a separate all-in cost view."""
+    entry = _entry(hass, entry_id)
+    profile = _enabled_profile(entry, profile_id)
     plan = await async_preview_load_plan(
         hass,
         load_id=profile.profile_id,
@@ -116,6 +121,16 @@ async def async_preview_profile_plan(
         deadline=deadline,
         now=now,
     )
+    if plan is not None:
+        try:
+            plan["all_in_estimate"] = build_confirmed_all_in_load_estimate(
+                entry.options,
+                starts_at=plan["starts_at"],
+                ends_at=plan["ends_at"],
+                power_kw=plan["power_kw"],
+            )
+        except (KeyError, LookupError, TypeError, ValueError):
+            plan["all_in_estimate"] = unavailable_all_in_load_estimate()
     return profile, plan
 
 
