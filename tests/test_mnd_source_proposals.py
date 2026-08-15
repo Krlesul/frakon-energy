@@ -162,7 +162,7 @@ def test_confirmation_accepts_only_stored_fingerprint_and_preserves_proposal_his
 
 
 def test_unknown_or_malformed_confirmation_fingerprint_never_mutates_options() -> None:
-    _resolver, proposals = load_modules()
+    resolver, proposals = load_modules()
     proposal = _proposal(proposals)
     staged = proposals.append_mnd_source_proposal({"keep": "value"}, proposal)
 
