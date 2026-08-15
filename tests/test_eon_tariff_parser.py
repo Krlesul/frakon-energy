@@ -278,7 +278,7 @@ def test_three_year_future_column_disagreement_fails_closed() -> None:
         1,
     )
 
-    with pytest.raises(ValueError, match="fixed 2027\+ price columns disagree"):
+    with pytest.raises(ValueError, match=r"fixed 2027\+ price columns disagree"):
         parser.parse_eon_supplier_tariff(
             tampered,
             expected_product_name="Elektřina výhodně PRO na 3 roky",
