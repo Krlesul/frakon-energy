@@ -310,3 +310,111 @@ def test_mnd_sha_pinned_candidate_can_use_manual_preview_without_parser_authorit
     assert supplier_evidence[0].source_name == "MND Energie"
     assert supplier_evidence[0].source_url == source_url
     assert supplier_evidence[0].checksum == validated.document.sha256
+
+
+def test_manual_preview_rejects_non_exact_candidate_score() -> None:
+    (
+        sources,
+        _provenance,
+        _authority,
+        manual,
+        contract,
+        validated,
+        parsed,
+        regulated,
+        evidence,
+    ) = _fixture()
+    selection = sys.modules["custom_components.frakon_energy.tariff_candidate_selection"]
+    download_module = sys.modules["custom_components.frakon_energy.tariff_download"]
+    candidate = sources.TariffDocumentCandidate(
+        document=validated.candidate.document,
+        product_name=validated.candidate.product_name,
+        valid_from=validated.candidate.valid_from,
+        valid_to=validated.candidate.valid_to,
+        match_score=99,
+        match_reasons=("not exact",),
+        price_scope=validated.candidate.price_scope,
+    )
+    download = download_module.ValidatedTariffDownload(
+        selected_fingerprint=selection.tariff_candidate_selection_fingerprint(candidate),
+        candidate=candidate,
+        document=validated.document,
+        content=validated.content,
+        validated_at=validated.validated_at,
+    )
+
+    with pytest.raises(ValueError, match="100-score"):
+        manual.build_manual_all_in_tariff_preview(
+            download=download,
+            manual_commercial=_manual_input(manual, parsed),
+            contract=contract,
+            regulated=regulated,
+            regulated_evidence=evidence,
+        )
+
+
+def test_manual_preview_revalidates_official_supplier_domain() -> None:
+    (
+        sources,
+        _provenance,
+        _authority,
+        manual,
+        contract,
+        validated,
+        parsed,
+        regulated,
+        evidence,
+    ) = _fixture()
+    selection = sys.modules["custom_components.frakon_energy.tariff_candidate_selection"]
+    download_module = sys.modules["custom_components.frakon_energy.tariff_download"]
+    foreign_url = "https://example.invalid/pricelist.pdf"
+    candidate_document = replace(validated.candidate.document, source_url=foreign_url)
+    candidate = sources.TariffDocumentCandidate(
+        document=candidate_document,
+        product_name=validated.candidate.product_name,
+        valid_from=validated.candidate.valid_from,
+        valid_to=validated.candidate.valid_to,
+        match_score=100,
+        match_reasons=("synthetic drift fixture",),
+        price_scope=validated.candidate.price_scope,
+    )
+    document = replace(validated.document, source_url=foreign_url)
+    download = download_module.ValidatedTariffDownload(
+        selected_fingerprint=selection.tariff_candidate_selection_fingerprint(candidate),
+        candidate=candidate,
+        document=document,
+        content=validated.content,
+        validated_at=validated.validated_at,
+    )
+
+    with pytest.raises(ValueError, match="official domain"):
+        manual.build_manual_all_in_tariff_preview(
+            download=download,
+            manual_commercial=_manual_input(manual, parsed),
+            contract=contract,
+            regulated=regulated,
+            regulated_evidence=evidence,
+        )
+
+
+def test_manual_preview_rejects_regulated_bundle_for_other_distributor() -> None:
+    (
+        _sources,
+        _provenance,
+        _authority,
+        manual,
+        contract,
+        validated,
+        parsed,
+        regulated,
+        evidence,
+    ) = _fixture()
+
+    with pytest.raises(ValueError, match="regulated distributor"):
+        manual.build_manual_all_in_tariff_preview(
+            download=validated,
+            manual_commercial=_manual_input(manual, parsed),
+            contract=contract,
+            regulated=replace(regulated, distributor="eg_d"),
+            regulated_evidence=evidence,
+        )
