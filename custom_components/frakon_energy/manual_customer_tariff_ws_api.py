@@ -1,4 +1,9 @@
-"""Administrator-only manual supplier-commercial customer tariff workflow."""
+"""Administrator-only manual supplier-commercial customer tariff proposal flow.
+
+The manual path deliberately exposes proposal staging only. Final confirmation
+is shared with the automatic path through ``frakon_energy/tariff/customer/confirm``
+so there is exactly one customer-tariff activation boundary.
+"""
 
 from __future__ import annotations
 
@@ -13,17 +18,10 @@ from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.util import dt as dt_util
 
-from .all_in_authority import (
-    AllInTariffAuthorityMethod,
-    all_in_tariff_authority_from_options,
-)
+from .all_in_authority import AllInTariffAuthorityMethod
 from .const import DOMAIN
 from .contracts import ElectricityContract
-from .customer_tariff_proposals import (
-    confirm_customer_tariff_proposal,
-    customer_tariff_proposals_from_options,
-    stage_customer_tariff_proposal,
-)
+from .customer_tariff_proposals import stage_customer_tariff_proposal
 from .manual_tariff_preview import (
     ManualSupplierCommercialInput,
     build_manual_all_in_tariff_preview,
@@ -43,9 +41,6 @@ from .tariff_source_context import (
 COMMAND_MANUAL_CUSTOMER_TARIFF_PROPOSE = (
     "frakon_energy/tariff/customer/manual/propose"
 )
-COMMAND_MANUAL_CUSTOMER_TARIFF_CONFIRM = (
-    "frakon_energy/tariff/customer/manual/confirm"
-)
 _REGISTERED_KEY = "manual_customer_tariff_websocket_registered"
 _VOL_OPTIONAL = getattr(vol, "Optional", lambda key: key)
 _MANUAL_FIELDS = frozenset(
@@ -56,7 +51,6 @@ _MANUAL_FIELDS = frozenset(
     }
 )
 _DECIMAL_RE = re.compile(r"^\d{1,12}(?:\.\d{1,6})?$")
-_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _entry_or_error(
@@ -81,7 +75,7 @@ def _decimal_string(value: Any, field: str) -> Decimal:
     normalized = value.strip()
     if not _DECIMAL_RE.fullmatch(normalized):
         raise ValueError(
-            f"{field} must use a non-negative decimal string with a decimal point"
+            f"{field} must use a non-negative plain decimal string"
         )
     try:
         parsed = Decimal(normalized)
@@ -124,38 +118,11 @@ def _manual_commercial_from_payload(
     )
 
 
-def _proposal_from_options(options: Mapping[str, Any], fingerprint: object):
-    if not isinstance(fingerprint, str) or not _SHA256_RE.fullmatch(fingerprint):
-        raise ValueError("proposal_fingerprint must be a lowercase SHA-256 hex digest")
-    proposal = next(
-        (
-            item
-            for item in customer_tariff_proposals_from_options(options)
-            if item.fingerprint == fingerprint
-        ),
-        None,
-    )
-    if proposal is None:
-        raise LookupError(f"manual customer tariff proposal not found: {fingerprint}")
-    return proposal
-
-
-def _require_manual_authority(options: Mapping[str, Any], proposal: object):
-    authority = all_in_tariff_authority_from_options(
-        options,
-        proposal.all_in_tariff_fingerprint,
-    )
-    if authority.method is not AllInTariffAuthorityMethod.MANUAL_USER_ENTRY:
-        raise ValueError(
-            "customer tariff proposal is not authorized as manual_user_entry"
-        )
-    return authority
-
-
 @callback
 def async_register_manual_customer_tariff_websocket(
     hass: HomeAssistant,
 ) -> None:
+    """Register the manual proposal boundary exactly once per HA runtime."""
     domain_data = hass.data.setdefault(DOMAIN, {})
     active_registry = _registry_for_hass(hass)
     if domain_data.get(_REGISTERED_KEY):
@@ -191,6 +158,7 @@ def async_register_manual_customer_tariff_websocket(
         except (TypeError, ValueError) as err:
             connection.send_error(msg["id"], "invalid_contract", str(err))
             return
+
         try:
             discovery_day = date.fromisoformat(str(msg["day"]))
         except ValueError:
@@ -207,6 +175,7 @@ def async_register_manual_customer_tariff_websocket(
                 "contract does not apply on requested discovery day",
             )
             return
+
         try:
             source_context = TariffSourceResolutionContext.from_value(
                 msg.get("source_context")
@@ -216,6 +185,7 @@ def async_register_manual_customer_tariff_websocket(
                 msg["id"], "invalid_source_context", str(err)
             )
             return
+
         try:
             manual_commercial = _manual_commercial_from_payload(
                 msg.get("manual_commercial")
@@ -226,7 +196,7 @@ def async_register_manual_customer_tariff_websocket(
             )
             return
 
-        # Resolve regulated authority before any supplier discovery or network I/O.
+        # Regulated authority must be resolved before supplier discovery/network I/O.
         try:
             regulated_version = select_confirmed_regulated_tariff_for_day(
                 entry.options,
@@ -334,6 +304,7 @@ def async_register_manual_customer_tariff_websocket(
                 msg["id"], "manual_tariff_proposal_failed", str(err)
             )
             return
+
         if (
             preview.authority_method
             is not AllInTariffAuthorityMethod.MANUAL_USER_ENTRY
@@ -359,7 +330,6 @@ def async_register_manual_customer_tariff_websocket(
                 proposed_at=dt_util.now(),
                 authority_method=AllInTariffAuthorityMethod.MANUAL_USER_ENTRY,
             )
-            authority = _require_manual_authority(updated, proposal)
         except (LookupError, TypeError, ValueError) as err:
             connection.send_error(
                 msg["id"], "manual_tariff_proposal_failed", str(err)
@@ -369,6 +339,7 @@ def async_register_manual_customer_tariff_websocket(
         changed = updated != dict(entry.options)
         if changed:
             hass.config_entries.async_update_entry(entry, options=updated)
+
         connection.send_result(
             msg["id"],
             {
@@ -389,7 +360,7 @@ def async_register_manual_customer_tariff_websocket(
                 "source_url": download.document.source_url,
                 "document_sha256": download.document.sha256,
                 "content_bytes": len(download.content),
-                "authority_method": authority.method.value,
+                "authority_method": AllInTariffAuthorityMethod.MANUAL_USER_ENTRY.value,
                 "manual_entry": True,
                 "download_performed": True,
                 "parsing_performed": False,
@@ -401,101 +372,8 @@ def async_register_manual_customer_tariff_websocket(
             },
         )
 
-    @websocket_api.websocket_command(
-        {
-            vol.Required("type"): COMMAND_MANUAL_CUSTOMER_TARIFF_CONFIRM,
-            vol.Required("entry_id"): str,
-            vol.Required("proposal_fingerprint"): str,
-        }
-    )
-    @websocket_api.async_response
-    async def websocket_manual_customer_tariff_confirm(
-        hass: HomeAssistant,
-        connection: websocket_api.ActiveConnection,
-        msg: Mapping[str, Any],
-    ) -> None:
-        connection.require_admin()
-        entry = _entry_or_error(hass, connection, msg)
-        if entry is None:
-            return
-
-        try:
-            stored_proposal = _proposal_from_options(
-                entry.options,
-                msg.get("proposal_fingerprint"),
-            )
-        except ValueError as err:
-            connection.send_error(
-                msg["id"], "invalid_proposal_fingerprint", str(err)
-            )
-            return
-        except LookupError as err:
-            connection.send_error(
-                msg["id"], "manual_tariff_proposal_not_found", str(err)
-            )
-            return
-        try:
-            _require_manual_authority(entry.options, stored_proposal)
-        except LookupError as err:
-            connection.send_error(
-                msg["id"], "manual_tariff_authority_not_found", str(err)
-            )
-            return
-        except (TypeError, ValueError) as err:
-            connection.send_error(
-                msg["id"], "manual_tariff_authority_mismatch", str(err)
-            )
-            return
-
-        try:
-            updated, proposal = confirm_customer_tariff_proposal(
-                entry.options,
-                stored_proposal.fingerprint,
-            )
-            if proposal.fingerprint != stored_proposal.fingerprint:
-                raise ValueError("manual confirmation returned a different proposal")
-            authority = _require_manual_authority(updated, proposal)
-        except LookupError as err:
-            connection.send_error(
-                msg["id"], "manual_tariff_confirmation_failed", str(err)
-            )
-            return
-        except (TypeError, ValueError) as err:
-            connection.send_error(
-                msg["id"], "manual_tariff_confirmation_failed", str(err)
-            )
-            return
-
-        changed = updated != dict(entry.options)
-        if changed:
-            hass.config_entries.async_update_entry(entry, options=updated)
-        connection.send_result(
-            msg["id"],
-            {
-                "entry_id": entry.entry_id,
-                "proposal_fingerprint": proposal.fingerprint,
-                "contract_fingerprint": proposal.contract_fingerprint,
-                "all_in_tariff_fingerprint": proposal.all_in_tariff_fingerprint,
-                "regulated_version_fingerprint": (
-                    proposal.regulated_version_fingerprint
-                ),
-                "authority_method": authority.method.value,
-                "manual_entry": True,
-                "confirmed": True,
-                "download_performed": False,
-                "parsing_performed": False,
-                "persistence_performed": changed,
-                "confirmation_performed": changed,
-                "activation_performed": changed,
-            },
-        )
-
     websocket_api.async_register_command(
         hass,
         websocket_manual_customer_tariff_propose,
-    )
-    websocket_api.async_register_command(
-        hass,
-        websocket_manual_customer_tariff_confirm,
     )
     domain_data[_REGISTERED_KEY] = True
