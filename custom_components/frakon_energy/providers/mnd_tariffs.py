@@ -4,17 +4,19 @@ MND's official household price-list page resolves supply documents dynamically
 from the customer's postcode. The public HTML therefore does not provide a
 stable supply-PDF URL that can be safely hard-coded from a product name alone.
 
-This adapter deliberately separates two authorities:
+This adapter deliberately separates three authorities:
 
-* immutable, manually verified MND product identity and contract kind; and
+* immutable, manually verified MND product identity and contract kind;
+* public MND product-validity evidence that constrains resolver output; and
 * an injected resolver that must return the exact official MND document selected
   for the already-normalized customer query.
 
 Without a resolver, or without an explicit normalized postcode in the operational
 source context, the adapter returns no candidate and does not invoke the resolver.
 A resolver result is accepted only when product, contract kind, distribution
-territory, validity and an official ``/documents/view/<uuid>`` HTTPS URL all
-agree. The postcode is never copied into the candidate or price provenance.
+territory, public validity boundary and an official ``/documents/view/<uuid>``
+HTTPS URL all agree. The postcode and public evidence URL are never copied into
+tariff price provenance.
 """
 
 from __future__ import annotations
@@ -37,29 +39,86 @@ from ..tariff_sources import (
 MND_SUPPLIER = "mnd"
 MND_OFFICIAL_DOMAINS = ("mnd.cz",)
 MND_ELECTRICITY_INDEX_URL = "https://prod.mnd.cz/elektrina-domacnosti"
+MND_PRODUCT_COMPARISON_URL = (
+    "https://www.mnd.cz/caste-dotazy/ceniky-a-slozeni-platby-za-energie/"
+    "jak-si-vybrat-cenik-plynu-a-elektriny"
+)
 
 CONTRACT_KIND_FIXED = "fixed"
 CONTRACT_KIND_INDEFINITE = "indefinite"
 
 
+def _is_mnd_host(host: str) -> bool:
+    host = host.lower().rstrip(".")
+    return host == "mnd.cz" or host.endswith(".mnd.cz")
+
+
+def _validate_mnd_public_evidence_url(source_url: str) -> None:
+    parsed = urlparse(source_url)
+    if parsed.scheme.lower() != "https" or not parsed.hostname:
+        raise ValueError("MND public evidence URL must use HTTPS")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("MND public evidence URL must not contain embedded credentials")
+    try:
+        port = parsed.port
+    except ValueError as err:
+        raise ValueError("MND public evidence URL contains an invalid port") from err
+    if port not in (None, 443):
+        raise ValueError("MND public evidence URL must use the standard HTTPS port")
+    if not _is_mnd_host(parsed.hostname):
+        raise ValueError("MND public evidence URL must use an official mnd.cz host")
+    if parsed.query or parsed.fragment or parsed.params:
+        raise ValueError("MND public evidence URL must not contain parameters, query or fragment")
+    if not parsed.path or parsed.path == "/":
+        raise ValueError("MND public evidence URL must identify a concrete public page")
+
+
 @dataclass(frozen=True, slots=True)
 class MndProductDefinition:
-    """One current MND product identity that may be resolved to an official PDF."""
+    """One current MND product identity constrained by public MND evidence."""
 
     product_name: str
     contract_kind: str
+    advertised_valid_to: date | None
+    public_evidence_url: str
 
     def __post_init__(self) -> None:
         if not isinstance(self.product_name, str) or not self.product_name.strip():
             raise ValueError("product_name must not be empty")
         if self.contract_kind not in (CONTRACT_KIND_FIXED, CONTRACT_KIND_INDEFINITE):
             raise ValueError("unsupported MND contract kind")
+        if self.advertised_valid_to is not None and not isinstance(
+            self.advertised_valid_to, date
+        ):
+            raise ValueError("advertised_valid_to must be a date")
+        if self.contract_kind == CONTRACT_KIND_FIXED and self.advertised_valid_to is None:
+            raise ValueError("fixed MND product requires an advertised validity end")
+        if self.contract_kind == CONTRACT_KIND_INDEFINITE and self.advertised_valid_to is not None:
+            raise ValueError("indefinite MND product cannot have an advertised validity end")
+        if not isinstance(self.public_evidence_url, str) or not self.public_evidence_url.strip():
+            raise ValueError("public_evidence_url must not be empty")
+        _validate_mnd_public_evidence_url(self.public_evidence_url)
 
 
 MND_CURRENT_ELECTRICITY_PRODUCTS: tuple[MndProductDefinition, ...] = (
-    MndProductDefinition(product_name="Proud - Ceník Říjen 28", contract_kind=CONTRACT_KIND_FIXED),
-    MndProductDefinition(product_name="Proud - Klesající ceník Duben 29", contract_kind=CONTRACT_KIND_FIXED),
-    MndProductDefinition(product_name="Proud - Domácnosti", contract_kind=CONTRACT_KIND_INDEFINITE),
+    MndProductDefinition(
+        product_name="Proud - Ceník Říjen 28",
+        contract_kind=CONTRACT_KIND_FIXED,
+        advertised_valid_to=date(2028, 10, 31),
+        public_evidence_url=MND_PRODUCT_COMPARISON_URL,
+    ),
+    MndProductDefinition(
+        product_name="Proud - Klesající ceník Duben 29",
+        contract_kind=CONTRACT_KIND_FIXED,
+        advertised_valid_to=date(2029, 4, 30),
+        public_evidence_url=MND_PRODUCT_COMPARISON_URL,
+    ),
+    MndProductDefinition(
+        product_name="Proud - Domácnosti",
+        contract_kind=CONTRACT_KIND_INDEFINITE,
+        advertised_valid_to=None,
+        public_evidence_url=MND_PRODUCT_COMPARISON_URL,
+    ),
 )
 
 
@@ -119,11 +178,6 @@ def _normalized_product(value: str) -> str:
         character for character in decomposed if not unicodedata.combining(character)
     )
     return " ".join(part for part in _NON_ALNUM_RE.split(ascii_text) if part)
-
-
-def _is_mnd_host(host: str) -> bool:
-    host = host.lower().rstrip(".")
-    return host == "mnd.cz" or host.endswith(".mnd.cz")
 
 
 def _validate_mnd_document_url(source_url: str) -> None:
@@ -224,10 +278,27 @@ class MndTariffCatalogAdapter:
             raise ValueError("MND resolver contract kind does not match query")
         if resolved.distributor != query.distributor:
             raise ValueError("MND resolver distribution territory does not match query")
+        if (
+            product.advertised_valid_to is not None
+            and resolved.valid_to != product.advertised_valid_to
+        ):
+            raise ValueError(
+                "MND resolver validity end does not match public product evidence"
+            )
         if query.valid_on < resolved.valid_from or (
             resolved.valid_to is not None and query.valid_on > resolved.valid_to
         ):
             return ()
+
+        reasons = [
+            "exact MND product name",
+            "exact MND contract kind",
+            "exact MND distribution territory from resolver",
+            "official MND /documents/view document resolved for customer context",
+            "supplier-commercial extraction only; regulated values are separate",
+        ]
+        if product.advertised_valid_to is not None:
+            reasons.append("resolver validity end matches public MND product evidence")
 
         return (
             TariffDocumentCandidate(
@@ -242,13 +313,7 @@ class MndTariffCatalogAdapter:
                 valid_from=resolved.valid_from,
                 valid_to=resolved.valid_to,
                 match_score=100,
-                match_reasons=(
-                    "exact MND product name",
-                    "exact MND contract kind",
-                    "exact MND distribution territory from resolver",
-                    "official MND /documents/view document resolved for customer context",
-                    "supplier-commercial extraction only; regulated values are separate",
-                ),
+                match_reasons=tuple(reasons),
                 price_scope=PRICE_SCOPE_SUPPLIER_COMMERCIAL,
             ),
         )
