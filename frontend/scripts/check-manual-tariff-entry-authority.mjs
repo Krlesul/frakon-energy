@@ -9,10 +9,10 @@ assert.equal(source.includes("confirm_customer_tariff_proposal"), false, "fronte
 assert.match(source, /if \(url\.protocol !== "https:"\) return null;/, "rendered source links must require HTTPS");
 assert.match(source, /if \(url\.protocol !== "https:"\) throw new Error/, "candidate matching must require HTTPS");
 assert.match(source, /candidate\?\.match_score === 100/, "manual source must be an exact 100-score candidate");
+assert.match(source, /return Boolean\(wizard\(\)\?\.querySelector\("\.tariff-candidate"\)\);/, "manual fallback must be available for every discovered candidate, including parser-capable suppliers");
 assert.match(source, /exact\.candidate\.fingerprint !== currentCandidate\.candidate\.fingerprint/, "candidate must be rediscovered before proposal staging");
+assert.match(source, /exact\.discovery\.source_context_fingerprint !== currentCandidate\.discovery\.source_context_fingerprint/, "source context must be rediscovered before proposal staging");
 
-const proposalCall = source.match(/const response = await callWs\(message\);\s*if \(revision !== startRevision[\s\S]*?validateManualProposal/);
-assert.ok(proposalCall, "manual proposal call must exist and be validated");
 const proposalMessage = source.match(/const message = \{\s*type: "frakon_energy\/tariff\/customer\/manual\/propose",[\s\S]*?manual_commercial: manualValues,\s*\};/);
 assert.ok(proposalMessage, "manual customer proposal request must exist");
 for (const required of [
@@ -65,14 +65,20 @@ for (const guard of [
   "response.download_performed !== true",
   "response.parsing_performed !== false",
   "response.activation_performed !== false",
-  'response.preview.authority_method !== "manual_user_entry"',
-  "response.preview.all_in_ready !== true",
-  "response.preview.parsing_performed !== false",
-  "response.preview.persistence_performed !== false",
-  "response.preview.activation_performed !== false",
+  'preview.authority_method !== "manual_user_entry"',
+  "preview.all_in_ready !== true",
+  "preview.parsing_performed !== false",
+  "preview.persistence_performed !== false",
+  "preview.activation_performed !== false",
+  "response.source_context_fingerprint !== discovery.source_context_fingerprint",
+  "preview.supplier !== context.contract.supplier",
+  "preview.product_name !== context.contract.product_name",
+  "preview.distribution_tariff !== context.contract.distribution_tariff",
+  "preview.breaker_code !== expectedBreakerCode(context.contract)",
 ]) {
   assert.equal(source.includes(guard), true, `manual response validation is missing ${guard}`);
 }
+assert.match(source, /normalizeUrl\(preview\.supplier_source_url\) !== normalizeUrl\(candidate\.source_url\)/, "preview supplier provenance must match selected candidate URL");
 assert.match(source, /Object\.prototype\.hasOwnProperty\.call\(response, "postcode"\)/, "raw postcode must be rejected from proposal response");
 assert.match(source, /manual\.high_rate_czk_per_kwh !== manualValues\.high_rate_czk_per_kwh/, "manual VT must round-trip exactly");
 assert.match(source, /manual\.low_rate_czk_per_kwh !== manualValues\.low_rate_czk_per_kwh/, "manual NT must round-trip exactly");
