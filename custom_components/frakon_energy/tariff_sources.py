@@ -160,8 +160,19 @@ class TariffSourceQuery:
         object.__setattr__(self, "breaker_code", breaker)
         if not isinstance(self.valid_on, date):
             raise ValueError("valid_on must be a date")
-        if not isinstance(self.source_context, TariffSourceResolutionContext):
-            raise ValueError("source_context must be TariffSourceResolutionContext")
+
+        source_context = self.source_context
+        if not isinstance(source_context, TariffSourceResolutionContext):
+            as_dict = getattr(source_context, "as_dict", None)
+            if not callable(as_dict):
+                raise ValueError("source_context must be TariffSourceResolutionContext")
+            try:
+                source_context = TariffSourceResolutionContext.from_value(as_dict())
+            except (TypeError, ValueError) as err:
+                raise ValueError(
+                    "source_context must be TariffSourceResolutionContext"
+                ) from err
+            object.__setattr__(self, "source_context", source_context)
 
 
 @dataclass(frozen=True, slots=True)
