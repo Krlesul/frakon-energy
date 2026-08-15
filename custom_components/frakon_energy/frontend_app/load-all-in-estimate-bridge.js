@@ -326,8 +326,8 @@ function installStyles() {
 installStyles();
 const observer = new MutationObserver(() => {
   renameSpotLabels();
-  if (activeResult) renderResult();
-  else if (busy && previewNode()) renderLoading();
+  if (activeResult && previewNode() && !bridgeRoot()) renderResult();
+  else if (busy && previewNode() && !bridgeRoot()) renderLoading();
 });
 observer.observe(document.documentElement, { childList: true, subtree: true });
 if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", renameSpotLabels, { once: true });
