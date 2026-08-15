@@ -38,6 +38,8 @@ jobs:
         run: |
           node --check public/tariff-confirmation-bridge.js
           node scripts/check-tariff-confirmation-authority.mjs
+          node --check public/mnd-source-confirmation-bridge.js
+          node scripts/check-mnd-source-confirmation-authority.mjs
 
       - name: Type-check and build
         working-directory: frontend
@@ -50,6 +52,7 @@ jobs:
           cp -R frontend/dist/. custom_components/frakon_energy/frontend_app/
           test -f custom_components/frakon_energy/frontend_app/index.html
           cmp frontend/public/tariff-confirmation-bridge.js custom_components/frakon_energy/frontend_app/tariff-confirmation-bridge.js
+          cmp frontend/public/mnd-source-confirmation-bridge.js custom_components/frakon_energy/frontend_app/mnd-source-confirmation-bridge.js
 
       - name: Verify committed dashboard is current
         run: |
