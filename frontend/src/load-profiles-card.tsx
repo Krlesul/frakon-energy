@@ -22,6 +22,23 @@ type ProfilesResponse = {
   kinds: ProfileKind[];
   read_only_execution: boolean;
 };
+type AllInEstimate =
+  | {
+      available: true;
+      source: "confirmed_all_in";
+      estimated_energy_kwh: number;
+      vt_average_czk_kwh: number;
+      nt_average_czk_kwh: number;
+      vt_cost_czk: number;
+      nt_cost_czk: number;
+      fixed_monthly_excluded: true;
+    }
+  | {
+      available: false;
+      source: "confirmed_all_in";
+      fixed_monthly_excluded: true;
+      reason: string;
+    };
 type Plan = {
   starts_at: string;
   ends_at: string;
@@ -34,6 +51,7 @@ type Plan = {
   estimated_energy_kwh: number;
   estimated_cost_czk: number;
   read_only: boolean;
+  all_in_estimate?: AllInEstimate;
 };
 type PreviewResponse = {
   available: boolean;
@@ -73,6 +91,10 @@ function formatTime(value: string): string {
 
 function formatPrice(value: number): string {
   return `${value.toLocaleString("cs-CZ", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} Kč/kWh`;
+}
+
+function formatMoney(value: number): string {
+  return `${value.toLocaleString("cs-CZ", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} Kč`;
 }
 
 export function LoadProfilesCard({ hass, entryId }: { hass?: HomeAssistant; entryId: string | null }) {
@@ -221,7 +243,7 @@ export function LoadProfilesCard({ hass, entryId }: { hass?: HomeAssistant; entr
       })}
     </div>
 
-    {preview ? <div className="load-profile-preview"><div><span className="eyebrow">Preview · {preview.profile.name}</span><h3>{preview.available && preview.plan ? `${formatTime(preview.plan.starts_at)} → ${formatTime(preview.plan.ends_at)}` : "Není dostupný vhodný interval"}</h3></div>{preview.plan ? <div className="load-profile-preview__metrics"><div><span>Průměrná cena</span><b>{formatPrice(preview.plan.average_czk_kwh)}</b></div><div><span>Rozsah ceny</span><b>{formatPrice(preview.plan.minimum_czk_kwh)} – {formatPrice(preview.plan.maximum_czk_kwh)}</b></div><div><span>Energie</span><b>{preview.plan.estimated_energy_kwh.toLocaleString("cs-CZ", { maximumFractionDigits: 2 })} kWh</b></div><div><span>Odhad ceny</span><b>{preview.plan.estimated_cost_czk.toLocaleString("cs-CZ", { maximumFractionDigits: 2 })} Kč</b></div></div> : null}<p>Read-only plán. FRAKON tímto krokem nic nezapíná ani nevypíná.</p></div> : null}
+    {preview ? <div className="load-profile-preview"><div><span className="eyebrow">Preview · {preview.profile.name}</span><h3>{preview.available && preview.plan ? `${formatTime(preview.plan.starts_at)} → ${formatTime(preview.plan.ends_at)}` : "Není dostupný vhodný interval"}</h3></div>{preview.plan ? <><div className="load-profile-preview__metrics"><div><span>Spot optimalizační průměr</span><b>{formatPrice(preview.plan.average_czk_kwh)}</b></div><div><span>Spot rozsah ceny</span><b>{formatPrice(preview.plan.minimum_czk_kwh)} – {formatPrice(preview.plan.maximum_czk_kwh)}</b></div><div><span>Energie</span><b>{preview.plan.estimated_energy_kwh.toLocaleString("cs-CZ", { maximumFractionDigits: 2 })} kWh</b></div><div><span>Spot optimalizační náklad</span><b>{formatMoney(preview.plan.estimated_cost_czk)}</b></div>{preview.plan.all_in_estimate?.available ? <><div><span>All-in VT náklad</span><b>{formatMoney(preview.plan.all_in_estimate.vt_cost_czk)}</b><small>{formatPrice(preview.plan.all_in_estimate.vt_average_czk_kwh)}</small></div><div><span>All-in NT náklad</span><b>{formatMoney(preview.plan.all_in_estimate.nt_cost_czk)}</b><small>{formatPrice(preview.plan.all_in_estimate.nt_average_czk_kwh)}</small></div></> : null}</div>{preview.plan.all_in_estimate?.available ? <p>All-in VT/NT používá potvrzený zákaznický tarif. Fixní měsíční platby nejsou přiřazené jednomu běhu; skutečný náklad mezi VT a NT závisí na distribučním/HDO režimu během běhu.</p> : preview.plan.all_in_estimate ? <p>Potvrzený all-in tarif není pro tento běh bezpečně dostupný. Spot optimalizační náklad proto není vydáván za konečnou zákaznickou cenu.</p> : <p>Spot optimalizační náklad slouží k výběru intervalu; bez all-in odhadu nejde o konečnou cenu odběru.</p>}</> : null}<p>Read-only plán. FRAKON tímto krokem nic nezapíná ani nevypíná.</p></div> : null}
 
     <LoadExecutionPolicyPanel hass={hass} entryId={entryId} profiles={profiles} earliestStart={earliestStart} deadline={deadline} />
     <LoadExecutionPendingRunPanel hass={hass} entryId={entryId} />
