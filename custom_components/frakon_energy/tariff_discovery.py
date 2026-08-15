@@ -14,6 +14,20 @@ from .tariff_sources import (
 )
 
 
+def _normalize_source_context(source_context: object | None) -> TariffSourceResolutionContext:
+    if source_context is None:
+        return TariffSourceResolutionContext()
+    if isinstance(source_context, TariffSourceResolutionContext):
+        return source_context
+    as_dict = getattr(source_context, "as_dict", None)
+    if not callable(as_dict):
+        raise ValueError("source_context must be TariffSourceResolutionContext")
+    try:
+        return TariffSourceResolutionContext.from_value(as_dict())
+    except (TypeError, ValueError) as err:
+        raise ValueError("source_context must be TariffSourceResolutionContext") from err
+
+
 def tariff_source_query_from_contract(
     contract: ElectricityContract,
     *,
@@ -26,10 +40,7 @@ def tariff_source_query_from_contract(
         raise ValueError("day must be a date")
     if not contract.applies_on(day):
         raise ValueError("contract does not apply on requested discovery day")
-    if source_context is None:
-        source_context = TariffSourceResolutionContext()
-    if not isinstance(source_context, TariffSourceResolutionContext):
-        raise ValueError("source_context must be TariffSourceResolutionContext")
+    normalized_context = _normalize_source_context(source_context)
     key = lookup_key(contract, day)
     return TariffSourceQuery(
         supplier=key.supplier.value,
@@ -39,7 +50,7 @@ def tariff_source_query_from_contract(
         distribution_tariff=key.distribution_tariff,
         breaker_code=key.breaker_code,
         valid_on=key.valid_on,
-        source_context=source_context,
+        source_context=normalized_context,
     )
 
 
