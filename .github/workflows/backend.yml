@@ -78,6 +78,8 @@ jobs:
           tests/test_pricing.py
           tests/test_billing_tariff_selection.py
           tests/test_billing_all_in_wiring.py
+          tests/test_billing_all_in_history.py
+          tests/test_billing_all_in_history_routing.py
           tests/test_load_all_in_estimate.py
           tests/test_load_all_in_wiring.py
           tests/test_contracts.py

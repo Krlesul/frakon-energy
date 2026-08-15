@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
+from types import MappingProxyType
+from typing import Any, Mapping
 
 MONEY_QUANT = Decimal("0.01")
 ENERGY_QUANT = Decimal("0.001")
@@ -13,6 +15,32 @@ class TariffPrices:
     high_rate_czk_per_kwh: Decimal
     low_rate_czk_per_kwh: Decimal
     fixed_monthly_czk: Decimal = Decimal("0")
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogTariffPrices(TariffPrices):
+    """Current price view carrying a read-only immutable-catalog snapshot.
+
+    The numeric fields remain the exact price for the selected day and are used
+    by UI attributes. Cost projection detects this subtype and prices the whole
+    billing cycle with the historical confirmed all-in schedule instead of
+    repricing every day with the current version.
+    """
+
+    catalog_options: Mapping[str, Any] = field(
+        default_factory=dict,
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.catalog_options, Mapping):
+            raise ValueError("catalog_options must be a mapping")
+        object.__setattr__(
+            self,
+            "catalog_options",
+            MappingProxyType(dict(self.catalog_options)),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,11 +66,25 @@ def calculate_cost_projection(
 ) -> CostProjection:
     """Calculate accrued cost and a transparent linear settlement projection.
 
-    Cumulative meter readings are compared with the previous settlement
-    baseline. Energy consumption is projected using the average daily
-    consumption observed in the current billing cycle. Fixed monthly charges
-    are prorated by calendar days using 12 months per year.
+    Legacy ``TariffPrices`` keeps the original single-price calculation.
+    ``CatalogTariffPrices`` carries the immutable customer tariff catalog and is
+    routed through the historical confirmed all-in schedule so a later price-list
+    version cannot reprice earlier days in the same billing cycle.
     """
+    if isinstance(prices, CatalogTariffPrices):
+        from .billing_all_in_history import calculate_confirmed_all_in_cost_projection
+
+        return calculate_confirmed_all_in_cost_projection(
+            prices.catalog_options,
+            cycle_start=cycle_start,
+            settlement_date=settlement_date,
+            as_of=as_of,
+            baseline_high_rate_kwh=baseline_high_rate_kwh,
+            baseline_low_rate_kwh=baseline_low_rate_kwh,
+            current_high_rate_kwh=current_high_rate_kwh,
+            current_low_rate_kwh=current_low_rate_kwh,
+        ).cost
+
     if settlement_date < cycle_start:
         raise ValueError("Settlement date must not precede cycle start")
     if not cycle_start <= as_of <= settlement_date:
