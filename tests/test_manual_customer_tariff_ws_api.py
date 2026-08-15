@@ -1,16 +1,15 @@
 import asyncio
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from enum import StrEnum
-import hashlib
 import importlib.util
 from pathlib import Path
 import sys
 import types
 
 
-FIXED_NOW = datetime(2026, 8, 15, 18, 15, tzinfo=timezone.utc)
+FIXED_NOW = datetime(2026, 8, 15, 18, 30, tzinfo=timezone.utc)
 
 
 def _load(name: str, path: str):
@@ -24,9 +23,11 @@ def _load(name: str, path: str):
 def load_module(
     *,
     regulator_mode="success",
-    fetch_mode="success",
-    builder_mode="success",
-    already_staged=False,
+    discovery_mode="success",
+    download_mode="success",
+    authority_mode="manual",
+    already_confirmed=False,
+    unsafe_preview=False,
 ):
     names = (
         "custom_components",
@@ -44,8 +45,6 @@ def load_module(
         "custom_components.frakon_energy.tariff_fetch",
         "custom_components.frakon_energy.tariff_http_ha",
         "custom_components.frakon_energy.tariff_source_context",
-        "custom_components.frakon_energy.tariff_parser_preview",
-        "custom_components.frakon_energy.tariff_pdf_text",
         "custom_components.frakon_energy.manual_customer_tariff_ws_api",
         "homeassistant",
         "homeassistant.components",
@@ -64,14 +63,32 @@ def load_module(
 
     calls = []
 
-    authority = types.ModuleType("custom_components.frakon_energy.all_in_authority")
+    authority_module = types.ModuleType(
+        "custom_components.frakon_energy.all_in_authority"
+    )
 
     class AllInTariffAuthorityMethod(StrEnum):
         VERIFIED_PARSER = "verified_parser"
         MANUAL_USER_ENTRY = "manual_user_entry"
 
-    authority.AllInTariffAuthorityMethod = AllInTariffAuthorityMethod
-    sys.modules[authority.__name__] = authority
+    @dataclass(frozen=True)
+    class Authority:
+        method: AllInTariffAuthorityMethod
+
+    def all_in_tariff_authority_from_options(options, fingerprint):
+        calls.append(("authority", fingerprint, dict(options)))
+        mode = options.get("authority_mode", authority_mode)
+        if mode == "missing":
+            raise LookupError("all-in tariff authority not found")
+        if mode == "verified":
+            return Authority(AllInTariffAuthorityMethod.VERIFIED_PARSER)
+        return Authority(AllInTariffAuthorityMethod.MANUAL_USER_ENTRY)
+
+    authority_module.AllInTariffAuthorityMethod = AllInTariffAuthorityMethod
+    authority_module.all_in_tariff_authority_from_options = (
+        all_in_tariff_authority_from_options
+    )
+    sys.modules[authority_module.__name__] = authority_module
 
     const = types.ModuleType("custom_components.frakon_energy.const")
     const.DOMAIN = "frakon_energy"
@@ -83,59 +100,94 @@ def load_module(
         def __init__(self, value):
             self.value = value
 
-    class Supplier:
-        MND = SupplierValue("mnd")
+    class DistributorValue:
+        def __init__(self, value):
+            self.value = value
 
     @dataclass(frozen=True)
     class Breaker:
         code: str = "3x25A"
 
     @dataclass(frozen=True)
-    class Distributor:
-        value: str = "cez_distribuce"
-
-    @dataclass(frozen=True)
     class ElectricityContract:
-        supplier: object = Supplier.MND
-        distributor: Distributor = Distributor()
+        supplier: object
+        distributor: object
+        product_name: str = "Proud - Ceník Říjen 28"
         distribution_tariff: str = "D25d"
         breaker: Breaker = Breaker()
-        product_name: str = "Proud - Ceník Říjen 28"
         customer_confirmed: bool = False
 
         @classmethod
         def from_dict(cls, payload):
             calls.append(("contract", dict(payload)))
-            return cls(customer_confirmed=bool(payload.get("customer_confirmed", False)))
+            return cls(
+                supplier=SupplierValue(str(payload.get("supplier", "mnd"))),
+                distributor=DistributorValue(
+                    str(payload.get("distributor", "cez_distribuce"))
+                ),
+                product_name=str(
+                    payload.get("product_name", "Proud - Ceník Říjen 28")
+                ),
+                distribution_tariff=str(payload.get("distribution_tariff", "D25d")),
+                customer_confirmed=bool(payload.get("customer_confirmed", False)),
+            )
 
         def applies_on(self, _day):
             return True
 
     contracts.ElectricityContract = ElectricityContract
-    contracts.Supplier = Supplier
     sys.modules[contracts.__name__] = contracts
 
-    customer = types.ModuleType("custom_components.frakon_energy.customer_tariff_proposals")
+    customer = types.ModuleType(
+        "custom_components.frakon_energy.customer_tariff_proposals"
+    )
 
+    @dataclass(frozen=True)
     class Proposal:
-        fingerprint = "a" * 64
-        contract_fingerprint = "b" * 64
-        all_in_tariff_fingerprint = "c" * 64
-        candidate_fingerprint = "d" * 64
-        regulated_version_fingerprint = "e" * 64
-        proposed_for_day = date(2026, 8, 15)
-        proposed_at = FIXED_NOW
+        fingerprint: str = "a" * 64
+        contract_fingerprint: str = "b" * 64
+        all_in_tariff_fingerprint: str = "c" * 64
+        candidate_fingerprint: str = "d" * 64
+        regulated_version_fingerprint: str = "e" * 64
+        proposed_for_day: date = date(2026, 8, 15)
+        proposed_at: datetime = FIXED_NOW
+
+    def customer_tariff_proposals_from_options(options):
+        stored = options.get("stored_proposal")
+        return () if stored is None else (stored,)
 
     def stage_customer_tariff_proposal(options, **kwargs):
         calls.append(("stage", dict(options), kwargs))
-        if already_staged:
-            return dict(options), Proposal()
-        return {**dict(options), "manual_proposal_saved": Proposal.fingerprint}, Proposal()
+        assert kwargs["authority_method"] is AllInTariffAuthorityMethod.MANUAL_USER_ENTRY
+        proposal = Proposal()
+        updated = dict(options)
+        updated["stored_proposal"] = proposal
+        updated["authority_mode"] = "manual"
+        updated["proposal_saved"] = proposal.fingerprint
+        return updated, proposal
 
+    def confirm_customer_tariff_proposal(options, fingerprint):
+        calls.append(("confirm", dict(options), fingerprint))
+        proposal = options.get("stored_proposal")
+        if proposal is None or proposal.fingerprint != fingerprint:
+            raise LookupError("customer tariff proposal not found")
+        if already_confirmed:
+            return dict(options), proposal
+        updated = dict(options)
+        updated["confirmed"] = fingerprint
+        return updated, proposal
+
+    customer.Proposal = Proposal
+    customer.customer_tariff_proposals_from_options = (
+        customer_tariff_proposals_from_options
+    )
     customer.stage_customer_tariff_proposal = stage_customer_tariff_proposal
+    customer.confirm_customer_tariff_proposal = confirm_customer_tariff_proposal
     sys.modules[customer.__name__] = customer
 
-    manual = types.ModuleType("custom_components.frakon_energy.manual_tariff_preview")
+    manual_preview = types.ModuleType(
+        "custom_components.frakon_energy.manual_tariff_preview"
+    )
 
     @dataclass(frozen=True)
     class ManualSupplierCommercialInput:
@@ -144,11 +196,19 @@ def load_module(
         supplier_standing_czk_month: Decimal
 
     class Preview:
+        authority_method = (
+            AllInTariffAuthorityMethod.VERIFIED_PARSER
+            if unsafe_preview
+            else AllInTariffAuthorityMethod.MANUAL_USER_ENTRY
+        )
+        parsing_performed = False
+        persistence_performed = False
+        activation_performed = False
         assembly = object()
 
         def as_dict(self):
             return {
-                "authority_method": "manual_user_entry",
+                "authority_method": self.authority_method.value,
                 "manual_entry": True,
                 "parsing_performed": False,
                 "persistence_performed": False,
@@ -157,22 +217,22 @@ def load_module(
 
     def build_manual_all_in_tariff_preview(**kwargs):
         calls.append(("manual_preview", kwargs))
-        if builder_mode == "invalid":
-            raise ValueError("manual preview mismatch")
-        if builder_mode == "unsupported":
-            raise LookupError("manual supplier unsupported")
         return Preview()
 
-    manual.ManualSupplierCommercialInput = ManualSupplierCommercialInput
-    manual.build_manual_all_in_tariff_preview = build_manual_all_in_tariff_preview
-    sys.modules[manual.__name__] = manual
+    manual_preview.ManualSupplierCommercialInput = ManualSupplierCommercialInput
+    manual_preview.build_manual_all_in_tariff_preview = (
+        build_manual_all_in_tariff_preview
+    )
+    sys.modules[manual_preview.__name__] = manual_preview
 
-    regulated_catalog = types.ModuleType("custom_components.frakon_energy.regulated_catalog")
+    regulated = types.ModuleType(
+        "custom_components.frakon_energy.regulated_catalog"
+    )
 
-    class ConfirmedRegulatedTariffVersion:
+    class RegulatedVersion:
         fingerprint = "e" * 64
         bundle = object()
-        evidence = (object(),)
+        evidence = ()
 
     def select_confirmed_regulated_tariff_for_day(*args, **kwargs):
         calls.append(("regulated", kwargs))
@@ -180,14 +240,16 @@ def load_module(
             raise LookupError("no confirmed regulator")
         if regulator_mode == "invalid":
             raise ValueError("ambiguous regulator")
-        return ConfirmedRegulatedTariffVersion()
+        return RegulatedVersion()
 
-    regulated_catalog.select_confirmed_regulated_tariff_for_day = (
+    regulated.select_confirmed_regulated_tariff_for_day = (
         select_confirmed_regulated_tariff_for_day
     )
-    sys.modules[regulated_catalog.__name__] = regulated_catalog
+    sys.modules[regulated.__name__] = regulated
 
-    selection = types.ModuleType("custom_components.frakon_energy.tariff_candidate_selection")
+    selection = types.ModuleType(
+        "custom_components.frakon_energy.tariff_candidate_selection"
+    )
     candidate = types.SimpleNamespace(name="mnd-candidate")
 
     def select_tariff_candidate(candidates, *, fingerprint):
@@ -202,13 +264,13 @@ def load_module(
     discovery = types.ModuleType("custom_components.frakon_energy.tariff_discovery")
 
     async def async_discover_contract_tariff_candidates(
-        contract,
-        *,
-        day,
-        registry,
-        source_context=None,
+        contract, *, day, registry, source_context
     ):
         calls.append(("discover", contract, day, registry, source_context))
+        if discovery_mode == "missing":
+            return ()
+        if discovery_mode == "error":
+            raise ValueError("invalid discovery")
         return (candidate,)
 
     discovery.async_discover_contract_tariff_candidates = (
@@ -216,16 +278,18 @@ def load_module(
     )
     sys.modules[discovery.__name__] = discovery
 
-    discovery_ws = types.ModuleType("custom_components.frakon_energy.tariff_discovery_ws_api")
+    discovery_ws = types.ModuleType(
+        "custom_components.frakon_energy.tariff_discovery_ws_api"
+    )
     base_registry = object()
     entry_registry = object()
 
-    def _registry_for_hass(hass):
-        calls.append(("registry_base", hass))
+    def _registry_for_hass(_hass):
+        calls.append(("base_registry", base_registry))
         return base_registry
 
-    def _registry_for_entry(hass, entry, *, registry=None):
-        calls.append(("registry_entry", hass, entry, registry, dict(entry.options)))
+    def _registry_for_entry(hass, entry, *, registry):
+        calls.append(("entry_registry", entry.entry_id, registry))
         assert registry is base_registry
         return entry_registry
 
@@ -233,7 +297,9 @@ def load_module(
     discovery_ws._registry_for_entry = _registry_for_entry
     sys.modules[discovery_ws.__name__] = discovery_ws
 
-    download_module = types.ModuleType("custom_components.frakon_energy.tariff_download")
+    download_module = types.ModuleType(
+        "custom_components.frakon_energy.tariff_download"
+    )
 
     class ValidatedTariffDownload:
         def __init__(self):
@@ -246,7 +312,7 @@ def load_module(
                 ),
                 sha256="f" * 64,
             )
-            self.content = b"%PDF"
+            self.content = b"%PDF fixture"
 
     download_module.ValidatedTariffDownload = ValidatedTariffDownload
     sys.modules[download_module.__name__] = download_module
@@ -264,28 +330,24 @@ def load_module(
     fetch_module.build_tariff_fetch_request = build_tariff_fetch_request
     sys.modules[fetch_module.__name__] = fetch_module
 
-    http_ha = types.ModuleType("custom_components.frakon_energy.tariff_http_ha")
+    http = types.ModuleType("custom_components.frakon_energy.tariff_http_ha")
 
     async def async_fetch_selected_tariff_document_ha(
-        hass,
-        *,
-        candidate,
-        request,
-        checked_at,
+        hass, *, candidate, request, checked_at
     ):
         calls.append(("fetch", candidate, request, checked_at))
-        if fetch_mode == "error":
-            raise RuntimeError("network failure")
-        if fetch_mode == "not_modified":
+        if download_mode == "not_modified":
             return TariffNotModified()
-        if fetch_mode == "invalid":
+        if download_mode == "invalid":
             return object()
+        if download_mode == "error":
+            raise RuntimeError("network failed")
         return ValidatedTariffDownload()
 
-    http_ha.async_fetch_selected_tariff_document_ha = (
+    http.async_fetch_selected_tariff_document_ha = (
         async_fetch_selected_tariff_document_ha
     )
-    sys.modules[http_ha.__name__] = http_ha
+    sys.modules[http.__name__] = http
 
     context_module = types.ModuleType(
         "custom_components.frakon_energy.tariff_source_context"
@@ -301,36 +363,25 @@ def load_module(
                 return cls()
             if not isinstance(value, dict):
                 raise ValueError("source_context must be an object")
-            unexpected = set(value) - {"postcode"}
-            if unexpected:
-                raise ValueError("unsupported source context")
+            if set(value) - {"postcode"}:
+                raise ValueError("source_context contains unsupported fields")
             postcode = value.get("postcode")
+            if postcode is not None and postcode != "41201":
+                raise ValueError("postcode must be a valid five-digit Czech PSČ")
             return cls(postcode=postcode)
 
-        def as_dict(self):
-            return {} if self.postcode is None else {"postcode": self.postcode}
-
     def tariff_source_context_fingerprint(context):
-        payload = repr(sorted(context.as_dict().items())).encode()
-        return hashlib.sha256(payload).hexdigest()
+        calls.append(("context_fingerprint", context.postcode))
+        return "1" * 64
 
     context_module.TariffSourceResolutionContext = TariffSourceResolutionContext
-    context_module.tariff_source_context_fingerprint = tariff_source_context_fingerprint
+    context_module.tariff_source_context_fingerprint = (
+        tariff_source_context_fingerprint
+    )
     sys.modules[context_module.__name__] = context_module
 
-    # Poison modules prove that the manual MND path never calls/imports parser work.
-    parser = types.ModuleType("custom_components.frakon_energy.tariff_parser_preview")
-    parser.parse_supplier_tariff_preview = lambda *args, **kwargs: (_ for _ in ()).throw(
-        AssertionError("manual proposal must never invoke a supplier parser")
-    )
-    sys.modules[parser.__name__] = parser
-    pdf = types.ModuleType("custom_components.frakon_energy.tariff_pdf_text")
-    pdf.extract_validated_tariff_pdf_text = lambda *args, **kwargs: (_ for _ in ()).throw(
-        AssertionError("manual proposal must never extract PDF text")
-    )
-    sys.modules[pdf.__name__] = pdf
-
     schemas = []
+    registered = []
     vol = types.ModuleType("voluptuous")
     vol.Required = lambda key: key
     vol.Optional = lambda key: key
@@ -343,7 +394,6 @@ def load_module(
     components.__path__ = []
     sys.modules["homeassistant.components"] = components
     websocket_api = types.ModuleType("homeassistant.components.websocket_api")
-    registered = []
 
     class ActiveConnection:
         pass
@@ -360,7 +410,7 @@ def load_module(
     websocket_api.websocket_command = websocket_command
     websocket_api.async_response = lambda func: func
     websocket_api.async_register_command = lambda _hass, command: registered.append(command)
-    sys.modules[websocket_api.__name__] = websocket_api
+    sys.modules["homeassistant.components.websocket_api"] = websocket_api
     components.websocket_api = websocket_api
 
     core = types.ModuleType("homeassistant.core")
@@ -370,29 +420,21 @@ def load_module(
         pass
 
     core.HomeAssistant = HomeAssistant
-    sys.modules[core.__name__] = core
+    sys.modules["homeassistant.core"] = core
 
     util = types.ModuleType("homeassistant.util")
     util.__path__ = []
-    sys.modules[util.__name__] = util
+    sys.modules["homeassistant.util"] = util
     dt = types.ModuleType("homeassistant.util.dt")
     dt.now = lambda: FIXED_NOW
-    sys.modules[dt.__name__] = dt
+    sys.modules["homeassistant.util.dt"] = dt
     util.dt = dt
 
-    ws = _load(
+    module = _load(
         "custom_components.frakon_energy.manual_customer_tariff_ws_api",
         "custom_components/frakon_energy/manual_customer_tariff_ws_api.py",
     )
-    return (
-        ws,
-        registered,
-        schemas,
-        calls,
-        authority,
-        ManualSupplierCommercialInput,
-        entry_registry,
-    )
+    return module, registered, schemas, calls, customer.Proposal
 
 
 class ConfigEntries:
@@ -432,42 +474,58 @@ class Connection:
         self.errors.append((message_id, code, message))
 
 
-def _entry(*, options=None):
+def _entry(*, options=None, domain="frakon_energy"):
     return types.SimpleNamespace(
         entry_id="entry-1",
-        domain="frakon_energy",
+        domain=domain,
         options={} if options is None else dict(options),
     )
 
 
-def _message(*, manual=None, fingerprint=None, source_context=None):
-    payload = {
+def _propose_message(**overrides):
+    message = {
         "id": 1,
-        "type": "frakon_energy/tariff/customer/manual_propose",
+        "type": "frakon_energy/tariff/customer/manual/propose",
         "entry_id": "entry-1",
-        "contract": {"supplier": "mnd", "customer_confirmed": True},
+        "contract": {
+            "supplier": "mnd",
+            "distributor": "cez_distribuce",
+            "product_name": "Proud - Ceník Říjen 28",
+            "distribution_tariff": "D25d",
+            "customer_confirmed": True,
+        },
         "day": "2026-08-15",
-        "candidate_fingerprint": fingerprint or "d" * 64,
-        "manual_commercial": manual
-        or {
+        "candidate_fingerprint": "d" * 64,
+        "manual_commercial": {
             "high_rate_czk_per_kwh": "2.899",
             "low_rate_czk_per_kwh": "2.899",
             "supplier_standing_czk_month": "168",
         },
+        "source_context": {"postcode": "41201"},
     }
-    if source_context is not None:
-        payload["source_context"] = source_context
-    return payload
+    message.update(overrides)
+    return message
 
 
-def test_registration_is_idempotent_and_exposes_only_manual_commercial_price_authority() -> None:
-    ws, registered, schemas, _calls, _authority, _input, _entry_registry = load_module()
+def _confirm_message(fingerprint="a" * 64):
+    return {
+        "id": 2,
+        "type": "frakon_energy/tariff/customer/manual/confirm",
+        "entry_id": "entry-1",
+        "proposal_fingerprint": fingerprint,
+    }
+
+
+def test_registration_is_idempotent_and_client_cannot_supply_authority_sources_or_totals() -> None:
+    module, registered, schemas, _calls, _proposal = load_module()
     hass = Hass(_entry())
 
-    ws.async_register_manual_customer_tariff_websocket(hass)
-    ws.async_register_manual_customer_tariff_websocket(hass)
+    module.async_register_manual_customer_tariff_websocket(hass)
+    module.async_register_manual_customer_tariff_websocket(hass)
 
-    assert len(registered) == 1
+    assert module.COMMAND_MANUAL_CUSTOMER_TARIFF_PROPOSE.endswith("/manual/propose")
+    assert module.COMMAND_MANUAL_CUSTOMER_TARIFF_CONFIRM.endswith("/manual/confirm")
+    assert len(registered) == 2
     assert set(schemas[0]) == {
         "type",
         "entry_id",
@@ -477,98 +535,68 @@ def test_registration_is_idempotent_and_exposes_only_manual_commercial_price_aut
         "manual_commercial",
         "source_context",
     }
+    assert set(schemas[1]) == {"type", "entry_id", "proposal_fingerprint"}
     for forbidden in (
         "authority_method",
         "source_url",
         "document_sha256",
         "regulated",
-        "bundle",
-        "evidence",
+        "regulated_evidence",
         "all_in_vt_czk_kwh",
         "all_in_nt_czk_kwh",
         "fixed_monthly_total_czk",
+        "parser_name",
+        "includes_vat",
     ):
         assert forbidden not in schemas[0]
+        assert forbidden not in schemas[1]
 
 
-def test_mnd_manual_propose_uses_entry_registry_without_parser_and_stages_manual_authority() -> None:
-    (
-        ws,
-        registered,
-        _schemas,
-        calls,
-        authority,
-        manual_input_type,
-        entry_registry,
-    ) = load_module()
-    entry = _entry(
-        options={
-            "confirmed_regulated_tariffs": ["fixture"],
-            "mnd_confirmed_source_resolutions": ["entry-isolated-fixture"],
-        }
-    )
+def test_mnd_manual_propose_uses_entry_registry_regulator_before_network_and_never_parses() -> None:
+    module, registered, _schemas, calls, _proposal = load_module()
+    entry = _entry(options={"confirmed_regulated_tariffs": ["fixture"]})
     hass = Hass(entry)
     connection = Connection()
-    ws.async_register_manual_customer_tariff_websocket(hass)
+    module.async_register_manual_customer_tariff_websocket(hass)
 
-    asyncio.run(
-        registered[0](
-            hass,
-            connection,
-            _message(source_context={"postcode": "41201"}),
-        )
-    )
+    asyncio.run(registered[0](hass, connection, _propose_message()))
 
     assert connection.errors == []
     names = [item[0] for item in calls]
-    assert names.index("regulated") < names.index("registry_entry") < names.index("discover")
-    assert names.index("discover") < names.index("fetch") < names.index("manual_preview")
-    assert names.index("manual_preview") < names.index("stage")
+    assert names.index("regulated") < names.index("entry_registry")
+    assert names.index("entry_registry") < names.index("discover") < names.index("fetch")
+    assert names.index("fetch") < names.index("manual_preview") < names.index("stage")
+    assert "parse" not in names
     discover = next(item for item in calls if item[0] == "discover")
-    assert discover[3] is entry_registry
     assert discover[4].postcode == "41201"
-
-    preview = next(item for item in calls if item[0] == "manual_preview")[1]
-    assert isinstance(preview["manual_commercial"], manual_input_type)
-    assert preview["manual_commercial"].high_rate_czk_per_kwh == Decimal("2.899")
-    assert preview["manual_commercial"].low_rate_czk_per_kwh == Decimal("2.899")
-    assert preview["manual_commercial"].supplier_standing_czk_month == Decimal("168")
-
     stage = next(item for item in calls if item[0] == "stage")
     assert stage[2]["contract"].customer_confirmed is False
-    assert stage[2]["candidate_fingerprint"] == "d" * 64
-    assert stage[2]["regulated_version_fingerprint"] == "e" * 64
-    assert (
-        stage[2]["authority_method"]
-        is authority.AllInTariffAuthorityMethod.MANUAL_USER_ENTRY
-    )
+    assert stage[2]["authority_method"].value == "manual_user_entry"
+    manual_input = next(item for item in calls if item[0] == "manual_preview")[1][
+        "manual_commercial"
+    ]
+    assert manual_input.high_rate_czk_per_kwh == Decimal("2.899")
+    assert manual_input.low_rate_czk_per_kwh == Decimal("2.899")
+    assert manual_input.supplier_standing_czk_month == Decimal("168")
     assert len(hass.config_entries.updates) == 1
-
     payload = connection.results[0][1]
-    assert payload["proposal_fingerprint"] == "a" * 64
     assert payload["authority_method"] == "manual_user_entry"
-    assert payload["manual_entry_performed"] is True
+    assert payload["manual_entry"] is True
     assert payload["download_performed"] is True
     assert payload["parsing_performed"] is False
-    assert payload["persistence_performed"] is True
     assert payload["confirmation_performed"] is False
     assert payload["activation_performed"] is False
-    assert payload["preview"]["parsing_performed"] is False
-    assert payload["source_url"].startswith("https://prod.mnd.cz/documents/view/")
-    assert payload["document_sha256"] == "f" * 64
+    assert payload["source_context_fingerprint"] == "1" * 64
+    assert "postcode" not in payload
+    assert "source_context" not in payload
 
 
-def test_invalid_manual_payload_fails_before_regulator_discovery_or_network() -> None:
-    invalid_payloads = (
+def test_manual_commercial_payload_is_strict_decimal_string_only_and_fails_before_regulator() -> None:
+    for invalid_manual in (
         {
-            "high_rate_czk_per_kwh": "2.899",
-            "supplier_standing_czk_month": "168",
-        },
-        {
-            "high_rate_czk_per_kwh": "2.899",
+            "high_rate_czk_per_kwh": "2.899e0",
             "low_rate_czk_per_kwh": "2.899",
             "supplier_standing_czk_month": "168",
-            "all_in_vt_czk_kwh": "5.00",
         },
         {
             "high_rate_czk_per_kwh": 2.899,
@@ -576,105 +604,178 @@ def test_invalid_manual_payload_fails_before_regulator_discovery_or_network() ->
             "supplier_standing_czk_month": "168",
         },
         {
-            "high_rate_czk_per_kwh": "NaN",
+            "high_rate_czk_per_kwh": "2.899",
             "low_rate_czk_per_kwh": "2.899",
             "supplier_standing_czk_month": "168",
+            "authority_method": "verified_parser",
         },
-        {
-            "high_rate_czk_per_kwh": "-1",
-            "low_rate_czk_per_kwh": "2.899",
-            "supplier_standing_czk_month": "168",
-        },
-    )
-
-    for manual in invalid_payloads:
-        ws, registered, _schemas, calls, *_rest = load_module()
+    ):
+        module, registered, _schemas, calls, _proposal = load_module()
         hass = Hass(_entry())
         connection = Connection()
-        ws.async_register_manual_customer_tariff_websocket(hass)
-        asyncio.run(registered[0](hass, connection, _message(manual=manual)))
-
+        module.async_register_manual_customer_tariff_websocket(hass)
+        message = _propose_message()
+        message["manual_commercial"] = invalid_manual
+        asyncio.run(registered[0](hass, connection, message))
         assert connection.errors[0][1] == "invalid_manual_commercial"
         assert not any(
-            item[0] in {"regulated", "registry_entry", "discover", "fetch", "manual_preview", "stage"}
+            item[0] in {"regulated", "discover", "fetch", "stage"}
             for item in calls
         )
-        assert hass.config_entries.updates == []
 
 
-def test_missing_or_ambiguous_regulator_fails_before_supplier_network() -> None:
-    for mode, code in (
-        ("missing", "regulated_tariff_not_available"),
-        ("invalid", "regulated_tariff_invalid"),
-    ):
-        ws, registered, _schemas, calls, *_rest = load_module(regulator_mode=mode)
-        hass = Hass(_entry())
-        connection = Connection()
-        ws.async_register_manual_customer_tariff_websocket(hass)
-        asyncio.run(registered[0](hass, connection, _message()))
-
-        assert connection.errors[0][1] == code
-        assert not any(
-            item[0] in {"registry_entry", "discover", "fetch", "manual_preview", "stage"}
-            for item in calls
-        )
-        assert hass.config_entries.updates == []
-
-
-def test_stale_candidate_and_download_failures_never_persist() -> None:
-    ws, registered, _schemas, calls, *_rest = load_module()
+def test_missing_regulator_and_invalid_source_context_fail_before_supplier_network() -> None:
+    module, registered, _schemas, calls, _proposal = load_module(
+        regulator_mode="missing"
+    )
     hass = Hass(_entry())
     connection = Connection()
-    ws.async_register_manual_customer_tariff_websocket(hass)
+    module.async_register_manual_customer_tariff_websocket(hass)
+    asyncio.run(registered[0](hass, connection, _propose_message()))
+    assert connection.errors[0][1] == "regulated_tariff_not_available"
+    assert not any(
+        item[0] in {"entry_registry", "discover", "fetch", "stage"}
+        for item in calls
+    )
+
+    module, registered, _schemas, calls, _proposal = load_module()
+    hass = Hass(_entry())
+    connection = Connection()
+    module.async_register_manual_customer_tariff_websocket(hass)
     asyncio.run(
         registered[0](
             hass,
             connection,
-            _message(fingerprint="0" * 64),
+            _propose_message(source_context={"postcode": "99999"}),
+        )
+    )
+    assert connection.errors[0][1] == "invalid_source_context"
+    assert not any(
+        item[0] in {"regulated", "discover", "fetch", "stage"}
+        for item in calls
+    )
+
+
+def test_candidate_and_download_failures_never_stage_manual_prices() -> None:
+    module, registered, _schemas, calls, _proposal = load_module()
+    hass = Hass(_entry())
+    connection = Connection()
+    module.async_register_manual_customer_tariff_websocket(hass)
+    asyncio.run(
+        registered[0](
+            hass,
+            connection,
+            _propose_message(candidate_fingerprint="0" * 64),
         )
     )
     assert connection.errors[0][1] == "candidate_not_found"
-    assert not any(item[0] in {"fetch", "manual_preview", "stage"} for item in calls)
-    assert hass.config_entries.updates == []
+    assert not any(
+        item[0] in {"fetch", "manual_preview", "stage"} for item in calls
+    )
 
-    for mode, code in (
-        ("error", "download_failed"),
-        ("not_modified", "not_modified_without_cached_document"),
-        ("invalid", "download_failed"),
-    ):
-        ws, registered, _schemas, calls, *_rest = load_module(fetch_mode=mode)
-        hass = Hass(_entry())
-        connection = Connection()
-        ws.async_register_manual_customer_tariff_websocket(hass)
-        asyncio.run(registered[0](hass, connection, _message()))
-        assert connection.errors[0][1] == code
-        assert not any(item[0] in {"manual_preview", "stage"} for item in calls)
-        assert hass.config_entries.updates == []
+    module, registered, _schemas, calls, _proposal = load_module(
+        download_mode="not_modified"
+    )
+    hass = Hass(_entry())
+    connection = Connection()
+    module.async_register_manual_customer_tariff_websocket(hass)
+    asyncio.run(registered[0](hass, connection, _propose_message()))
+    assert connection.errors[0][1] == "not_modified_without_cached_document"
+    assert not any(item[0] in {"manual_preview", "stage"} for item in calls)
 
 
-def test_preview_failure_and_repeated_stage_never_activate_or_churn_writes() -> None:
-    for mode, code in (
-        ("invalid", "manual_tariff_proposal_failed"),
-        ("unsupported", "manual_tariff_not_supported"),
-    ):
-        ws, registered, _schemas, _calls, *_rest = load_module(builder_mode=mode)
-        hass = Hass(_entry())
-        connection = Connection()
-        ws.async_register_manual_customer_tariff_websocket(hass)
-        asyncio.run(registered[0](hass, connection, _message()))
-        assert connection.errors[0][1] == code
-        assert hass.config_entries.updates == []
+def test_unsafe_manual_preview_cannot_be_staged() -> None:
+    module, registered, _schemas, calls, _proposal = load_module(unsafe_preview=True)
+    hass = Hass(_entry())
+    connection = Connection()
+    module.async_register_manual_customer_tariff_websocket(hass)
+    asyncio.run(registered[0](hass, connection, _propose_message()))
+    assert connection.errors[0][1] == "manual_tariff_proposal_failed"
+    assert not any(item[0] == "stage" for item in calls)
 
-    ws, registered, _schemas, _calls, *_rest = load_module(already_staged=True)
-    entry = _entry(options={"manual_proposal_saved": "a" * 64})
+
+def test_manual_confirm_requires_explicit_manual_authority_before_generic_confirmation() -> None:
+    module, registered, _schemas, calls, Proposal = load_module()
+    proposal = Proposal()
+    entry = _entry(options={"stored_proposal": proposal, "authority_mode": "manual"})
     hass = Hass(entry)
     connection = Connection()
-    ws.async_register_manual_customer_tariff_websocket(hass)
-    asyncio.run(registered[0](hass, connection, _message()))
+    module.async_register_manual_customer_tariff_websocket(hass)
 
+    asyncio.run(registered[1](hass, connection, _confirm_message()))
+
+    assert connection.errors == []
+    names = [item[0] for item in calls]
+    first_authority = names.index("authority")
+    confirm = names.index("confirm")
+    second_authority = names.index("authority", first_authority + 1)
+    assert first_authority < confirm < second_authority
+    assert len(hass.config_entries.updates) == 1
+    payload = connection.results[0][1]
+    assert payload["confirmed"] is True
+    assert payload["authority_method"] == "manual_user_entry"
+    assert payload["manual_entry"] is True
+    assert payload["parsing_performed"] is False
+    assert payload["activation_performed"] is True
+
+
+def test_manual_confirm_rejects_verified_or_legacy_authority_before_confirmation() -> None:
+    module, registered, _schemas, calls, Proposal = load_module(
+        authority_mode="verified"
+    )
+    entry = _entry(
+        options={"stored_proposal": Proposal(), "authority_mode": "verified"}
+    )
+    hass = Hass(entry)
+    connection = Connection()
+    module.async_register_manual_customer_tariff_websocket(hass)
+    asyncio.run(registered[1](hass, connection, _confirm_message()))
+    assert connection.errors[0][1] == "manual_tariff_authority_mismatch"
+    assert not any(item[0] == "confirm" for item in calls)
+
+    module, registered, _schemas, calls, Proposal = load_module(
+        authority_mode="missing"
+    )
+    entry = _entry(
+        options={"stored_proposal": Proposal(), "authority_mode": "missing"}
+    )
+    hass = Hass(entry)
+    connection = Connection()
+    module.async_register_manual_customer_tariff_websocket(hass)
+    asyncio.run(registered[1](hass, connection, _confirm_message()))
+    assert connection.errors[0][1] == "manual_tariff_authority_not_found"
+    assert not any(item[0] == "confirm" for item in calls)
+
+
+def test_manual_confirm_is_idempotent_and_malformed_fingerprint_fails_closed() -> None:
+    module, registered, _schemas, _calls, Proposal = load_module(
+        already_confirmed=True
+    )
+    entry = _entry(
+        options={
+            "stored_proposal": Proposal(),
+            "authority_mode": "manual",
+            "confirmed": "a" * 64,
+        }
+    )
+    hass = Hass(entry)
+    connection = Connection()
+    module.async_register_manual_customer_tariff_websocket(hass)
+    asyncio.run(registered[1](hass, connection, _confirm_message()))
     assert connection.errors == []
     assert hass.config_entries.updates == []
     payload = connection.results[0][1]
-    assert payload["persistence_performed"] is False
+    assert payload["confirmed"] is True
     assert payload["confirmation_performed"] is False
     assert payload["activation_performed"] is False
+
+    module, registered, _schemas, calls, Proposal = load_module()
+    entry = _entry(
+        options={"stored_proposal": Proposal(), "authority_mode": "manual"}
+    )
+    hass = Hass(entry)
+    connection = Connection()
+    module.async_register_manual_customer_tariff_websocket(hass)
+    asyncio.run(registered[1](hass, connection, _confirm_message("bad")))
+    assert connection.errors[0][1] == "invalid_proposal_fingerprint"
+    assert not any(item[0] in {"authority", "confirm"} for item in calls)
