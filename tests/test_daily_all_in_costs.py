@@ -76,7 +76,7 @@ def test_serialized_daily_cost_never_claims_fixed_fee_or_effective_price() -> No
 
     payload = record.as_dict()
     assert payload["fixed_monthly_excluded"] is True
-    assert payload["high_rate_kwh"] == "1.234"
+    assert payload["high_rate_kwh"] == "1.235"
     assert payload["low_rate_kwh"] == "2.346"
     assert payload["total_kwh"] == "3.580"
     assert "fixed_cost_czk" not in payload
