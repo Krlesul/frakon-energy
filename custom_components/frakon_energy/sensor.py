@@ -13,6 +13,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .billing import AdvancePeriod, BillingCalculator, BillingCycle, MeterBaseline
+from .billing_tariff_selection import billing_tariff_selection_for_day
 from .config_flow import (
     CONF_ADVANCE_VALID_FROM,
     CONF_ADVANCE_VALID_TO,
@@ -22,7 +23,6 @@ from .config_flow import (
     CONF_BILLING_CYCLE_START,
     CONF_BILLING_ENABLED,
     CONF_BILLING_SETTLEMENT_DATE,
-    CONF_FIXED_MONTHLY,
     CONF_METER_REPLACED,
     CONF_METER_REPLACEMENT_DATE,
     CONF_MONTHLY_ADVANCE,
@@ -30,12 +30,10 @@ from .config_flow import (
     CONF_NEW_METER_START_VT,
     CONF_OLD_METER_END_NT,
     CONF_OLD_METER_END_VT,
-    CONF_PRICE_NT,
-    CONF_PRICE_VT,
 )
 from .const import CONF_PROVIDER, DOMAIN, PROVIDER_CEZ_HDO
 from .coordinator import FrakonEnergyCoordinator
-from .cost import TariffPrices, calculate_cost_projection
+from .cost import calculate_cost_projection
 from .energy_flow_sensor import build_energy_flow_sensors
 from .hdo_coordinator import CezHdoCoordinator
 from .metering import MeterSegment, total_cycle_consumption
@@ -145,13 +143,25 @@ class FrakonBillingSensor(CoordinatorEntity[FrakonEnergyCoordinator], SensorEnti
     @property
     def extra_state_attributes(self):
         options = self._entry.options
+        try:
+            tariff = billing_tariff_selection_for_day(options, date.today())
+        except (LookupError, TypeError, ValueError, AttributeError):
+            tariff = None
         return {
             "baseline_date": options.get(CONF_BILLING_BASELINE_DATE),
             "advance_valid_from": options.get(CONF_ADVANCE_VALID_FROM),
             "advance_valid_to": options.get(CONF_ADVANCE_VALID_TO) or None,
-            "price_vt_czk_kwh": options.get(CONF_PRICE_VT),
-            "price_nt_czk_kwh": options.get(CONF_PRICE_NT),
-            "fixed_monthly_czk": options.get(CONF_FIXED_MONTHLY),
+            "price_source": tariff.source.value if tariff is not None else "unavailable",
+            "price_vt_czk_kwh": float(tariff.prices.high_rate_czk_per_kwh) if tariff is not None else None,
+            "price_nt_czk_kwh": float(tariff.prices.low_rate_czk_per_kwh) if tariff is not None else None,
+            "fixed_monthly_czk": float(tariff.prices.fixed_monthly_czk) if tariff is not None else None,
+            "all_in_tariff_fingerprint": tariff.all_in_tariff_fingerprint if tariff is not None else None,
+            "tariff_supplier": tariff.supplier if tariff is not None else None,
+            "tariff_product_name": tariff.product_name if tariff is not None else None,
+            "tariff_distribution_tariff": tariff.distribution_tariff if tariff is not None else None,
+            "tariff_breaker_code": tariff.breaker_code if tariff is not None else None,
+            "tariff_valid_from": tariff.valid_from.isoformat() if tariff is not None and tariff.valid_from is not None else None,
+            "tariff_valid_to": tariff.valid_to.isoformat() if tariff is not None and tariff.valid_to is not None else None,
             "meter_replaced_during_cycle": options.get(CONF_METER_REPLACED, False),
             "meter_replacement_date": options.get(CONF_METER_REPLACEMENT_DATE) or None,
             "old_meter_end_vt_kwh": options.get(CONF_OLD_METER_END_VT),
@@ -205,6 +215,7 @@ class FrakonBillingSensor(CoordinatorEntity[FrakonEnergyCoordinator], SensorEnti
             )
             today = date.today()
             as_of = min(max(today, cycle.start_date), cycle.expected_settlement_date)
+            tariff = billing_tariff_selection_for_day(options, as_of)
             measurement = self.coordinator.data
             consumption_vt, consumption_nt = total_cycle_consumption(
                 self._meter_segments(cycle),
@@ -221,11 +232,7 @@ class FrakonBillingSensor(CoordinatorEntity[FrakonEnergyCoordinator], SensorEnti
                 baseline_low_rate_kwh=Decimal("0"),
                 current_high_rate_kwh=consumption_vt,
                 current_low_rate_kwh=consumption_nt,
-                prices=TariffPrices(
-                    high_rate_czk_per_kwh=Decimal(str(options[CONF_PRICE_VT])),
-                    low_rate_czk_per_kwh=Decimal(str(options[CONF_PRICE_NT])),
-                    fixed_monthly_czk=Decimal(str(options[CONF_FIXED_MONTHLY])),
-                ),
+                prices=tariff.prices,
             )
             billing = BillingCalculator.calculate(
                 cycle=cycle, as_of=as_of, advances=(advance,),
@@ -253,7 +260,7 @@ class FrakonBillingSensor(CoordinatorEntity[FrakonEnergyCoordinator], SensorEnti
                 "projected_balance": billing.projected_settlement_balance_czk,
                 "recommended_advance": billing.recommended_monthly_advance_czk,
             }
-        except (KeyError, TypeError, ValueError, AttributeError):
+        except (KeyError, LookupError, TypeError, ValueError, AttributeError):
             return {}
 
 
