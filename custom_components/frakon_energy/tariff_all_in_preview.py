@@ -19,6 +19,7 @@ from .tariff_sources import PRICE_SCOPE_REGULATED, PRICE_SCOPE_SUPPLIER_COMMERCI
 _SUPPLIER_IDENTITIES = {
     Supplier.CEZ.value: ("ČEZ", "ČEZ Prodej"),
     Supplier.EON.value: ("E.ON", "E.ON Energie"),
+    Supplier.PRE.value: ("PRE", "Pražská energetika"),
 }
 
 
