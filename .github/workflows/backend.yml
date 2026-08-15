@@ -71,6 +71,12 @@ jobs:
       - name: Release preflight contract
         run: python scripts/release_preflight.py
 
+      - name: Manual tariff websocket preflight
+        run: >-
+          python -m pytest -q
+          tests/test_manual_customer_tariff_ws_api.py
+          tests/test_manual_customer_tariff_wiring.py
+
       - name: Run backend tests
         run: >-
           python -m pytest -q
