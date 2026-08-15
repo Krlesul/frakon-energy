@@ -76,12 +76,44 @@ class TariffSourceResolutionContext:
         return cls(postcode=postcode)
 
 
+def _canonical_source_context(value: object) -> TariffSourceResolutionContext:
+    """Canonicalize only the same context type surviving an isolated reload.
+
+    Pure tests reload ``tariff_sources`` with ``importlib``. An object created by
+    the previous module instance then has a different Python class identity even
+    though it is the same declared type. Accept exactly that case by requiring
+    the same module/name identity and re-validating its serialized payload.
+    Arbitrary mappings and duck-typed objects remain rejected here; external WS
+    payloads must enter explicitly through ``from_value`` first.
+    """
+    if isinstance(value, TariffSourceResolutionContext):
+        return value
+    value_type = type(value)
+    if (
+        value_type.__module__ != __name__
+        or value_type.__name__ != "TariffSourceResolutionContext"
+    ):
+        raise ValueError("source_context must be TariffSourceResolutionContext")
+    as_dict = getattr(value, "as_dict", None)
+    if not callable(as_dict):
+        raise ValueError("source_context must be TariffSourceResolutionContext")
+    try:
+        payload = as_dict()
+    except Exception as err:
+        raise ValueError("source_context must be TariffSourceResolutionContext") from err
+    if not isinstance(payload, Mapping):
+        raise ValueError("source_context must be TariffSourceResolutionContext")
+    try:
+        return TariffSourceResolutionContext.from_value(payload)
+    except (TypeError, ValueError) as err:
+        raise ValueError("source_context must be TariffSourceResolutionContext") from err
+
+
 def tariff_source_context_fingerprint(context: TariffSourceResolutionContext) -> str:
     """Return a stable operational fingerprint, never a price fingerprint."""
-    if not isinstance(context, TariffSourceResolutionContext):
-        raise ValueError("context must be TariffSourceResolutionContext")
+    canonical = _canonical_source_context(context)
     encoded = json.dumps(
-        context.as_dict(),
+        canonical.as_dict(),
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -160,19 +192,11 @@ class TariffSourceQuery:
         object.__setattr__(self, "breaker_code", breaker)
         if not isinstance(self.valid_on, date):
             raise ValueError("valid_on must be a date")
-
-        source_context = self.source_context
-        if not isinstance(source_context, TariffSourceResolutionContext):
-            as_dict = getattr(source_context, "as_dict", None)
-            if not callable(as_dict):
-                raise ValueError("source_context must be TariffSourceResolutionContext")
-            try:
-                source_context = TariffSourceResolutionContext.from_value(as_dict())
-            except (TypeError, ValueError) as err:
-                raise ValueError(
-                    "source_context must be TariffSourceResolutionContext"
-                ) from err
-            object.__setattr__(self, "source_context", source_context)
+        object.__setattr__(
+            self,
+            "source_context",
+            _canonical_source_context(self.source_context),
+        )
 
 
 @dataclass(frozen=True, slots=True)
