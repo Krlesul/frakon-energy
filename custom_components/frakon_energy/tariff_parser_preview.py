@@ -10,8 +10,6 @@ import re
 from .contracts import ElectricityContract, Supplier
 from .providers.cez_tariff_parser import parse_cez_commercial_price_text
 from .providers.cez_tariffs import cez_contract_product_matches_candidate
-from .providers.eon_tariff_parser import parse_eon_supplier_tariff
-from .providers.eon_tariffs import eon_contract_product_matches_candidate
 from .tariff_download import ValidatedTariffDownload
 from .tariff_pdf_text import ExtractedTariffPdfText
 from .tariff_sources import PRICE_SCOPE_SUPPLIER_COMMERCIAL
@@ -191,6 +189,19 @@ def _eon_preview(
     extracted: ExtractedTariffPdfText,
     contract: ElectricityContract,
 ) -> SupplierTariffParsePreview:
+    # Provider-specific imports stay lazy so one supplier parser cannot make
+    # another supplier's preview unavailable during a partial/hot-loaded runtime.
+    try:
+        from .providers.eon_tariff_parser import parse_eon_supplier_tariff
+        from .providers.eon_tariffs import eon_contract_product_matches_candidate
+    except ModuleNotFoundError as err:
+        if err.name in {
+            "custom_components.frakon_energy.providers.eon_tariff_parser",
+            "custom_components.frakon_energy.providers.eon_tariffs",
+        }:
+            raise LookupError("supplier parser preview is not implemented: eon") from err
+        raise
+
     candidate = download.candidate
     parsed = parse_eon_supplier_tariff(
         extracted.text,
