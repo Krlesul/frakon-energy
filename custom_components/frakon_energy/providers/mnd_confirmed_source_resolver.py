@@ -21,10 +21,9 @@ import re
 from typing import Any, Callable, Mapping
 
 from .mnd_tariffs import (
-    MND_CURRENT_ELECTRICITY_PRODUCTS,
     MndProductDefinition,
     MndResolvedTariffSource,
-    _normalized_product,
+    mnd_product_definition,
 )
 from ..tariff_sources import TariffSourceQuery, tariff_source_context_fingerprint
 
@@ -70,16 +69,10 @@ def _parse_datetime(value: Any, field: str) -> datetime:
 
 
 def _catalog_product(product_name: str, contract_kind: str) -> MndProductDefinition:
-    normalized = _normalized_product(product_name)
-    matches = tuple(
-        item
-        for item in MND_CURRENT_ELECTRICITY_PRODUCTS
-        if _normalized_product(item.product_name) == normalized
-        and item.contract_kind == contract_kind
-    )
-    if len(matches) != 1:
+    product = mnd_product_definition(product_name, contract_kind)
+    if product is None:
         raise ValueError("confirmed MND source must match exactly one verified product")
-    return matches[0]
+    return product
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,8 +125,6 @@ class ConfirmedMndSourceResolution:
         if not isinstance(self.confirmed_at, datetime) or self.confirmed_at.tzinfo is None:
             raise ValueError("confirmed_at must be a timezone-aware datetime")
 
-        # Reuse the provider's exact URL/checksum/validity validation. The timestamp
-        # is irrelevant here; no network access or price parsing is performed.
         MndResolvedTariffSource(
             product_name=self.product_name,
             distributor=self.distributor,

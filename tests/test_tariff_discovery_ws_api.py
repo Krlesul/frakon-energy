@@ -64,6 +64,7 @@ def load_module():
         "custom_components.frakon_energy.tariff_adapter_registry"
     )
     adapter_registry.build_default_tariff_adapter_registry = lambda: None
+    adapter_registry.build_entry_tariff_adapter_registry = lambda _options: None
     sys.modules[adapter_registry.__name__] = adapter_registry
 
     vol = types.ModuleType("voluptuous")
@@ -152,8 +153,12 @@ class Connection:
         self.errors.append((message_id, code, message))
 
 
-def _entry(domain="frakon_energy"):
-    return types.SimpleNamespace(entry_id="entry-1", domain=domain)
+def _entry(domain="frakon_energy", *, options=None):
+    return types.SimpleNamespace(
+        entry_id="entry-1",
+        domain=domain,
+        options={} if options is None else dict(options),
+    )
 
 
 def _contract_dict(contracts, *, supplier=None):
@@ -374,3 +379,52 @@ def test_registry_cannot_be_silently_replaced_after_registration() -> None:
         assert "already configured" in str(err)
     else:
         raise AssertionError("Registry replacement must fail closed")
+
+
+def test_entry_registry_uses_only_current_entry_options_for_default_runtime_registry() -> None:
+    ws, _contracts, sources, _selection, _discovery, _registered = load_module()
+    entry = _entry(options={"entry_marker": "entry-1"})
+    hass = Hass(entry)
+    base = sources.TariffAdapterRegistry()
+    base.register(Adapter(sources))
+    derived = sources.TariffAdapterRegistry()
+    derived.register(Adapter(sources))
+    hass.data = {
+        "frakon_energy": {
+            ws._REGISTRY_KEY: base,
+            ws._REGISTRY_EXPLICIT_KEY: False,
+        }
+    }
+    calls = []
+
+    def build_entry(options):
+        calls.append(dict(options))
+        return derived
+
+    ws.build_entry_tariff_adapter_registry = build_entry
+
+    result = ws._registry_for_entry(hass, entry, registry=base)
+
+    assert result is derived
+    assert calls == [{"entry_marker": "entry-1"}]
+
+
+def test_explicit_or_hot_reload_registry_is_never_replaced_by_entry_options() -> None:
+    ws, _contracts, sources, _selection, _discovery, _registered = load_module()
+    entry = _entry(options={"entry_marker": "must-not-be-read"})
+    hass = Hass(entry)
+    base = sources.TariffAdapterRegistry()
+    base.register(Adapter(sources))
+    calls = []
+    ws.build_entry_tariff_adapter_registry = lambda options: calls.append(options)
+
+    ws.async_register_tariff_discovery_websocket(hass, registry=base)
+    assert ws._registry_for_entry(hass, entry, registry=base) is base
+    assert calls == []
+
+    hot_reload_hass = Hass(entry)
+    hot_reload_hass.data = {"frakon_energy": {ws._REGISTRY_KEY: base}}
+    assert ws._registry_for_hass(hot_reload_hass) is base
+    assert hot_reload_hass.data["frakon_energy"][ws._REGISTRY_EXPLICIT_KEY] is True
+    assert ws._registry_for_entry(hot_reload_hass, entry, registry=base) is base
+    assert calls == []

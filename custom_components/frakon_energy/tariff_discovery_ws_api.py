@@ -11,7 +11,10 @@ from homeassistant.core import HomeAssistant, callback
 
 from .const import DOMAIN
 from .contracts import ElectricityContract, contract_fingerprint
-from .tariff_adapter_registry import build_default_tariff_adapter_registry
+from .tariff_adapter_registry import (
+    build_default_tariff_adapter_registry,
+    build_entry_tariff_adapter_registry,
+)
 from .tariff_discovery import async_discover_contract_tariff_review
 from .tariff_sources import (
     TariffAdapterRegistry,
@@ -22,6 +25,7 @@ from .tariff_sources import (
 COMMAND_TARIFF_DISCOVER = "frakon_energy/tariff/discover"
 _REGISTERED_KEY = "tariff_discovery_websocket_registered"
 _REGISTRY_KEY = "tariff_adapter_registry"
+_REGISTRY_EXPLICIT_KEY = "tariff_adapter_registry_explicit"
 _VOL_OPTIONAL = getattr(vol, "Optional", lambda key: key)
 
 
@@ -34,20 +38,56 @@ def _entry_or_error(hass: HomeAssistant, connection: websocket_api.ActiveConnect
 
 
 def _registry_for_hass(hass: HomeAssistant, *, registry: TariffAdapterRegistry | None = None) -> TariffAdapterRegistry:
+    """Return the shared base registry and remember whether it was injected.
+
+    An explicitly supplied registry is test/custom authority and must never be
+    silently replaced by entry-derived production adapters. A registry already
+    present without the origin marker is treated as explicit fail-closed state,
+    which also makes partial hot reloads safe.
+    """
     domain_data = hass.data.setdefault(DOMAIN, {})
     existing = domain_data.get(_REGISTRY_KEY)
     if existing is not None:
         if not isinstance(existing, TariffAdapterRegistry):
             raise ValueError("stored tariff adapter registry is invalid")
+        if _REGISTRY_EXPLICIT_KEY not in domain_data:
+            domain_data[_REGISTRY_EXPLICIT_KEY] = True
         if registry is not None and registry is not existing:
             raise ValueError("tariff adapter registry is already configured")
         return existing
     if registry is None:
         registry = build_default_tariff_adapter_registry()
+        explicit = False
     elif not isinstance(registry, TariffAdapterRegistry):
         raise ValueError("registry must be TariffAdapterRegistry")
+    else:
+        explicit = True
     domain_data[_REGISTRY_KEY] = registry
+    domain_data[_REGISTRY_EXPLICIT_KEY] = explicit
     return registry
+
+
+def _registry_for_entry(
+    hass: HomeAssistant,
+    entry: object,
+    *,
+    registry: TariffAdapterRegistry | None = None,
+) -> TariffAdapterRegistry:
+    """Return request registry with MND authority isolated to one config entry."""
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    active_registry = _registry_for_hass(hass) if registry is None else registry
+    if not isinstance(active_registry, TariffAdapterRegistry):
+        raise ValueError("registry must be TariffAdapterRegistry")
+    stored = domain_data.get(_REGISTRY_KEY)
+    if stored is not active_registry:
+        raise ValueError("tariff adapter registry is not the configured base registry")
+    if domain_data.get(_REGISTRY_EXPLICIT_KEY, True):
+        return active_registry
+
+    options = getattr(entry, "options", None)
+    if not isinstance(options, Mapping):
+        raise ValueError("config entry options must be a mapping")
+    return build_entry_tariff_adapter_registry(options)
 
 
 @callback
@@ -86,10 +126,15 @@ def async_register_tariff_discovery_websocket(hass: HomeAssistant, *, registry: 
             connection.send_error(msg["id"], "invalid_source_context", str(err))
             return
         try:
+            request_registry = _registry_for_entry(
+                hass,
+                entry,
+                registry=active_registry,
+            )
             review = await async_discover_contract_tariff_review(
                 contract,
                 day=discovery_day,
-                registry=active_registry,
+                registry=request_registry,
                 source_context=source_context,
             )
         except LookupError as err:
@@ -103,7 +148,7 @@ def async_register_tariff_discovery_websocket(hass: HomeAssistant, *, registry: 
             "contract_fingerprint": contract_fingerprint(contract),
             "source_context_fingerprint": tariff_source_context_fingerprint(source_context),
             "day": discovery_day.isoformat(),
-            "supported_suppliers": list(active_registry.supported_suppliers()),
+            "supported_suppliers": list(request_registry.supported_suppliers()),
             "candidates": [item.as_dict() for item in review],
             "download_performed": False,
             "parsing_performed": False,
