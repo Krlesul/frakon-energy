@@ -8,6 +8,8 @@ import re
 from typing import Iterable, Protocol, runtime_checkable
 from urllib.parse import urlparse
 
+from .tariff_source_context import TariffSourceResolutionContext
+
 PRICE_SCOPE_UNKNOWN = "unknown"
 PRICE_SCOPE_SUPPLIER_COMMERCIAL = "supplier_commercial"
 PRICE_SCOPE_REGULATED = "regulated"
@@ -70,7 +72,7 @@ def _host_matches_domain(host: str, domain: str) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class TariffSourceQuery:
-    """Normalized customer contract fields used to search official price lists."""
+    """Normalized contract fields plus non-price context for official discovery."""
 
     supplier: str
     product_name: str
@@ -79,6 +81,7 @@ class TariffSourceQuery:
     distribution_tariff: str
     breaker_code: str
     valid_on: date
+    source_context: TariffSourceResolutionContext = TariffSourceResolutionContext()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "supplier", _supplier_slug(self.supplier))
@@ -96,6 +99,8 @@ class TariffSourceQuery:
         object.__setattr__(self, "breaker_code", breaker)
         if not isinstance(self.valid_on, date):
             raise ValueError("valid_on must be a date")
+        if not isinstance(self.source_context, TariffSourceResolutionContext):
+            raise ValueError("source_context must be TariffSourceResolutionContext")
 
 
 @dataclass(frozen=True, slots=True)
