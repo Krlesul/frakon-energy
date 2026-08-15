@@ -17,7 +17,7 @@ from .all_in_catalog import (
     confirmed_all_in_tariff_for_context_from_options,
 )
 from .contracts import OPTION_ELECTRICITY_CONTRACTS, confirmed_contract_from_options
-from .cost import TariffPrices
+from .cost import CatalogTariffPrices, TariffPrices
 
 _NEW_TARIFF_OPTION_KEYS = frozenset(
     {
@@ -89,7 +89,8 @@ def select_billing_tariff_prices(
     New catalog state is authoritative and fail-closed: confirmed contract,
     matching confirmed all-in version and explicit authority metadata must all
     resolve exactly. Legacy prices are accepted only when none of the new tariff
-    option keys exists.
+    option keys exists. Confirmed catalog prices carry a read-only options snapshot
+    so the stable cost API can apply historical tariff versions to the whole cycle.
     """
 
     if not isinstance(options, Mapping):
@@ -116,10 +117,11 @@ def select_billing_tariff_prices(
     assembly = all_in.assembly
 
     return BillingTariffSelection(
-        prices=TariffPrices(
+        prices=CatalogTariffPrices(
             high_rate_czk_per_kwh=assembly.all_in_vt_czk_kwh,
             low_rate_czk_per_kwh=assembly.all_in_nt_czk_kwh,
             fixed_monthly_czk=assembly.fixed_monthly_total_czk,
+            catalog_options=options,
         ),
         source="confirmed_all_in",
         all_in_tariff_fingerprint=fingerprint,
