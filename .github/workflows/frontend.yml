@@ -60,6 +60,13 @@ jobs:
           cmp frontend/public/supplier-parser-preview-bridge.js custom_components/frakon_energy/frontend_app/supplier-parser-preview-bridge.js
           cmp frontend/public/manual-tariff-entry-bridge.js custom_components/frakon_energy/frontend_app/manual-tariff-entry-bridge.js
 
+      - name: Upload generated dashboard artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-frontend-app
+          path: custom_components/frakon_energy/frontend_app
+          if-no-files-found: error
+
       - name: Verify committed dashboard is current
         run: |
           if ! git diff --exit-code -- custom_components/frakon_energy/frontend_app; then
