@@ -11,7 +11,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
-from .contracts import ElectricityContract, Supplier, contract_fingerprint
+from .contracts import ElectricityContract, contract_fingerprint
 from .regulated_catalog import (
     ConfirmedRegulatedTariffVersion,
     select_confirmed_regulated_tariff_for_day,
@@ -23,7 +23,10 @@ from .tariff_discovery_ws_api import _registry_for_hass
 from .tariff_download import ValidatedTariffDownload
 from .tariff_fetch import TariffNotModified, build_tariff_fetch_request
 from .tariff_http_ha import async_fetch_selected_tariff_document_ha
-from .tariff_parser_preview import parse_supplier_tariff_preview
+from .tariff_parser_preview import (
+    parse_supplier_tariff_preview,
+    supplier_parser_supported,
+)
 from .tariff_pdf_text import extract_validated_tariff_pdf_text
 
 COMMAND_TARIFF_ALL_IN_PREVIEW = "frakon_energy/tariff/all_in_preview"
@@ -97,7 +100,7 @@ def async_register_tariff_all_in_preview_websocket(hass: HomeAssistant) -> None:
             connection.send_error(msg["id"], "invalid_contract", str(err))
             return
 
-        if contract.supplier is not Supplier.CEZ:
+        if not supplier_parser_supported(contract.supplier):
             connection.send_error(
                 msg["id"],
                 "parser_not_supported",
