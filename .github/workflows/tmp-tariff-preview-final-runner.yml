@@ -89,7 +89,17 @@ jobs:
           node scripts/check-runtime-live-data-contract.mjs
           npm run build
       - name: Package dashboard
-        run: bash scripts/build_frontend.sh
+        run: |
+          rm -rf custom_components/frakon_energy/frontend_app
+          mkdir -p custom_components/frakon_energy/frontend_app
+          cp -R frontend/dist/. custom_components/frakon_energy/frontend_app/
+          test -f custom_components/frakon_energy/frontend_app/index.html
+          cmp frontend/public/tariff-confirmation-bridge.js custom_components/frakon_energy/frontend_app/tariff-confirmation-bridge.js
+          cmp frontend/public/mnd-source-confirmation-bridge.js custom_components/frakon_energy/frontend_app/mnd-source-confirmation-bridge.js
+          cmp frontend/public/supplier-parser-preview-bridge.js custom_components/frakon_energy/frontend_app/supplier-parser-preview-bridge.js
+          cmp frontend/public/manual-tariff-entry-bridge.js custom_components/frakon_energy/frontend_app/manual-tariff-entry-bridge.js
+          cmp frontend/public/load-all-in-estimate-bridge.js custom_components/frakon_energy/frontend_app/load-all-in-estimate-bridge.js
+          cmp frontend/public/legacy-tariff-migration-bridge.js custom_components/frakon_energy/frontend_app/legacy-tariff-migration-bridge.js
       - name: Commit source fix only
         run: |
           git config user.name "github-actions[bot]"
