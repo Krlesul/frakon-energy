@@ -1,0 +1,110 @@
+name: WS Decorator Migration
+
+on:
+  push:
+    branches:
+      - agent/ha-websocket-admin-compat
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: agent/ha-websocket-admin-compat
+          fetch-depth: 0
+      - name: Migrate production handlers and isolated websocket test stubs
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          root = Path("custom_components/frakon_energy")
+          changed_prod = []
+          for path in root.rglob("*.py"):
+              text = path.read_text(encoding="utf-8")
+              calls = text.count("ensure_admin(connection)")
+              if not calls:
+                  continue
+              async_decorators = text.count("@websocket_api.async_response")
+              if calls != async_decorators:
+                  raise SystemExit(
+                      f"Refusing ambiguous migration for {path}: "
+                      f"{calls} admin calls vs {async_decorators} async handlers"
+                  )
+              text = text.replace("from .ws_auth import ensure_admin\n", "")
+              text = text.replace("from ..ws_auth import ensure_admin\n", "")
+              text = text.replace(
+                  "@websocket_api.async_response",
+                  "@websocket_api.require_admin\n    @websocket_api.async_response",
+              )
+              text = text.replace("        ensure_admin(connection)\n", "")
+              text = text.replace("    ensure_admin(connection)\n", "")
+              path.write_text(text, encoding="utf-8")
+              changed_prod.append(str(path))
+
+          if not changed_prod:
+              raise SystemExit("No production websocket handlers were migrated")
+
+          # Isolated unit tests replace Home Assistant with a tiny fake module.
+          # Teach those fakes the current HA require_admin decorator while
+          # retaining their existing admin_calls assertions.
+          changed_tests = []
+          for path in Path("tests").glob("test_*ws_api.py"):
+              text = path.read_text(encoding="utf-8")
+              if "websocket_api.async_response = async_response" not in text:
+                  continue
+              if "websocket_api.require_admin = require_admin" in text:
+                  continue
+              marker = "    def async_response(func):\n        return func\n"
+              if marker not in text:
+                  continue
+              addition = marker + "\n    def require_admin(func):\n        async def wrapped(hass, connection, msg):\n            legacy = getattr(connection, \"require_admin\", None)\n            if legacy is not None:\n                legacy()\n            return await func(hass, connection, msg)\n        return wrapped\n"
+              text = text.replace(marker, addition, 1)
+              assign = "    websocket_api.async_response = async_response\n"
+              text = text.replace(
+                  assign,
+                  assign + "    websocket_api.require_admin = require_admin\n",
+                  1,
+              )
+              path.write_text(text, encoding="utf-8")
+              changed_tests.append(str(path))
+
+          # The shared helper was only an intermediate migration step.
+          helper = root / "ws_auth.py"
+          if helper.exists():
+              helper.unlink()
+
+          domain = Path("tests/test_domain.py")
+          text = domain.read_text(encoding="utf-8")
+          old = '''def test_websocket_admin_guard_matches_current_home_assistant_contract() -> None:\n    source = (ROOT / "ws_auth.py").read_text(encoding="utf-8")\n    assert "connection.require_admin()" not in source\n    assert "user.is_admin" in source\n    assert "Unauthorized" in source\n'''
+          new = '''def test_websocket_admin_handlers_use_current_home_assistant_decorator() -> None:\n    admin_modules = [\n        path\n        for path in ROOT.rglob("*_ws_api.py")\n        if "require_admin" in path.read_text(encoding="utf-8")\n    ]\n    assert admin_modules\n    for path in admin_modules:\n        source = path.read_text(encoding="utf-8")\n        assert "ensure_admin(connection)" not in source\n        assert "@websocket_api.require_admin" in source\n'''
+          if old not in text:
+              raise SystemExit("Expected domain regression block not found")
+          domain.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          leftovers = []
+          for path in root.rglob("*.py"):
+              src = path.read_text(encoding="utf-8")
+              if "connection.require_admin()" in src or "ensure_admin(connection)" in src:
+                  leftovers.append(str(path))
+          if leftovers:
+              raise SystemExit("Legacy admin calls remain: " + ", ".join(leftovers))
+
+          print(f"Migrated production modules: {len(changed_prod)}")
+          print(f"Updated isolated WS test stubs: {len(changed_tests)}")
+          PY
+      - name: Compile migrated integration
+        run: python -m compileall -q custom_components/frakon_energy
+      - name: Commit migration
+        run: |
+          if git diff --quiet; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add custom_components/frakon_energy tests
+          git commit -m "Use current Home Assistant websocket admin decorator"
+          git push origin HEAD:agent/ha-websocket-admin-compat
