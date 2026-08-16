@@ -16,6 +16,11 @@ jobs:
         with:
           ref: agent/regulated-2026-live-source
           fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install test dependency
+        run: python -m pip install -q pytest
       - name: Remove customer WebSocket test order dependency
         run: |
           python - <<'PY'
@@ -47,7 +52,6 @@ jobs:
               sys.modules[source_context.__name__] = source_context
 
               schemas = []'''
-          # Normalize indentation in literal because YAML adds indentation only outside heredoc.
           insert_anchor=insert_anchor.replace('              ', '    ')
           replacement=replacement.replace('              ', '    ')
           if 'class TariffSourceResolutionContext:' not in source:
