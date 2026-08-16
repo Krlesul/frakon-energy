@@ -1,0 +1,38 @@
+name: Temporary Adjust Preview Builder
+
+on:
+  push:
+    branches:
+      - agent/fix-tariff-preview-timeout
+
+permissions:
+  contents: write
+
+jobs:
+  adjust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: agent/fix-tariff-preview-timeout
+          fetch-depth: 0
+      - name: Match official frontend dependency install
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('.github/workflows/tmp-tariff-preview-timeout-fix.yml')
+          text = p.read_text(encoding='utf-8')
+          old = '          npm ci\n          npm run check:live-data\n'
+          new = '          npm install\n          npm run check:live-data\n'
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one npm ci marker, got {text.count(old)}')
+          p.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          rm .github/workflows/tmp-adjust-final-preview-workflow.yml
+      - name: Commit adjustment
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Align preview fixer with frontend CI"
+          git push origin HEAD:agent/fix-tariff-preview-timeout
