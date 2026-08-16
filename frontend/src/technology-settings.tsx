@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import type { HomeAssistant } from "./home-assistant";
+import { findFrakonEnergyEntryId, type HomeAssistant } from "./home-assistant";
 
 type Candidate = {
   entity_id: string;
@@ -48,7 +48,7 @@ type EnergyFlowSettings = {
   pv_power_scope: PvPowerScope;
   ev_wallbox_relation: EvWallboxRelation;
 };
-type ConfigEntry = { entry_id: string; domain?: string; title?: string };
+type ConfigEntry = { entry_id: string };
 type WsConnection = {
   sendMessagePromise?: <T>(message: Record<string, unknown>) => Promise<T>;
 };
@@ -74,8 +74,8 @@ async function callWs<T>(hass: HomeAssistant, message: Record<string, unknown>):
 }
 
 async function findEntry(hass: HomeAssistant): Promise<ConfigEntry | null> {
-  const entries = await callWs<ConfigEntry[]>(hass, { type: "config_entries/get" });
-  return entries.find((entry) => entry.domain === "frakon_energy") ?? null;
+  const entryId = await findFrakonEnergyEntryId(hass);
+  return entryId ? { entry_id: entryId } : null;
 }
 
 function confidence(candidate?: Candidate | null): number | null {
@@ -130,7 +130,7 @@ export function TechnologySettings({ hass }: { hass?: HomeAssistant }) {
     } finally {
       setBusy(false);
     }
-  }, [hass]);
+  }, [hass?.connection]);
 
   useEffect(() => {
     void load(false);
