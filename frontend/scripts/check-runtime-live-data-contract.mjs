@@ -89,6 +89,24 @@ for (const forbidden of [
   }
 }
 
+const tariffWizard = read("src/tariff-wizard.tsx");
+if (tariffWizard.includes("}, [hass]);")) {
+  throw new Error("Tariff wizard must not reset catalog/product on every Home Assistant state object update.");
+}
+if (!tariffWizard.includes("[hass?.connection]")) {
+  throw new Error("Tariff wizard must initialize against the stable Home Assistant connection.");
+}
+
+const mainUi = read("src/main.tsx");
+for (const forbidden of ["DEFAULT_NT_SCHEDULE", "fallbackNtIntervals", "Používá se náhradní plán"]) {
+  if (mainUi.includes(forbidden)) {
+    throw new Error(`Production HDO UI must not fabricate fallback intervals: ${forbidden}`);
+  }
+}
+if (!helper.includes("findStructuredScheduleEntity")) {
+  throw new Error("home-assistant.ts must discover structured HDO schedules even when entity names are customized.");
+}
+
 const spotSettings = read("src/spot-price-settings.tsx");
 if (!spotSettings.includes("settings-stack--full") || !spotSettings.includes("commissioning-hardening.css")) {
   throw new Error("Spot/load settings must use the full-width hardened settings stack.");
