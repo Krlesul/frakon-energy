@@ -25,42 +25,46 @@ jobs:
           curl --fail --location --max-time 30 -o /tmp/erv192025.pdf 'https://eru.gov.cz/sites/default/files/obsah/prilohy/erv192025.pdf'
           curl --fail --location --max-time 30 -o /tmp/erv022026.pdf 'https://eru.gov.cz/sites/default/files/obsah/prilohy/erv022026.pdf'
           sha256sum /tmp/ceny-nn26-1.xlsx /tmp/erv172025.pdf /tmp/erv192025.pdf /tmp/erv022026.pdf
-      - name: Inspect ERU low-voltage workbook
+      - name: Inspect exact D25d section
         run: |
           python - <<'PY'
           from openpyxl import load_workbook
-          p='/tmp/ceny-nn26-1.xlsx'
-          wb=load_workbook(p, data_only=True, read_only=True)
-          print('SHEETS', wb.sheetnames)
-          for ws in wb.worksheets:
-              print('\n===', ws.title, ws.max_row, ws.max_column, '===')
-              rows=[]
-              for r in ws.iter_rows(values_only=True):
-                  vals=['' if v is None else str(v) for v in r]
-                  joined=' | '.join(vals)
-                  if ('D25d' in joined or 'ČEZ Distribuce' in joined or 'CEZ Distribuce' in joined or 'ČEZ' in joined and 'Distribuce' in joined):
-                      rows.append(vals)
-              for vals in rows[:80]:
-                  print('MATCH', ' | '.join(vals))
-              # print first 35 rows to preserve header/column semantics
-              for i,r in enumerate(ws.iter_rows(min_row=1, max_row=min(ws.max_row,35), values_only=True),1):
-                  print(f'HEAD {i}:', ' | '.join('' if v is None else str(v) for v in r))
+          wb=load_workbook('/tmp/ceny-nn26-1.xlsx', data_only=True, read_only=True)
+          ws=wb['Distribuce']
+          rows=list(ws.iter_rows(values_only=True))
+          starts=[]
+          for idx,row in enumerate(rows):
+              first='' if not row or row[0] is None else str(row[0])
+              norm=' '.join(first.replace('\xa0',' ').split()).lower()
+              if 'sazba d 25d' in norm or 'sazba d25d' in norm:
+                  starts.append(idx)
+          print('D25D_STARTS', [x+1 for x in starts])
+          if len(starts) != 1:
+              raise SystemExit(f'expected exactly one D25d section, got {starts}')
+          start=starts[0]
+          stop=min(len(rows), start+40)
+          for i in range(start, stop):
+              first='' if not rows[i] or rows[i][0] is None else str(rows[i][0])
+              norm=' '.join(first.replace('\xa0',' ').split()).lower()
+              if i > start and norm.startswith('sazba '):
+                  stop=i
+                  break
+          for i in range(start, stop):
+              vals=['' if v is None else str(v) for v in rows[i][:8]]
+              print(f'D25D {i+1}:', ' | '.join(vals))
           PY
-      - name: Inspect current non-distribution regulated measures
+      - name: Inspect amendment 1 2026 exact replacements
         run: |
           python - <<'PY'
           from pypdf import PdfReader
           import re
-          for path in ('/tmp/erv172025.pdf','/tmp/erv192025.pdf','/tmp/erv022026.pdf'):
-              print('\n===== PDF', path, '=====')
-              reader=PdfReader(path, strict=False)
-              text='\n'.join((p.extract_text() or '') for p in reader.pages)
-              print('pages', len(reader.pages), 'chars', len(text))
-              lines=[re.sub(r'\s+',' ',x).strip() for x in text.splitlines()]
-              keys=('systémov','nesíť','nesit','operátora trhu','operatora trhu','podporované zdroje','podporovanych zdroju','odchylek','zúčtování','zuctovani','elektřiny odebrané','elektriny odebrane')
-              for i,line in enumerate(lines):
-                  low=line.lower()
-                  if any(k in low for k in keys):
-                      lo=max(0,i-2); hi=min(len(lines),i+4)
-                      print('CTX', ' || '.join(lines[lo:hi]))
+          text='\n'.join((p.extract_text() or '') for p in PdfReader('/tmp/erv022026.pdf', strict=False).pages)
+          lines=[re.sub(r'\s+',' ',x).strip() for x in text.splitlines() if x.strip()]
+          print('AMENDMENT_TEXT_BEGIN')
+          for i,line in enumerate(lines):
+              low=line.lower()
+              if any(k in low for k in ('nahrazuje','nahrazují','zní','účinnost','164,24','12,87','systémové služby','nesíťové infrastruktury','podporu elektřiny')):
+                  lo=max(0,i-2); hi=min(len(lines),i+5)
+                  print(f'AMEND {i}:', ' || '.join(lines[lo:hi]))
+          print('AMENDMENT_TEXT_END')
           PY
