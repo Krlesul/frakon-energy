@@ -94,7 +94,6 @@ def test_default_settlement_date_is_next_31_january() -> None:
     assert billing.next_default_settlement_date(date(2026, 2, 1)) == date(2027, 1, 31)
 
 
-
 def test_primary_entry_websocket_is_loaded_visionq_authority() -> None:
     source = (ROOT / "technology_profile_ws_api.py").read_text(encoding="utf-8")
     assert 'COMMAND_PRIMARY_ENTRY = "frakon_energy/entry/primary"' in source
@@ -108,3 +107,16 @@ def test_entity_discovery_missing_runtime_has_actionable_websocket_error() -> No
     source = (ROOT / "entity_discovery_ws_api.py").read_text(encoding="utf-8")
     assert "entity_discovery_runtime_unavailable" in source
     assert "_send_runtime_error" in source
+
+
+def test_commissioning_form_uses_canonical_string_phase_values() -> None:
+    source = (ROOT / "config_flow.py").read_text(encoding="utf-8")
+    assert 'vol.In({"1": "1", "3": "3"})' in source
+    assert "default=str(defaults[CONF_CONTRACT_BREAKER_PHASES])" in source
+    assert 'CONF_CONTRACT_BREAKER_PHASES: "3"' in source
+
+
+def test_billing_advance_cannot_outlive_its_settlement_cycle() -> None:
+    source = (ROOT / "config_flow.py").read_text(encoding="utf-8")
+    assert "advance_end_after_settlement" in source
+    assert "advance_to > settlement" in source
