@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
-import type { HomeAssistant } from "./home-assistant";
+import { findFrakonEnergyEntryId, type HomeAssistant } from "./home-assistant";
 
-type ConfigEntry = { entry_id: string; domain?: string };
 type WsConnection = { sendMessagePromise?: <T>(message: Record<string, unknown>) => Promise<T> };
 
 type SettlementLifecycleStatus = {
@@ -34,9 +33,13 @@ async function callWs<T>(hass: HomeAssistant, message: Record<string, unknown>):
   return connection.sendMessagePromise<T>(message);
 }
 
-async function findEntry(hass: HomeAssistant): Promise<ConfigEntry | null> {
-  const entries = await callWs<ConfigEntry[]>(hass, { type: "config_entries/get" });
-  return entries.find((entry) => entry.domain === "frakon_energy") ?? null;
+function errorMessage(reason: unknown, fallback: string): string {
+  if (reason instanceof Error && reason.message) return reason.message;
+  if (typeof reason === "object" && reason !== null && "message" in reason) {
+    const message = String((reason as { message?: unknown }).message ?? "");
+    if (message) return message;
+  }
+  return fallback;
 }
 
 function statusLabel(status: SettlementLifecycleStatus["status"]): string {
@@ -63,19 +66,19 @@ export function PhaseSettlementStatus({ hass }: { hass?: HomeAssistant }) {
   const load = useCallback(async () => {
     if (!hass) return;
     try {
-      const entry = await findEntry(hass);
-      if (!entry) throw new Error("Nebyla nalezena položka integrace FRAKON Energy.");
+      const entryId = await findFrakonEnergyEntryId(hass);
+      if (!entryId) throw new Error("Nebyla nalezena aktivní VisionQ položka FRAKON Energy.");
       const safety = await callWs<ExecutionSafetyStatus>(hass, {
         type: "frakon_energy/load_execution/safety_status",
-        entry_id: entry.entry_id,
+        entry_id: entryId,
       });
       setRuntime(safety.phase_settlement_runtime ?? null);
       setError(null);
     } catch (reason) {
       setRuntime(null);
-      setError(reason instanceof Error ? reason.message : "Settlement runtime se nepodařilo načíst.");
+      setError(errorMessage(reason, "Settlement runtime se nepodařilo načíst."));
     }
-  }, [hass]);
+  }, [hass?.connection]);
 
   useEffect(() => {
     void load();
