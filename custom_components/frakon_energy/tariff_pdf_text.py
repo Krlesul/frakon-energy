@@ -44,7 +44,7 @@ class ExtractedTariffPdfText:
             raise ValueError("extracted tariff text must not be empty")
         if len(self.text) > MAX_TARIFF_EXTRACTED_TEXT_CHARS:
             raise ValueError("extracted tariff text exceeds maximum allowed size")
-        if self.extraction_method != "pypdf_layout":
+        if self.extraction_method not in {"pypdf_layout", "pypdf_plain_fallback"}:
             raise ValueError("unsupported tariff PDF extraction method")
         if self.parser_authorized is not True:
             raise ValueError("extracted tariff text must remain parser-authorized")
@@ -115,18 +115,37 @@ def extract_validated_tariff_pdf_text(
 
     extracted_pages: list[str] = []
     text_chars = 0
+    plain_fallback_used = False
     for page in reader.pages:
+        layout_error: Exception | None = None
         try:
             page_text = page.extract_text(
                 extraction_mode="layout",
                 layout_mode_space_vertically=False,
             )
         except Exception as err:
-            raise ValueError("tariff PDF text extraction failed") from err
+            layout_error = err
+            page_text = ""
         if page_text is None:
             page_text = ""
         if not isinstance(page_text, str):
             raise ValueError("tariff PDF extractor returned invalid text")
+
+        if not page_text.strip():
+            try:
+                plain_text = page.extract_text()
+            except Exception as err:
+                if layout_error is not None:
+                    raise ValueError("tariff PDF text extraction failed in layout and plain modes") from err
+                raise ValueError("tariff PDF plain-text fallback extraction failed") from err
+            if plain_text is None:
+                plain_text = ""
+            if not isinstance(plain_text, str):
+                raise ValueError("tariff PDF plain-text extractor returned invalid text")
+            if plain_text.strip():
+                page_text = plain_text
+                plain_fallback_used = True
+
         page_text = page_text.strip()
         if not page_text:
             continue
@@ -145,4 +164,7 @@ def extract_validated_tariff_pdf_text(
         document_sha256=download.document.sha256 or "",
         page_count=page_count,
         text=text,
+        extraction_method=(
+            "pypdf_plain_fallback" if plain_fallback_used else "pypdf_layout"
+        ),
     )

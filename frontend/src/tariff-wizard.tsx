@@ -149,6 +149,22 @@ function readableError(error: unknown): string {
   return "Nepodařilo se dokončit požadavek.";
 }
 
+const TARIFF_PREVIEW_REQUEST_TIMEOUT_MS = 45_000;
+
+async function withRequestTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: number | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = window.setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) window.clearTimeout(timer);
+  }
+}
+
 function contractPayload(draft: WizardDraft, product: TariffProduct): Record<string, unknown> {
   const fixed = product.contract_kind === "fixed";
   return {
@@ -388,13 +404,17 @@ export function TariffSetupWizard({ hass }: { hass?: HomeAssistant }) {
     setPricePreview(null);
     setPricePreviewError(null);
     try {
-      const response = await callHomeAssistantWs<TariffParsePreviewResponse>(hass, {
-        type: "frakon_energy/tariff/parse_preview",
-        entry_id: entryId,
-        contract: contractPayload(draft, selectedProduct),
-        day: draft.discoveryDay,
-        candidate_fingerprint: candidate.fingerprint,
-      });
+      const response = await withRequestTimeout(
+        callHomeAssistantWs<TariffParsePreviewResponse>(hass, {
+          type: "frakon_energy/tariff/parse_preview",
+          entry_id: entryId,
+          contract: contractPayload(draft, selectedProduct),
+          day: draft.discoveryDay,
+          candidate_fingerprint: candidate.fingerprint,
+        }),
+        TARIFF_PREVIEW_REQUEST_TIMEOUT_MS,
+        "Načtení a ověření ceníku překročilo 45 sekund. Požadavek byl ukončen; zkus jej znovu.",
+      );
       if (reviewRevision.current !== revision) return;
       if (response.candidate_fingerprint !== candidate.fingerprint) {
         throw new Error("Backend vrátil náhled pro jiný fingerprint ceníku.");

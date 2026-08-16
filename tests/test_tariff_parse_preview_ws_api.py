@@ -33,6 +33,7 @@ def load_module(*, fetch_mode="success", parser_mode="success"):
         "custom_components.frakon_energy.tariff_http_ha",
         "custom_components.frakon_energy.tariff_parser_preview",
         "custom_components.frakon_energy.tariff_pdf_text",
+        "custom_components.frakon_energy.tariff_source_context",
         "custom_components.frakon_energy.tariff_parse_preview_ws_api",
         "homeassistant",
         "homeassistant.components",
@@ -96,6 +97,8 @@ def load_module(*, fetch_mode="success", parser_mode="success"):
         hass, *, candidate, request, checked_at
     ):
         fetch_calls.append((hass, candidate, request, checked_at))
+        if fetch_mode == "slow":
+            await asyncio.sleep(0.05)
         if fetch_mode == "error":
             raise RuntimeError("network unavailable")
         if fetch_mode == "not_modified":
@@ -147,6 +150,11 @@ def load_module(*, fetch_mode="success", parser_mode="success"):
 
     pdf_text.extract_validated_tariff_pdf_text = extract_validated_tariff_pdf_text
     sys.modules[pdf_text.__name__] = pdf_text
+
+    _load(
+        "custom_components.frakon_energy.tariff_source_context",
+        "custom_components/frakon_energy/tariff_source_context.py",
+    )
 
     parser_calls = []
     parser_preview = types.ModuleType(
@@ -272,13 +280,16 @@ class ConfigEntries:
 
 
 class Hass:
-    def __init__(self, entry, registry):
+    def __init__(self, entry, registry, *, executor_delay=0.0):
         self.data = {"frakon_energy": {"tariff_adapter_registry": registry}}
         self.config_entries = ConfigEntries(entry)
         self.executor_calls = []
+        self.executor_delay = executor_delay
 
     async def async_add_executor_job(self, target, *args):
         self.executor_calls.append((target, args))
+        if self.executor_delay:
+            await asyncio.sleep(self.executor_delay)
         return target(*args)
 
 
@@ -442,6 +453,43 @@ def test_not_modified_without_cached_pdf_fails_before_parser_executor() -> None:
     assert fetch_calls[0][2].headers_dict()["If-None-Match"] == '"etag-0"'
     assert connection.errors[0][1] == "not_modified_without_cached_document"
     assert hass.executor_calls == []
+    assert extraction_calls == []
+    assert parser_calls == []
+
+
+def test_download_timeout_is_explicit_and_never_reaches_parser() -> None:
+    ws, contracts, sources, selection, _discovery, registered, fetch_calls, extraction_calls, parser_calls, _content = load_module(fetch_mode="slow")
+    adapter = Adapter(sources)
+    hass = Hass(_entry(), _registry(sources, adapter))
+    connection = Connection()
+    fingerprint = selection.tariff_candidate_selection_fingerprint(adapter.candidate)
+    ws.TARIFF_PARSE_DOWNLOAD_DEADLINE_SECONDS = 0.001
+    ws.async_register_tariff_parse_preview_websocket(hass)
+
+    asyncio.run(registered[0](hass, connection, _message(ws, contracts, fingerprint)))
+
+    assert len(fetch_calls) == 1
+    assert connection.results == []
+    assert connection.errors[0][1] == "download_timeout"
+    assert hass.executor_calls == []
+    assert extraction_calls == []
+    assert parser_calls == []
+
+
+def test_parser_executor_timeout_is_explicit_and_request_finishes() -> None:
+    ws, contracts, sources, selection, _discovery, registered, _fetch_calls, extraction_calls, parser_calls, _content = load_module()
+    adapter = Adapter(sources)
+    hass = Hass(_entry(), _registry(sources, adapter), executor_delay=0.05)
+    connection = Connection()
+    fingerprint = selection.tariff_candidate_selection_fingerprint(adapter.candidate)
+    ws.TARIFF_PARSE_EXECUTOR_DEADLINE_SECONDS = 0.001
+    ws.async_register_tariff_parse_preview_websocket(hass)
+
+    asyncio.run(registered[0](hass, connection, _message(ws, contracts, fingerprint)))
+
+    assert connection.results == []
+    assert connection.errors[0][1] == "parse_timeout"
+    assert len(hass.executor_calls) == 1
     assert extraction_calls == []
     assert parser_calls == []
 
