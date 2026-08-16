@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any, Mapping
 
 import voluptuous as vol
@@ -10,13 +11,16 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
+from .cz_regulated_2026_catalog import official_2026_regulated_inputs
 from .regulated_proposals import (
+    RegulatedTariffProposal,
     append_regulated_tariff_proposal,
     confirm_regulated_tariff_proposal,
     regulated_tariff_proposal_from_payload,
 )
 
 COMMAND_REGULATED_TARIFF_PROPOSE = "frakon_energy/tariff/regulated/propose"
+COMMAND_REGULATED_TARIFF_OFFICIAL_PROPOSE = "frakon_energy/tariff/regulated/official_propose"
 COMMAND_REGULATED_TARIFF_CONFIRM = "frakon_energy/tariff/regulated/confirm"
 _REGISTERED_KEY = "regulated_tariff_proposals_websocket_registered"
 
@@ -35,6 +39,15 @@ def _entry_or_error(
         )
         return None
     return entry
+
+
+def _day_from_message(value: Any) -> date:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("day must be an ISO-8601 date")
+    try:
+        return date.fromisoformat(value)
+    except ValueError as err:
+        raise ValueError("day must be an ISO-8601 date") from err
 
 
 @callback
@@ -93,6 +106,74 @@ def async_register_regulated_tariff_proposals_websocket(hass: HomeAssistant) -> 
 
     @websocket_api.websocket_command(
         {
+            vol.Required("type"): COMMAND_REGULATED_TARIFF_OFFICIAL_PROPOSE,
+            vol.Required("entry_id"): str,
+            vol.Required("distributor"): str,
+            vol.Required("distribution_tariff"): str,
+            vol.Required("breaker_code"): str,
+            vol.Required("day"): str,
+        }
+    )
+    @websocket_api.require_admin
+    @websocket_api.async_response
+    async def websocket_regulated_tariff_official_propose(
+        hass: HomeAssistant,
+        connection: websocket_api.ActiveConnection,
+        msg: Mapping[str, Any],
+    ) -> None:
+        """Create a server-authored proposal from frozen official 2026 evidence.
+
+        The client supplies only tariff identity fields. Monetary values, source
+        URLs, checksums and validity are selected on the server and remain
+        unconfirmed until the separate fingerprint-only confirmation command.
+        """
+        entry = _entry_or_error(hass, connection, msg)
+        if entry is None:
+            return
+
+        try:
+            requested_day = _day_from_message(msg["day"])
+            inputs = official_2026_regulated_inputs(
+                distributor=str(msg["distributor"]),
+                distribution_tariff=str(msg["distribution_tariff"]),
+                breaker_code=str(msg["breaker_code"]),
+                day=requested_day,
+            )
+            proposal = RegulatedTariffProposal(
+                bundle=inputs.to_bundle(confirmed=False),
+                evidence=inputs.regulated_evidence(),
+                proposed_at=dt_util.now(),
+            )
+            updated = append_regulated_tariff_proposal(entry.options, proposal)
+        except LookupError as err:
+            connection.send_error(msg["id"], "official_regulated_tariff_not_available", str(err))
+            return
+        except (TypeError, ValueError) as err:
+            connection.send_error(msg["id"], "invalid_official_regulated_request", str(err))
+            return
+
+        changed = updated != dict(entry.options)
+        if changed:
+            hass.config_entries.async_update_entry(entry, options=updated)
+
+        connection.send_result(
+            msg["id"],
+            {
+                "entry_id": entry.entry_id,
+                "requested_day": requested_day.isoformat(),
+                "proposal_fingerprint": proposal.fingerprint,
+                "proposed_at": proposal.proposed_at.isoformat(),
+                "proposal": proposal.as_dict(),
+                "server_authored": True,
+                "source_authority": "official_2026_frozen",
+                "persistence_performed": changed,
+                "confirmation_performed": False,
+                "activation_performed": False,
+            },
+        )
+
+    @websocket_api.websocket_command(
+        {
             vol.Required("type"): COMMAND_REGULATED_TARIFF_CONFIRM,
             vol.Required("entry_id"): str,
             vol.Required("proposal_fingerprint"): str,
@@ -139,5 +220,6 @@ def async_register_regulated_tariff_proposals_websocket(hass: HomeAssistant) -> 
         )
 
     websocket_api.async_register_command(hass, websocket_regulated_tariff_propose)
+    websocket_api.async_register_command(hass, websocket_regulated_tariff_official_propose)
     websocket_api.async_register_command(hass, websocket_regulated_tariff_confirm)
     domain_data[_REGISTERED_KEY] = True

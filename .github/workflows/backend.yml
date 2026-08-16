@@ -144,6 +144,8 @@ jobs:
           tests/test_tariff_provenance.py
           tests/test_tariff_assembly.py
           tests/test_cz_regulated_sources.py
+          tests/test_cz_regulated_2026_catalog.py
+          tests/test_cez_d25d_2026_all_in_commissioning.py
           tests/test_all_in_catalog.py
           tests/test_all_in_authority.py
           tests/test_tariff_candidate_selection.py

@@ -17,11 +17,12 @@ def _load(name: str, path: str):
     return module
 
 
-def load_module(*, confirm_mode="success", propose_mode="success"):
+def load_module(*, confirm_mode="success", propose_mode="success", official_mode="success"):
     names = (
         "custom_components",
         "custom_components.frakon_energy",
         "custom_components.frakon_energy.const",
+        "custom_components.frakon_energy.cz_regulated_2026_catalog",
         "custom_components.frakon_energy.regulated_proposals",
         "custom_components.frakon_energy.regulated_proposals_ws_api",
         "homeassistant",
@@ -44,19 +45,56 @@ def load_module(*, confirm_mode="success", propose_mode="success"):
     sys.modules[const.__name__] = const
 
     calls = []
+
+    class Inputs:
+        def __init__(self, distributor, tariff, breaker, day):
+            self.distributor = distributor
+            self.tariff = tariff
+            self.breaker = breaker
+            self.day = day
+
+        def to_bundle(self, *, confirmed=False):
+            assert confirmed is False
+            return {
+                "distributor": self.distributor,
+                "distribution_tariff": self.tariff,
+                "breaker_code": self.breaker,
+                "confirmed": False,
+            }
+
+        def regulated_evidence(self):
+            return ({"scope": "regulated", "source": "official"},)
+
+    official = types.ModuleType("custom_components.frakon_energy.cz_regulated_2026_catalog")
+
+    def official_2026_regulated_inputs(*, distributor, distribution_tariff, breaker_code, day):
+        calls.append(("official_inputs", distributor, distribution_tariff, breaker_code, day))
+        if official_mode == "missing":
+            raise LookupError("official frozen regulated catalog does not yet cover this distribution tariff")
+        if official_mode == "invalid":
+            raise ValueError("invalid official regulated identity")
+        return Inputs(distributor, distribution_tariff, breaker_code, day)
+
+    official.official_2026_regulated_inputs = official_2026_regulated_inputs
+    sys.modules[official.__name__] = official
+
     proposals = types.ModuleType("custom_components.frakon_energy.regulated_proposals")
 
     class Proposal:
         fingerprint = "a" * 64
-        proposed_at = FIXED_NOW
+
+        def __init__(self, bundle=None, evidence=(), proposed_at=FIXED_NOW):
+            self.bundle = {"confirmed": False} if bundle is None else bundle
+            self.evidence = tuple(evidence)
+            self.proposed_at = proposed_at
 
         def as_dict(self):
             return {
                 "schema_version": 1,
                 "fingerprint": self.fingerprint,
                 "proposed_at": self.proposed_at.isoformat(),
-                "bundle": {"confirmed": False},
-                "evidence": [{"scope": "regulated"}],
+                "bundle": self.bundle,
+                "evidence": list(self.evidence),
             }
 
     class Version:
@@ -66,7 +104,7 @@ def load_module(*, confirm_mode="success", propose_mode="success"):
         calls.append(("build", bundle, evidence, proposed_at))
         if propose_mode == "invalid":
             raise ValueError("regulated proposal bundle must remain unconfirmed")
-        return Proposal()
+        return Proposal(bundle=bundle, evidence=evidence, proposed_at=proposed_at)
 
     def append_regulated_tariff_proposal(options, proposal):
         calls.append(("append", dict(options), proposal.fingerprint))
@@ -84,6 +122,7 @@ def load_module(*, confirm_mode="success", propose_mode="success"):
             return dict(options), Version()
         return {**dict(options), "confirmed_version": Version.fingerprint}, Version()
 
+    proposals.RegulatedTariffProposal = Proposal
     proposals.regulated_tariff_proposal_from_payload = regulated_tariff_proposal_from_payload
     proposals.append_regulated_tariff_proposal = append_regulated_tariff_proposal
     proposals.confirm_regulated_tariff_proposal = confirm_regulated_tariff_proposal
@@ -109,14 +148,11 @@ def load_module(*, confirm_mode="success", propose_mode="success"):
 
     def websocket_command(schema):
         schemas.append(schema)
-
-        def decorator(func):
-            return func
-
-        return decorator
+        return lambda func: func
 
     websocket_api.ActiveConnection = ActiveConnection
     websocket_api.websocket_command = websocket_command
+
     def require_admin(func):
         async def wrapped(hass, connection, msg):
             legacy = getattr(connection, "require_admin", None)
@@ -133,11 +169,7 @@ def load_module(*, confirm_mode="success", propose_mode="success"):
 
     core = types.ModuleType("homeassistant.core")
     core.callback = lambda func: func
-
-    class HomeAssistant:
-        pass
-
-    core.HomeAssistant = HomeAssistant
+    core.HomeAssistant = type("HomeAssistant", (), {})
     sys.modules["homeassistant.core"] = core
 
     util = types.ModuleType("homeassistant.util")
@@ -200,28 +232,29 @@ def _entry(*, domain="frakon_energy", options=None):
     )
 
 
-def test_registration_is_idempotent_and_confirm_schema_accepts_fingerprint_only() -> None:
+def test_registration_is_idempotent_and_confirmation_is_fingerprint_only() -> None:
     ws, registered, schemas, _calls = load_module()
     hass = Hass(_entry())
-
     ws.async_register_regulated_tariff_proposals_websocket(hass)
     ws.async_register_regulated_tariff_proposals_websocket(hass)
 
-    assert len(registered) == 2
-    assert len(schemas) == 2
+    assert len(registered) == 3
+    assert len(schemas) == 3
     assert set(schemas[0]) == {"type", "entry_id", "bundle", "evidence"}
-    assert set(schemas[1]) == {"type", "entry_id", "proposal_fingerprint"}
-    assert "bundle" not in schemas[1]
-    assert "evidence" not in schemas[1]
+    assert set(schemas[1]) == {
+        "type", "entry_id", "distributor", "distribution_tariff", "breaker_code", "day"
+    }
+    assert set(schemas[2]) == {"type", "entry_id", "proposal_fingerprint"}
+    for forbidden in ("bundle", "evidence", "price", "source_url"):
+        assert forbidden not in schemas[2]
 
 
-def test_propose_uses_server_time_persists_only_unconfirmed_proposal_and_never_activates() -> None:
+def test_manual_propose_uses_server_time_and_never_activates() -> None:
     ws, registered, _schemas, calls = load_module()
     entry = _entry()
     hass = Hass(entry)
     connection = Connection()
     ws.async_register_regulated_tariff_proposals_websocket(hass)
-
     message = {
         "id": 1,
         "type": ws.COMMAND_REGULATED_TARIFF_PROPOSE,
@@ -240,105 +273,102 @@ def test_propose_uses_server_time_persists_only_unconfirmed_proposal_and_never_a
     assert payload["persistence_performed"] is True
     assert payload["confirmation_performed"] is False
     assert payload["activation_performed"] is False
+
+
+def test_official_propose_accepts_identity_only_and_server_authors_all_prices_and_sources() -> None:
+    ws, registered, schemas, calls = load_module()
+    entry = _entry()
+    hass = Hass(entry)
+    connection = Connection()
+    ws.async_register_regulated_tariff_proposals_websocket(hass)
+    message = {
+        "id": 2,
+        "type": ws.COMMAND_REGULATED_TARIFF_OFFICIAL_PROPOSE,
+        "entry_id": "entry-1",
+        "distributor": "cez_distribuce",
+        "distribution_tariff": "D25d",
+        "breaker_code": "3x25A",
+        "day": "2026-08-16",
+    }
+    asyncio.run(registered[1](hass, connection, message))
+
+    assert connection.errors == []
+    assert set(schemas[1]) == set(message) - {"id"}
+    assert "bundle" not in schemas[1] and "evidence" not in schemas[1]
+    assert calls[0][0:4] == ("official_inputs", "cez_distribuce", "D25d", "3x25A")
+    payload = connection.results[0][1]
+    assert payload["server_authored"] is True
+    assert payload["source_authority"] == "official_2026_frozen"
+    assert payload["persistence_performed"] is True
+    assert payload["confirmation_performed"] is False
+    assert payload["activation_performed"] is False
     assert payload["proposal"]["bundle"]["confirmed"] is False
 
 
-def test_repeated_propose_and_repeated_confirm_do_not_churn_options() -> None:
+def test_official_propose_fails_closed_for_unsupported_identity_without_write() -> None:
+    ws, registered, _schemas, _calls = load_module(official_mode="missing")
+    hass = Hass(_entry())
+    connection = Connection()
+    ws.async_register_regulated_tariff_proposals_websocket(hass)
+    asyncio.run(registered[1](hass, connection, {
+        "id": 3,
+        "type": ws.COMMAND_REGULATED_TARIFF_OFFICIAL_PROPOSE,
+        "entry_id": "entry-1",
+        "distributor": "cez_distribuce",
+        "distribution_tariff": "D57d",
+        "breaker_code": "3x25A",
+        "day": "2026-08-16",
+    }))
+
+    assert connection.errors[0][1] == "official_regulated_tariff_not_available"
+    assert hass.config_entries.updates == []
+
+
+def test_repeated_propose_and_confirm_do_not_churn_options() -> None:
     ws, registered, _schemas, _calls = load_module()
     entry = _entry(options={"proposal_saved": "a" * 64, "confirmed_version": "b" * 64})
     hass = Hass(entry)
     connection = Connection()
     ws.async_register_regulated_tariff_proposals_websocket(hass)
-
-    propose = {
-        "id": 2,
-        "type": ws.COMMAND_REGULATED_TARIFF_PROPOSE,
-        "entry_id": "entry-1",
-        "bundle": {"confirmed": False},
-        "evidence": [{"scope": "regulated"}],
-    }
-    confirm = {
-        "id": 3,
-        "type": ws.COMMAND_REGULATED_TARIFF_CONFIRM,
-        "entry_id": "entry-1",
+    asyncio.run(registered[0](hass, connection, {
+        "id": 4, "type": ws.COMMAND_REGULATED_TARIFF_PROPOSE, "entry_id": "entry-1",
+        "bundle": {"confirmed": False}, "evidence": [{"scope": "regulated"}],
+    }))
+    asyncio.run(registered[2](hass, connection, {
+        "id": 5, "type": ws.COMMAND_REGULATED_TARIFF_CONFIRM, "entry_id": "entry-1",
         "proposal_fingerprint": "a" * 64,
-    }
-    asyncio.run(registered[0](hass, connection, propose))
-    asyncio.run(registered[1](hass, connection, confirm))
+    }))
 
     assert hass.config_entries.updates == []
     assert connection.results[0][1]["persistence_performed"] is False
     assert connection.results[1][1]["persistence_performed"] is False
     assert connection.results[1][1]["confirmation_performed"] is False
     assert connection.results[1][1]["confirmed"] is True
-    assert connection.results[1][1]["activation_performed"] is False
 
 
-def test_confirmation_updates_only_from_stored_fingerprint_and_never_accepts_price_payload() -> None:
+def test_confirmation_updates_only_from_stored_fingerprint_and_errors_do_not_write() -> None:
     ws, registered, schemas, calls = load_module()
     entry = _entry(options={"proposal_saved": "a" * 64})
     hass = Hass(entry)
     connection = Connection()
     ws.async_register_regulated_tariff_proposals_websocket(hass)
-
     message = {
-        "id": 4,
+        "id": 6,
         "type": ws.COMMAND_REGULATED_TARIFF_CONFIRM,
         "entry_id": "entry-1",
         "proposal_fingerprint": "a" * 64,
     }
-    asyncio.run(registered[1](hass, connection, message))
-
-    assert set(schemas[1]) == {"type", "entry_id", "proposal_fingerprint"}
+    asyncio.run(registered[2](hass, connection, message))
+    assert set(schemas[2]) == {"type", "entry_id", "proposal_fingerprint"}
     assert calls[-1] == ("confirm", {"proposal_saved": "a" * 64}, "a" * 64)
-    assert len(hass.config_entries.updates) == 1
-    payload = connection.results[0][1]
-    assert payload["regulated_version_fingerprint"] == "b" * 64
-    assert payload["confirmed"] is True
-    assert payload["confirmation_performed"] is True
-    assert payload["activation_performed"] is False
+    assert connection.results[0][1]["regulated_version_fingerprint"] == "b" * 64
+    assert connection.results[0][1]["activation_performed"] is False
 
-
-def test_invalid_or_unknown_confirmation_and_wrong_entry_fail_without_write() -> None:
-    for mode, expected_code in (
-        ("missing", "regulated_proposal_not_found"),
-        ("invalid", "regulated_confirmation_failed"),
-    ):
-        ws, registered, _schemas, _calls = load_module(confirm_mode=mode)
-        hass = Hass(_entry(options={"proposal_saved": "a" * 64}))
-        connection = Connection()
-        ws.async_register_regulated_tariff_proposals_websocket(hass)
-        asyncio.run(
-            registered[1](
-                hass,
-                connection,
-                {
-                    "id": 5,
-                    "type": ws.COMMAND_REGULATED_TARIFF_CONFIRM,
-                    "entry_id": "entry-1",
-                    "proposal_fingerprint": "a" * 64,
-                },
-            )
-        )
-        assert connection.errors[0][1] == expected_code
-        assert hass.config_entries.updates == []
-
-    ws, registered, _schemas, calls = load_module()
-    hass = Hass(_entry(domain="other_domain"))
-    connection = Connection()
-    ws.async_register_regulated_tariff_proposals_websocket(hass)
-    asyncio.run(
-        registered[1](
-            hass,
-            connection,
-            {
-                "id": 6,
-                "type": ws.COMMAND_REGULATED_TARIFF_CONFIRM,
-                "entry_id": "entry-1",
-                "proposal_fingerprint": "a" * 64,
-            },
-        )
-    )
-    assert connection.errors[0][1] == "entry_not_found"
-    assert calls == []
-    assert hass.config_entries.updates == []
+    for mode, expected_code in (("missing", "regulated_proposal_not_found"), ("invalid", "regulated_confirmation_failed")):
+        ws2, registered2, _schemas2, _calls2 = load_module(confirm_mode=mode)
+        hass2 = Hass(_entry(options={"proposal_saved": "a" * 64}))
+        connection2 = Connection()
+        ws2.async_register_regulated_tariff_proposals_websocket(hass2)
+        asyncio.run(registered2[2](hass2, connection2, message))
+        assert connection2.errors[0][1] == expected_code
+        assert hass2.config_entries.updates == []

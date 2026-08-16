@@ -6,6 +6,8 @@ let revision = 0;
 let busy = false;
 let currentProposal = null;
 let currentConfirmation = null;
+let currentRegulatedProposal = null;
+let currentRegulatedConfirmation = null;
 
 function hassObject() {
   return window.__FRAKON_ENERGY_HASS__ ?? window.hass;
@@ -29,6 +31,11 @@ function readableError(error) {
     if (typeof error.error === "string") return error.error;
   }
   return "Požadavek se nepodařilo bezpečně dokončit.";
+}
+
+function errorCode(error) {
+  if (error && typeof error === "object" && typeof error.code === "string") return error.code;
+  return null;
 }
 
 function text(tag, className, value) {
@@ -233,6 +240,8 @@ function removeRoot() {
   bridgeRoot()?.remove();
   currentProposal = null;
   currentConfirmation = null;
+  currentRegulatedProposal = null;
+  currentRegulatedConfirmation = null;
   busy = false;
 }
 
@@ -257,7 +266,7 @@ function addLabelValue(parent, label, value, className = "") {
 
 function renderIdle() {
   const root = ensureRoot();
-  if (!root || busy || currentProposal) return;
+  if (!root || busy || currentProposal || currentRegulatedProposal) return;
   root.replaceChildren();
 
   const panel = text("div", "frakon-confirm__panel", "");
@@ -337,6 +346,144 @@ function sourceBox(title, url, checksum) {
   if (link) block.append(link);
   block.append(text("code", "", checksum ? `SHA-256 ${checksum}` : "Zdroj bez checksumu"));
   return block;
+}
+
+
+function rawRegulatedComponentList(title, components, fixed = false) {
+  const block = text("div", "frakon-confirm__component-block", "");
+  block.append(text("h4", "", title));
+  const list = text("div", "frakon-confirm__component-list", "");
+  for (const component of components) {
+    const row = text("div", "", "");
+    row.append(text("span", "", component?.name ?? component?.kind ?? "Složka"));
+    const value = fixed
+      ? `${component?.monthly_czk ?? "—"} Kč/měsíc bez DPH`
+      : `VT ${component?.high_rate_czk_per_kwh ?? "—"} · NT ${component?.low_rate_czk_per_kwh ?? "—"} Kč/kWh bez DPH`;
+    row.append(text("b", "", value));
+    list.append(row);
+  }
+  block.append(list);
+  return block;
+}
+
+function renderRegulatedProposal() {
+  const root = ensureRoot();
+  if (!root || !currentRegulatedProposal) return;
+  root.replaceChildren();
+  const { response, context } = currentRegulatedProposal;
+  const proposal = response.proposal;
+  const bundle = proposal.bundle;
+
+  const panel = text("div", "frakon-confirm__panel", "");
+  const header = text("div", "frakon-confirm__header", "");
+  const heading = text("div", "", "");
+  heading.append(
+    text("span", "frakon-confirm__eyebrow", "Krok 4A · oficiální regulovaná část"),
+    text("h3", "", "Ověřená regulovaná cena čeká na potvrzení"),
+  );
+  header.append(heading, text("span", "frakon-confirm__badge pending", "Aktivace stále zamčená"));
+  panel.append(header);
+
+  const lead = text(
+    "p",
+    "frakon-confirm__lead",
+    "Tyto hodnoty sestavil server z oficiálních zdrojů pro přesnou distribuční sazbu, jistič a datum. Zobrazené regulované částky jsou bez DPH; DPH se přičte až při serverovém sestavení kompletní all-in ceny.",
+  );
+  panel.append(lead);
+
+  const identity = text("div", "frakon-confirm__context", "");
+  addLabelValue(identity, "Distributor", bundle.distributor);
+  addLabelValue(identity, "Sazba", bundle.distribution_tariff);
+  addLabelValue(identity, "Jistič", bundle.breaker_code);
+  addLabelValue(identity, "Platnost", `${bundle.valid_from} → ${bundle.valid_to ?? "bez konce"}`);
+  addLabelValue(identity, "Ověřeno k datu", context.day);
+  addLabelValue(identity, "Fingerprint", `${response.proposal_fingerprint.slice(0, 12)}…`);
+  panel.append(identity);
+
+  const components = text("div", "frakon-confirm__components", "");
+  components.append(
+    rawRegulatedComponentList("Regulované proměnné složky", bundle.variable_components ?? [], false),
+    rawRegulatedComponentList("Regulované měsíční složky", bundle.fixed_components ?? [], true),
+  );
+  panel.append(components);
+
+  const evidence = text("div", "frakon-confirm__sources", "");
+  for (const item of proposal.evidence ?? []) {
+    evidence.append(sourceBox(item.document_name ?? item.source_name ?? "Oficiální zdroj", item.source_url, item.checksum));
+  }
+  panel.append(evidence);
+
+  const safety = text("div", "frakon-confirm__confirm", "");
+  const copy = text("div", "", "");
+  copy.append(
+    text("b", "", "Explicitní potvrzení regulované verze"),
+    text("span", "", "Do potvrzení se neposílají ceny, zdroje ani komponenty. Odesílá se pouze fingerprint serverově uloženého návrhu. Tímto krokem se ještě neaktivuje zákaznický tarif."),
+  );
+  const button = text("button", "frakon-confirm__confirm-button", busy ? "Potvrzuji regulovanou část…" : "Potvrdit ověřenou regulovanou část");
+  button.type = "button";
+  button.disabled = busy;
+  button.addEventListener("click", confirmRegulatedProposal);
+  safety.append(copy, button);
+  panel.append(safety);
+  root.append(panel);
+}
+
+function validateRegulatedProposalResponse(response, context) {
+  if (!response || typeof response !== "object" || !response.proposal) {
+    throw new Error("Backend nevrátil oficiální regulovaný proposal.");
+  }
+  if (response.entry_id !== context.entryId) throw new Error("Regulovaný proposal patří jiné konfiguraci.");
+  if (response.requested_day !== context.day) throw new Error("Regulovaný proposal byl vytvořen pro jiné datum.");
+  if (response.server_authored !== true || response.source_authority !== "official_2026_frozen") {
+    throw new Error("Regulovaná cena nebyla sestavena serverem z podporovaného oficiálního katalogu.");
+  }
+  if (response.confirmation_performed !== false || response.activation_performed !== false) {
+    throw new Error("Nepotvrzený regulovaný proposal nesmí provést potvrzení ani aktivaci.");
+  }
+  if (typeof response.persistence_performed !== "boolean") {
+    throw new Error("Regulovaný proposal nemá jednoznačný stav persistence.");
+  }
+  if (typeof response.proposal_fingerprint !== "string" || !/^[0-9a-f]{64}$/.test(response.proposal_fingerprint)) {
+    throw new Error("Regulovaný proposal má neplatný fingerprint.");
+  }
+  const proposal = response.proposal;
+  const bundle = proposal.bundle;
+  if (!bundle || typeof bundle !== "object" || bundle.confirmed !== false) {
+    throw new Error("Regulovaný proposal musí zůstat nepotvrzený.");
+  }
+  if (proposal.fingerprint !== response.proposal_fingerprint) throw new Error("Regulovaný proposal změnil fingerprint.");
+  if (bundle.distributor !== context.contract.distributor) throw new Error("Regulovaný distributor neodpovídá smlouvě.");
+  if (bundle.distribution_tariff !== context.contract.distribution_tariff) throw new Error("Regulovaná sazba neodpovídá smlouvě.");
+  const breakerCode = `${context.contract.breaker.phases}x${context.contract.breaker.amperes}A`;
+  if (bundle.breaker_code !== breakerCode) throw new Error("Regulovaný jistič neodpovídá smlouvě.");
+  if (typeof bundle.valid_from !== "string" || bundle.valid_from > context.day || (bundle.valid_to && bundle.valid_to < context.day)) {
+    throw new Error("Regulovaný proposal nepokrývá zvolené datum.");
+  }
+  if (!Array.isArray(bundle.variable_components) || bundle.variable_components.length === 0) {
+    throw new Error("Regulovaný proposal nemá proměnné cenové složky.");
+  }
+  if (!Array.isArray(bundle.fixed_components) || bundle.fixed_components.length === 0) {
+    throw new Error("Regulovaný proposal nemá fixní cenové složky.");
+  }
+  if (!Array.isArray(proposal.evidence) || proposal.evidence.length === 0 || proposal.evidence.some((item) => item?.scope !== "regulated")) {
+    throw new Error("Regulovaný proposal nemá úplnou regulovanou provenance.");
+  }
+}
+
+function validateRegulatedConfirmation(response, regulatedProposal) {
+  if (!response || typeof response !== "object" || response.confirmed !== true) {
+    throw new Error("Backend nepotvrdil regulovanou verzi.");
+  }
+  if (response.entry_id !== regulatedProposal.entryId) throw new Error("Potvrzení regulace patří jiné konfiguraci.");
+  if (response.proposal_fingerprint !== regulatedProposal.response.proposal_fingerprint) {
+    throw new Error("Potvrzení regulace změnilo proposal fingerprint.");
+  }
+  if (typeof response.regulated_version_fingerprint !== "string" || !/^[0-9a-f]{64}$/.test(response.regulated_version_fingerprint)) {
+    throw new Error("Potvrzená regulovaná verze má neplatný fingerprint.");
+  }
+  if (response.activation_performed !== false) {
+    throw new Error("Potvrzení regulované části nesmí aktivovat zákaznický tarif.");
+  }
 }
 
 function renderProposal() {
@@ -474,28 +621,102 @@ function validateProposalResponse(response, context, discovery, candidate) {
   if (response.preview.product_name !== context.contract.product_name) throw new Error("All-in produkt neodpovídá smlouvě.");
 }
 
+async function requestCustomerProposal(context, discovery, candidate) {
+  const response = await callWs({
+    type: "frakon_energy/tariff/customer/propose",
+    entry_id: context.entryId,
+    contract: context.contract,
+    day: context.day,
+    candidate_fingerprint: candidate.fingerprint,
+  });
+  validateProposalResponse(response, context, discovery, candidate);
+  return response;
+}
+
+async function requestOfficialRegulatedProposal(context) {
+  const response = await callWs({
+    type: "frakon_energy/tariff/regulated/official_propose",
+    entry_id: context.entryId,
+    distributor: context.contract.distributor,
+    distribution_tariff: context.contract.distribution_tariff,
+    breaker_code: `${context.contract.breaker.phases}x${context.contract.breaker.amperes}A`,
+    day: context.day,
+  });
+  validateRegulatedProposalResponse(response, context);
+  return response;
+}
+
 async function prepareProposal() {
   if (busy || !pricePreview()) return;
   const startRevision = revision;
   busy = true;
   currentProposal = null;
   currentConfirmation = null;
+  currentRegulatedProposal = null;
+  currentRegulatedConfirmation = null;
   renderLoading("Ověřuji kompletní all-in návrh…", "Znovu načítám backend katalog, exact discovery, potvrzenou regulaci a oficiální dodavatelský dokument.");
   try {
     const context = await exactWizardContext();
     if (revision !== startRevision || !pricePreview()) return;
     const { discovery, candidate } = await rediscoverExactCandidate(context);
     if (revision !== startRevision || !pricePreview()) return;
+    try {
+      const response = await requestCustomerProposal(context, discovery, candidate);
+      if (revision !== startRevision || !pricePreview()) return;
+      currentProposal = { response, entryId: context.entryId };
+      busy = false;
+      renderProposal();
+      bridgeRoot()?.scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    } catch (error) {
+      if (errorCode(error) !== "regulated_tariff_not_available") throw error;
+    }
+
+    renderLoading("Načítám oficiální regulovanou část…", "Pro tuto sazbu zatím není potvrzená regulovaná verze. Server sestavuje přesný proposal pouze z ověřeného 2026 katalogu.");
+    const regulatedResponse = await requestOfficialRegulatedProposal(context);
+    if (revision !== startRevision || !pricePreview()) return;
+    currentRegulatedProposal = {
+      response: regulatedResponse,
+      entryId: context.entryId,
+      context,
+      discovery,
+      candidate,
+      revision: startRevision,
+    };
+    busy = false;
+    renderRegulatedProposal();
+    bridgeRoot()?.scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (error) {
+    if (revision === startRevision) {
+      busy = false;
+      renderError(error);
+    }
+  }
+}
+
+async function confirmRegulatedProposal() {
+  if (busy || !currentRegulatedProposal || currentRegulatedConfirmation?.confirmed) return;
+  const regulatedProposal = currentRegulatedProposal;
+  const { context, discovery, candidate } = regulatedProposal;
+  const startRevision = regulatedProposal.revision;
+  const proposal = regulatedProposal.response;
+  const entryId = regulatedProposal.entryId;
+  busy = true;
+  renderRegulatedProposal();
+  try {
     const response = await callWs({
-      type: "frakon_energy/tariff/customer/propose",
-      entry_id: context.entryId,
-      contract: context.contract,
-      day: context.day,
-      candidate_fingerprint: candidate.fingerprint,
+      type: "frakon_energy/tariff/regulated/confirm",
+      entry_id: entryId,
+      proposal_fingerprint: proposal.proposal_fingerprint,
     });
     if (revision !== startRevision || !pricePreview()) return;
-    validateProposalResponse(response, context, discovery, candidate);
-    currentProposal = { response, entryId: context.entryId };
+    validateRegulatedConfirmation(response, regulatedProposal);
+    currentRegulatedConfirmation = response;
+    renderLoading("Regulovaná část potvrzena…", "Sestavuji finální all-in návrh z potvrzené regulace a stejného přesného ceníku dodavatele.");
+    const customerResponse = await requestCustomerProposal(context, discovery, candidate);
+    if (revision !== startRevision || !pricePreview()) return;
+    currentProposal = { response: customerResponse, entryId };
+    currentRegulatedProposal = null;
     busy = false;
     renderProposal();
     bridgeRoot()?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -568,6 +789,7 @@ function syncBridge() {
   }
   ensureRoot();
   if (currentProposal) renderProposal();
+  else if (currentRegulatedProposal) renderRegulatedProposal();
   else if (!busy && !bridgeRoot()?.hasChildNodes()) renderIdle();
 }
 
