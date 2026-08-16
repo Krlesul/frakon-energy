@@ -1,0 +1,73 @@
+name: Temporary Core Tariff Visibility Fix
+
+on:
+  push:
+    branches:
+      - agent/keep-core-tariff-hdo-visible
+
+permissions:
+  contents: write
+
+jobs:
+  fix-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: agent/keep-core-tariff-hdo-visible
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Remove technology-driven hiding of core tariff UI
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          css_path = Path('frontend/src/technology-overview.css')
+          css = css_path.read_text(encoding='utf-8')
+          forbidden = (
+              '.frakon-no-tariff .tariff-card,.frakon-no-tariff .hdo-plan-card{display:none!important}'
+              '.frakon-no-tariff .hero-grid{grid-template-columns:1fr}'
+              '.frakon-no-tariff .bottom-nav button:nth-child(3){display:none}'
+          )
+          if forbidden not in css:
+              raise SystemExit('Expected legacy tariff-hiding CSS block was not found')
+          css_path.write_text(css.replace(forbidden, ''), encoding='utf-8')
+
+          contract_path = Path('frontend/scripts/check-runtime-live-data-contract.mjs')
+          contract = contract_path.read_text(encoding='utf-8')
+          marker = 'const spotSettings = read("src/spot-price-settings.tsx");\n'
+          guard = '''const technologyOverviewCss = read("src/technology-overview.css");\nfor (const forbidden of [\n  ".frakon-no-tariff .tariff-card",\n  ".frakon-no-tariff .hdo-plan-card",\n  ".frakon-no-tariff .bottom-nav button:nth-child(3)",\n]) {\n  if (technologyOverviewCss.includes(forbidden)) {\n    throw new Error(`Core tariff/HDO UI must never be hidden by technology discovery: ${forbidden}`);\n  }\n}\n\n'''
+          if guard not in contract:
+              if marker not in contract:
+                  raise SystemExit('Runtime contract insertion marker missing')
+              contract = contract.replace(marker, guard + marker)
+              contract_path.write_text(contract, encoding='utf-8')
+          PY
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm install
+      - name: Run runtime commissioning contract
+        working-directory: frontend
+        run: node scripts/check-runtime-live-data-contract.mjs
+      - name: Type-check and build
+        working-directory: frontend
+        run: npm run build
+      - name: Package dashboard inside integration
+        run: |
+          rm -rf custom_components/frakon_energy/frontend_app
+          mkdir -p custom_components/frakon_energy/frontend_app
+          cp -R frontend/dist/. custom_components/frakon_energy/frontend_app/
+          test -f custom_components/frakon_energy/frontend_app/index.html
+      - name: Commit generated fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add frontend/src/technology-overview.css frontend/scripts/check-runtime-live-data-contract.mjs custom_components/frakon_energy/frontend_app
+          if git diff --cached --quiet; then
+            echo "No generated changes"
+            exit 0
+          fi
+          git commit -m "Keep core tariff and HDO UI visible"
+          git push origin HEAD:agent/keep-core-tariff-hdo-visible
