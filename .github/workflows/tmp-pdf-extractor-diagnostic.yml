@@ -1,0 +1,47 @@
+name: Temporary Live PDF Extractor Diagnostic
+
+on:
+  push:
+    branches:
+      - agent/fix-tariff-preview-timeout
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install extractors
+        run: python -m pip install -q pypdf==6.14.2 pdfminer.six==20250506 pymupdf==1.26.3
+      - name: Download exact CEZ document
+        run: curl --fail --location --max-time 25 --output /tmp/cez.pdf 'https://www.cez.cz/file/edee/2025/10/x01_moo_ee_na_dobu_neurcitou.pdf'
+      - name: Compare extraction
+        run: |
+          python - <<'PY'
+          from io import StringIO
+          from pathlib import Path
+          from pypdf import PdfReader
+          from pdfminer.high_level import extract_text
+          import fitz
+
+          path = '/tmp/cez.pdf'
+          reader = PdfReader(path, strict=False)
+          for mode in ('layout', 'plain'):
+              if mode == 'layout':
+                  text = reader.pages[0].extract_text(extraction_mode='layout', layout_mode_space_vertically=False) or ''
+              else:
+                  text = reader.pages[0].extract_text() or ''
+              print('PYPDF', mode, 'chars', len(text), 'D25d', 'D25d' in text)
+              print(repr(text[:300]))
+
+          pdfminer_text = extract_text(path) or ''
+          print('PDFMINER chars', len(pdfminer_text), 'D25d', 'D25d' in pdfminer_text)
+          print(repr(pdfminer_text[:500]))
+
+          doc = fitz.open(path)
+          fitz_text = '\n'.join(page.get_text('text') for page in doc)
+          print('PYMUPDF chars', len(fitz_text), 'D25d', 'D25d' in fitz_text)
+          print(repr(fitz_text[:500]))
+          PY
