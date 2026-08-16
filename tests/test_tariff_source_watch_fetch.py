@@ -373,6 +373,8 @@ def test_async_watch_fetch_reuses_bounded_transport_end_to_end() -> None:
                 "headers": request.headers_dict(),
                 "allow_redirects": False,
                 "timeout": 9.0,
+                "max_line_size": transport.TARIFF_HTTP_MAX_LINE_SIZE,
+                "max_field_size": transport.TARIFF_HTTP_MAX_FIELD_SIZE,
             },
         )
     ]

@@ -37,6 +37,7 @@ from .config_flow import (
 from .const import CONF_PROVIDER, DOMAIN, PROVIDER_CEZ_HDO
 from .coordinator import FrakonEnergyCoordinator
 from .cost import TariffPrices, calculate_cost_projection
+from .daily_all_in_costs import price_confirmed_daily_consumption
 from .energy_flow_sensor import build_energy_flow_sensors
 from .hdo_coordinator import CezHdoCoordinator
 from .metering import MeterSegment, total_cycle_consumption
@@ -60,7 +61,7 @@ VISIONQ_SENSORS = (
 BILLING_KEYS = (
     "monthly_advance", "paid_advances", "projected_advances", "baseline_vt", "baseline_nt",
     "cycle_start", "settlement_date", "cycle_consumption_vt", "cycle_consumption_nt",
-    "today_consumption", "month_consumption", "accrued_cost", "current_balance",
+    "today_consumption", "today_cost", "month_consumption", "accrued_cost", "current_balance",
     "projected_cost", "projected_balance", "recommended_advance",
 )
 
@@ -121,12 +122,12 @@ class FrakonBillingSensor(CoordinatorEntity[FrakonEnergyCoordinator], SensorEnti
             "monthly_advance": "Měsíční záloha", "paid_advances": "Zaplacené zálohy", "projected_advances": "Zálohy za celé období",
             "baseline_vt": "Počáteční stav VT", "baseline_nt": "Počáteční stav NT", "cycle_start": "Začátek zúčtovacího období",
             "settlement_date": "Předpokládané vyúčtování", "cycle_consumption_vt": "Spotřeba období VT", "cycle_consumption_nt": "Spotřeba období NT",
-            "today_consumption": "Spotřeba dnes celkem", "month_consumption": "Spotřeba tento měsíc", "accrued_cost": "Dosavadní náklady",
+            "today_consumption": "Spotřeba dnes celkem", "today_cost": "Náklady dnes", "month_consumption": "Spotřeba tento měsíc", "accrued_cost": "Dosavadní náklady",
             "current_balance": "Průběžný přeplatek nebo nedoplatek", "projected_cost": "Odhad celkových nákladů",
             "projected_balance": "Odhad přeplatku nebo nedoplatku", "recommended_advance": "Doporučená záloha",
         }
         self._attr_name = names[self._key]
-        monetary = {"monthly_advance", "paid_advances", "projected_advances", "accrued_cost", "current_balance", "projected_cost", "projected_balance", "recommended_advance"}
+        monetary = {"monthly_advance", "paid_advances", "projected_advances", "today_cost", "accrued_cost", "current_balance", "projected_cost", "projected_balance", "recommended_advance"}
         energy = {"baseline_vt", "baseline_nt", "cycle_consumption_vt", "cycle_consumption_nt", "today_consumption", "month_consumption"}
         if self._key in monetary:
             self._attr_device_class = SensorDeviceClass.MONETARY
@@ -284,6 +285,7 @@ class FrakonBillingSensor(CoordinatorEntity[FrakonEnergyCoordinator], SensorEnti
             "cycle_consumption_vt": None,
             "cycle_consumption_nt": None,
             "today_consumption": None,
+            "today_cost": None,
             "month_consumption": None,
             "accrued_cost": None,
             "current_balance": None,
@@ -321,6 +323,15 @@ class FrakonBillingSensor(CoordinatorEntity[FrakonEnergyCoordinator], SensorEnti
                     (item.high_rate_kwh + item.low_rate_kwh for item in today_items),
                     Decimal("0"),
                 )
+                try:
+                    priced_today = price_confirmed_daily_consumption(options, today_items)
+                    if priced_today:
+                        values["today_cost"] = sum(
+                            (item.variable_cost_czk for item in priced_today),
+                            Decimal("0"),
+                        )
+                except (LookupError, TypeError, ValueError, AttributeError):
+                    pass
             if month_items:
                 values["month_consumption"] = sum(
                     (item.high_rate_kwh + item.low_rate_kwh for item in month_items),

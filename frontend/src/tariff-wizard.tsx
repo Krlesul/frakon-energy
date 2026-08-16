@@ -332,7 +332,7 @@ export function TariffSetupWizard({ hass }: { hass?: HomeAssistant }) {
       .finally(() => { if (active) setLoadingCatalog(false); });
 
     return () => { active = false; };
-  }, [hass]);
+  }, [hass?.connection]);
 
   const supplierGroup = useMemo(
     () => catalog?.suppliers.find((group) => group.supplier === draft.supplier) ?? null,

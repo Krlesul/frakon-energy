@@ -319,10 +319,10 @@ export function SiteCapacitySettings({ hass }: { hass?: HomeAssistant }) {
 
   return <article className="chart-card technology-settings site-capacity-settings">
     <div className="technology-settings__header">
-      <div><span className="eyebrow">Kapacita přívodu</span><h2>Rezerva odběru ze sítě</h2></div>
+      <div><span className="eyebrow">Pokročilé řízení · volitelné</span><h2>Kapacita přívodu a ochrana řízených startů</h2></div>
       <span className={`entity-badge ${status?.status === "over_limit" || status?.status === "source_stale" || guard?.currently_blocks_all_new_starts ? "warn" : ""}`}>{status ? statusLabel(status.status) : "Načítám…"}</span>
     </div>
-    <p className="settings-copy">Nastavený limit slouží vždy jako diagnostika rezervy přívodu. Blokování řízených startů je samostatná volba. Po zapnutí execution guard vyžaduje čerstvé hlavní měření, započítává rezervace právě startujících spotřebičů a při nedostatečné kapacitě nový start bezpečně odmítne.</p>
+    <p className="settings-copy">Toto nastavení není potřeba pro měření, HDO, tarify ani vyúčtování. Používá se pouze pro bezpečné automatické spouštění řízených spotřebičů. Limit může sloužit jako diagnostika rezervy přívodu; blokování nových startů se zapíná samostatně přes execution guard.</p>
 
     <div className="role-list">
       <div className="role-row">

@@ -16,6 +16,8 @@ from .tariff_sources import TariffDocumentCandidate
 
 DEFAULT_TARIFF_HTTP_TIMEOUT_SECONDS = 20.0
 TARIFF_HTTP_CHUNK_BYTES = 64 * 1024
+TARIFF_HTTP_MAX_LINE_SIZE = 64 * 1024
+TARIFF_HTTP_MAX_FIELD_SIZE = 64 * 1024
 
 
 def _header(headers: Mapping[str, Any], name: str) -> str | None:
@@ -123,6 +125,8 @@ async def async_execute_bounded_tariff_get(
         headers=request_headers,
         allow_redirects=False,
         timeout=timeout,
+        max_line_size=TARIFF_HTTP_MAX_LINE_SIZE,
+        max_field_size=TARIFF_HTTP_MAX_FIELD_SIZE,
     )
     if not hasattr(response_context, "__aenter__") or not hasattr(
         response_context, "__aexit__"

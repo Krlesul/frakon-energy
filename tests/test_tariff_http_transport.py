@@ -181,6 +181,8 @@ def test_transport_executes_exact_bounded_get_and_returns_validated_download() -
                 "headers": request.headers_dict(),
                 "allow_redirects": False,
                 "timeout": 12.0,
+                "max_line_size": transport.TARIFF_HTTP_MAX_LINE_SIZE,
+                "max_field_size": transport.TARIFF_HTTP_MAX_FIELD_SIZE,
             },
         )
     ]

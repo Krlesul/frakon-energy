@@ -162,3 +162,14 @@ def test_empty_daily_history_stays_unknown_instead_of_fake_zero() -> None:
     assert "if month_items:" in source
     assert "'today_consumption': None" in source
     assert "'month_consumption': None" in source
+
+
+def test_today_cost_uses_confirmed_daily_all_in_pricing_and_stays_unknown_without_authority() -> None:
+    billing = _class(_tree(), "FrakonBillingSensor")
+    values = _function(billing, "_values")
+    source = ast.unparse(values)
+
+    assert "'today_cost': None" in source
+    assert len(_calls(values, "price_confirmed_daily_consumption")) == 1
+    assert "item.variable_cost_czk" in source
+    assert "priced_today" in source
