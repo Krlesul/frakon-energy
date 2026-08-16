@@ -203,9 +203,8 @@ def test_manual_tariff_reports_manual_authority_while_parser_capability_remains_
 
 def test_verified_parser_authority_without_parser_support_fails_closed() -> None:
     *_, options, _persisted, _source_watch, _store, diagnostics = _fixture()
-    parser_preview = sys.modules["custom_components.frakon_energy.tariff_parser_preview"]
-    original = parser_preview.supplier_parser_supported
-    parser_preview.supplier_parser_supported = lambda _supplier: False
+    original = diagnostics.supplier_parser_supported
+    diagnostics.supplier_parser_supported = lambda _supplier: False
     try:
         with pytest.raises(ValueError, match="without parser support"):
             diagnostics.build_tariff_diagnostics(
@@ -213,4 +212,4 @@ def test_verified_parser_authority_without_parser_support_fails_closed() -> None
                 day=date(2026, 8, 14),
             )
     finally:
-        parser_preview.supplier_parser_supported = original
+        diagnostics.supplier_parser_supported = original
