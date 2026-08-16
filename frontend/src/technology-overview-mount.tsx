@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import type { HomeAssistant } from "./home-assistant";
+import { findFrakonEnergyEntryId, type HomeAssistant } from "./home-assistant";
 import "./technology-overview.css";
 
 type CandidateRole = {
@@ -20,7 +20,6 @@ type TechnologySuggestion = {
 };
 
 type DiscoverySnapshot = { technologies?: TechnologySuggestion[] };
-type ConfigEntry = { entry_id: string; domain?: string };
 type WsConnection = { sendMessagePromise?: <T>(message: Record<string, unknown>) => Promise<T> };
 type TrendPoint = { updated: string; value: number };
 
@@ -82,12 +81,11 @@ async function callWs<T>(hass: HomeAssistant, message: Record<string, unknown>):
 }
 
 async function loadSnapshot(hass: HomeAssistant): Promise<DiscoverySnapshot> {
-  const entries = await callWs<ConfigEntry[]>(hass, { type: "config_entries/get" });
-  const entry = entries.find((item) => item.domain === "frakon_energy");
-  if (!entry) return {};
+  const entryId = await findFrakonEnergyEntryId(hass);
+  if (!entryId) return {};
   return callWs<DiscoverySnapshot>(hass, {
     type: "frakon_energy/entity_discovery/get",
-    entry_id: entry.entry_id,
+    entry_id: entryId,
   });
 }
 
@@ -261,16 +259,25 @@ function TechnologyOverview({ hass }: { hass: HomeAssistant }) {
   </section>;
 }
 
+function removeHost(host: HTMLElement): void {
+  root?.unmount();
+  root = null;
+  host.remove();
+}
+
 function mount(): void {
   const anchor = overviewAnchor();
-  const stale = document.getElementById(HOST_ID);
+  let host = document.getElementById(HOST_ID);
   if (!anchor) {
-    if (stale) stale.remove();
-    root = null;
+    if (host) removeHost(host);
     return;
   }
 
-  let host = stale;
+  if (host && host.previousElementSibling !== anchor) {
+    removeHost(host);
+    host = null;
+  }
+
   if (!host) {
     host = document.createElement("section");
     host.id = HOST_ID;
@@ -282,7 +289,16 @@ function mount(): void {
   if (hass) root?.render(<TechnologyOverview hass={hass} />);
 }
 
-const observer = new MutationObserver(mount);
+function reconcileStructure(): void {
+  const anchor = overviewAnchor();
+  const host = document.getElementById(HOST_ID);
+  const mountedCorrectly = Boolean(anchor && host && host.previousElementSibling === anchor);
+  const absentCorrectly = !anchor && !host;
+  if (mountedCorrectly || absentCorrectly) return;
+  mount();
+}
+
+const observer = new MutationObserver(reconcileStructure);
 observer.observe(document.documentElement, { childList: true, subtree: true });
 window.addEventListener("frakon-energy-hass-updated", mount);
 window.addEventListener("load", mount);
