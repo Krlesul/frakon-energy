@@ -131,11 +131,16 @@ def _legacy_segment_for_missing_day(
 
     # Kept lazy deliberately: all-in-only billing does not depend on migration
     # support, and isolated tariff tests can continue loading only their authority
-    # graph.  The historical module is required only when an exact day is missing.
-    from .legacy_tariff_history import (
-        confirmed_legacy_tariff_from_options,
-        legacy_tariff_fingerprint,
-    )
+    # graph. The historical module is required only when an exact day is missing.
+    try:
+        from .legacy_tariff_history import (
+            confirmed_legacy_tariff_from_options,
+            legacy_tariff_fingerprint,
+        )
+    except ModuleNotFoundError as err:
+        if err.name == "custom_components.frakon_energy.legacy_tariff_history":
+            raise original_error
+        raise
 
     try:
         snapshot = confirmed_legacy_tariff_from_options(options, day)
