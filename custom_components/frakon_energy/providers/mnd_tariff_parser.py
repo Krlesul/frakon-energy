@@ -1,7 +1,7 @@
 """Strict parser for official MND household electricity price-list PDFs.
 
-The MND PDF contains both supplier-commercial prices and, on following pages,
-regulated prices.  This parser deliberately reads only the first commercial
+MND price lists contain supplier-commercial prices and, on following pages,
+regulated prices. This parser deliberately reads only the first commercial
 comparison table and never derives regulator authority from the supplier PDF.
 """
 
@@ -31,21 +31,15 @@ _DISTRIBUTOR_PATTERNS = {
     "eg_d": ("eg.d", "eg d", "egd"),
     "pre_distribuce": ("predistribuce", "pre distribuce"),
 }
-
-# The first-page MND commercial table groups D01d/D02d and D25d/D26d into
-# common supplier-commercial rate rows.  Every dual-rate row has exactly four
-# gross/net pairs: current-product VT, comparison VT, current-product NT,
-# comparison NT.  D01d/D02d are single-rate and their row additionally carries
-# the current/comparison standing charges.
 _RATE_GROUPS = (
-    (("D01d", "D02d"), "D01dD02d", False),
-    (("D25d", "D26d"), "D25dD26d", True),
-    (("D27d",), "D27d", True),
-    (("D35d",), "D35d", True),
-    (("D45d",), "D45d", True),
-    (("D56d",), "D56d", True),
-    (("D57d",), "D57d", True),
-    (("D61d",), "D61d", True),
+    (("D01d", "D02d"), "D01dD02d"),
+    (("D25d", "D26d"), "D25dD26d"),
+    (("D27d",), "D27d"),
+    (("D35d",), "D35d"),
+    (("D45d",), "D45d"),
+    (("D56d",), "D56d"),
+    (("D57d",), "D57d"),
+    (("D61d",), "D61d"),
 )
 
 
@@ -70,10 +64,7 @@ class ParsedMndSupplierTariff:
             raise ValueError("distribution_tariff must use a code such as D25d")
         if self.distributor not in _DISTRIBUTOR_PATTERNS:
             raise ValueError("unsupported MND distributor identity")
-        for field_name in (
-            "high_rate_czk_per_kwh",
-            "supplier_standing_czk_month",
-        ):
+        for field_name in ("high_rate_czk_per_kwh", "supplier_standing_czk_month"):
             value = getattr(self, field_name)
             if not isinstance(value, Decimal) or not value.is_finite() or value < 0:
                 raise ValueError(f"{field_name} must be a finite non-negative Decimal")
@@ -95,6 +86,10 @@ class ParsedMndSupplierTariff:
 def _fold(value: str) -> str:
     decomposed = unicodedata.normalize("NFKD", value.casefold())
     return "".join(char for char in decomposed if not unicodedata.combining(char))
+
+
+def _space_fold(value: str) -> str:
+    return re.sub(r"\s+", " ", _fold(value)).strip()
 
 
 def _identity(value: str) -> str:
@@ -119,11 +114,7 @@ def _normalize_distributor(value: str) -> str:
 
 
 def mnd_automatic_parser_supports_product(product_name: str) -> bool:
-    """Return whether the verified single-period MND table layout is supported.
-
-    MND's decreasing-price product is intentionally excluded until its own
-    multi-period PDF layout has an exact frozen fixture and period mapping.
-    """
+    """Return whether the verified single-period MND table layout is supported."""
 
     if not isinstance(product_name, str) or not product_name.strip():
         return False
@@ -135,18 +126,13 @@ def mnd_automatic_parser_supports_product(product_name: str) -> bool:
 
 def _extract_title(lines: tuple[str, ...]) -> str:
     for line in lines:
-        folded = _fold(line).strip()
-        if not folded.startswith("produkt "):
+        if not _fold(line).strip().startswith("produkt "):
             continue
         title = line.strip()[len("Produkt ") :].strip()
         title = re.sub(r"\s+-\s+Domácnosti\s*$", "", title, flags=re.IGNORECASE)
         if title:
             return title
     raise ValueError("MND household product title was not found")
-
-
-def _product_matches(document_title: str, expected_product_name: str) -> bool:
-    return _identity(document_title) == _identity(expected_product_name)
 
 
 def _extract_valid_from(text: str) -> date:
@@ -169,7 +155,7 @@ def _date_tokens(value: date) -> tuple[str, ...]:
 
 
 def _extract_distributor(text: str) -> str:
-    folded = _fold(text)
+    folded = _space_fold(text)
     anchor = "v distribucni oblasti"
     index = folded.find(anchor)
     if index < 0:
@@ -186,29 +172,39 @@ def _extract_distributor(text: str) -> str:
 
 
 def _commercial_table(text: str) -> str:
-    folded = _fold(text)
-    start = folded.find("distribucni\nsazba")
-    if start < 0:
-        start = folded.find("distribucni sazba")
-    if start < 0:
+    """Return only the first-page supplier-commercial comparison table."""
+
+    lines = text.splitlines()
+    folded_lines = [_space_fold(line) for line in lines]
+    start: int | None = None
+    for index, folded in enumerate(folded_lines):
+        if folded == "distribucni sazba" or folded.startswith("distribucni sazba "):
+            start = index
+            break
+        if (
+            folded == "distribucni"
+            and index + 1 < len(folded_lines)
+            and folded_lines[index + 1] == "sazba"
+        ):
+            start = index
+            break
+    if start is None:
         raise ValueError("MND first-page commercial table was not found")
 
-    appendix_markers = (
-        "priloha ceniku",
-        "ceny s dph [bez dph]priloha ceniku",
-    )
-    ends = [folded.find(marker, start + 1) for marker in appendix_markers]
-    ends = [value for value in ends if value >= 0]
-    if not ends:
+    end: int | None = None
+    for index in range(start + 1, len(lines)):
+        if "priloha ceniku" in folded_lines[index]:
+            end = index
+            break
+    if end is None or end <= start:
         raise ValueError("MND first-page commercial table boundary was not found")
-    end = min(ends)
-    if end <= start:
-        raise ValueError("MND commercial table boundary is invalid")
 
-    regulated = folded.find("ceny a sazby regulovane", end)
-    if regulated < 0:
+    if not any(
+        "ceny a sazby regulovane" in folded
+        for folded in folded_lines[end + 1 :]
+    ):
         raise ValueError("MND regulated-section boundary was not found")
-    return text[start:end]
+    return "\n".join(lines[start:end])
 
 
 def _czech_decimal(integer_part: str, cents: str | None = None) -> Decimal:
@@ -229,18 +225,20 @@ def _czech_decimal(integer_part: str, cents: str | None = None) -> Decimal:
 
 
 def _gross_net_pairs(section: str) -> tuple[tuple[Decimal, Decimal], ...]:
-    pairs = tuple(
+    return tuple(
         (
             _czech_decimal(match.group(1)),
             _czech_decimal(match.group(2), match.group(3)),
         )
         for match in _GROSS_NET_RE.finditer(section)
     )
-    return pairs
 
 
 def _validate_vat_pair(gross: Decimal, net: Decimal) -> None:
-    expected = (net * Decimal("1.21")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    expected = (net * Decimal("1.21")).quantize(
+        Decimal("0.01"),
+        rounding=ROUND_HALF_UP,
+    )
     if abs(gross - expected) > Decimal("0.02"):
         raise ValueError(
             f"MND gross/net VAT pair is inconsistent: gross={gross}, net={net}"
@@ -248,20 +246,20 @@ def _validate_vat_pair(gross: Decimal, net: Decimal) -> None:
 
 
 def _rate_sections(table: str) -> dict[str, str]:
-    positions: list[tuple[int, str, tuple[str, ...], bool]] = []
-    compact = table.replace(" ", "")
-    # Positions are taken from the original table with a whitespace-tolerant
-    # marker search so line breaks between paired tariff codes are harmless.
-    for tariffs, marker, dual_rate in _RATE_GROUPS:
-        pattern = re.compile("".join(re.escape(char) + r"\s*" for char in marker), re.IGNORECASE)
+    positions: list[tuple[int, tuple[str, ...], str]] = []
+    for tariffs, marker in _RATE_GROUPS:
+        pattern = re.compile(
+            r"\s*".join(re.escape(char) for char in marker),
+            re.IGNORECASE,
+        )
         match = pattern.search(table)
         if match is None:
             raise ValueError(f"MND commercial tariff group is missing: {marker}")
-        positions.append((match.start(), marker, tariffs, dual_rate))
+        positions.append((match.start(), tariffs, marker))
     positions.sort(key=lambda item: item[0])
 
     sections: dict[str, str] = {}
-    for index, (start, _marker, tariffs, _dual_rate) in enumerate(positions):
+    for index, (start, tariffs, _marker) in enumerate(positions):
         end = positions[index + 1][0] if index + 1 < len(positions) else len(table)
         section = table[start:end]
         for tariff in tariffs:
@@ -270,22 +268,21 @@ def _rate_sections(table: str) -> dict[str, str]:
 
 
 def _standing_price(table: str) -> Decimal:
-    sections = _rate_sections(table)
-    pairs = _gross_net_pairs(sections["D01d"])
+    pairs = _gross_net_pairs(_rate_sections(table)["D01d"])
     if len(pairs) != 4:
-        raise ValueError("MND Standard row must contain current/comparison VT and standing pairs")
+        raise ValueError(
+            "MND Standard row must contain current/comparison VT and standing pairs"
+        )
     for gross, net in pairs:
         _validate_vat_pair(gross, net)
-    # Current product: pair 0 = VT, pair 1 = comparison VT,
-    # pair 2 = standing, pair 3 = comparison standing.
+    # pair 0 = current VT, pair 1 = comparison VT,
+    # pair 2 = current standing, pair 3 = comparison standing.
     return pairs[2][0]
 
 
 def _rate_prices(table: str, tariff: str) -> tuple[Decimal, Decimal | None]:
-    section = _rate_sections(table)[tariff]
-    pairs = _gross_net_pairs(section)
-    expected_pair_count = 4
-    if len(pairs) != expected_pair_count:
+    pairs = _gross_net_pairs(_rate_sections(table)[tariff])
+    if len(pairs) != 4:
         raise ValueError(
             f"MND tariff row {tariff} must contain exactly four current/comparison VAT pairs"
         )
@@ -309,9 +306,9 @@ def parse_mnd_supplier_tariff(
 ) -> ParsedMndSupplierTariff:
     """Parse exact supplier-commercial MND prices from a verified PDF text.
 
-    The parser accepts the normal one-period MND household comparison-table
-    layout.  It intentionally rejects decreasing/multi-period products until a
-    separate exact period parser exists.
+    The normal one-period MND household comparison-table layout is supported.
+    Decreasing/multi-period products remain fail-closed until their own exact
+    period fixture and mapping are implemented.
     """
 
     if not isinstance(text, str) or not text.strip():
@@ -332,7 +329,7 @@ def parse_mnd_supplier_tariff(
         if expected_valid_to < expected_valid_from:
             raise ValueError("expected_valid_to must not precede expected_valid_from")
 
-    folded = _fold(text)
+    folded = _space_fold(text)
     if "ceny obchodni za elektrinu pro domacnosti s dph [bez dph]" not in folded:
         raise ValueError("document is not marked as an MND household commercial price list")
     if "ceny a sazby regulovane" not in folded:
@@ -340,7 +337,7 @@ def parse_mnd_supplier_tariff(
 
     lines = tuple(line.strip() for line in text.splitlines() if line.strip())
     title = _extract_title(lines)
-    if not _product_matches(title, expected_product_name):
+    if _identity(title) != _identity(expected_product_name):
         raise ValueError(
             f"MND product identity mismatch: expected {expected_product_name!r}, found {title!r}"
         )
@@ -352,8 +349,7 @@ def parse_mnd_supplier_tariff(
             f"{valid_from.isoformat()} != {expected_valid_from.isoformat()}"
         )
     if expected_valid_to is not None:
-        normalized_text = _fold(text)
-        if not any(_fold(token) in normalized_text for token in _date_tokens(expected_valid_to)):
+        if not any(_space_fold(token) in folded for token in _date_tokens(expected_valid_to)):
             raise ValueError(
                 "MND fixed-price end date does not match selected candidate: "
                 f"{expected_valid_to.isoformat()}"
