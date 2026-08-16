@@ -38,6 +38,18 @@ def _runtime(
     return runtime_registry.get(str(msg["entry_id"]))
 
 
+def _send_runtime_error(
+    connection: websocket_api.ActiveConnection,
+    msg: Mapping[str, Any],
+    err: Exception,
+) -> None:
+    connection.send_error(
+        msg["id"],
+        "entity_discovery_runtime_unavailable",
+        str(err),
+    )
+
+
 @callback
 def async_register_entity_discovery_websocket(
     hass: HomeAssistant,
@@ -60,12 +72,14 @@ def async_register_entity_discovery_websocket(
         connection: websocket_api.ActiveConnection,
         msg: Mapping[str, Any],
     ) -> None:
-        connection.send_result(
-            msg["id"],
-            _runtime(runtime_registry, msg).dispatch(
+        try:
+            result = _runtime(runtime_registry, msg).dispatch(
                 COMMAND_GET, msg, is_admin=connection.user.is_admin
-            ),
-        )
+            )
+        except (KeyError, ValueError) as err:
+            _send_runtime_error(connection, msg, err)
+            return
+        connection.send_result(msg["id"], result)
 
     @websocket_api.websocket_command(_command_schema(COMMAND_RESCAN))
     @websocket_api.async_response
@@ -75,10 +89,14 @@ def async_register_entity_discovery_websocket(
         msg: Mapping[str, Any],
     ) -> None:
         connection.require_admin()
-        connection.send_result(
-            msg["id"],
-            _runtime(runtime_registry, msg).dispatch(COMMAND_RESCAN, msg, is_admin=True),
-        )
+        try:
+            result = _runtime(runtime_registry, msg).dispatch(
+                COMMAND_RESCAN, msg, is_admin=True
+            )
+        except (KeyError, ValueError) as err:
+            _send_runtime_error(connection, msg, err)
+            return
+        connection.send_result(msg["id"], result)
 
     @websocket_api.websocket_command(_command_schema(COMMAND_SAVE, include_entity=True))
     @websocket_api.async_response
@@ -88,10 +106,14 @@ def async_register_entity_discovery_websocket(
         msg: Mapping[str, Any],
     ) -> None:
         connection.require_admin()
-        connection.send_result(
-            msg["id"],
-            _runtime(runtime_registry, msg).dispatch(COMMAND_SAVE, msg, is_admin=True),
-        )
+        try:
+            result = _runtime(runtime_registry, msg).dispatch(
+                COMMAND_SAVE, msg, is_admin=True
+            )
+        except (KeyError, ValueError) as err:
+            _send_runtime_error(connection, msg, err)
+            return
+        connection.send_result(msg["id"], result)
 
     @websocket_api.websocket_command(_command_schema(COMMAND_REMOVE))
     @websocket_api.async_response
@@ -101,10 +123,14 @@ def async_register_entity_discovery_websocket(
         msg: Mapping[str, Any],
     ) -> None:
         connection.require_admin()
-        connection.send_result(
-            msg["id"],
-            _runtime(runtime_registry, msg).dispatch(COMMAND_REMOVE, msg, is_admin=True),
-        )
+        try:
+            result = _runtime(runtime_registry, msg).dispatch(
+                COMMAND_REMOVE, msg, is_admin=True
+            )
+        except (KeyError, ValueError) as err:
+            _send_runtime_error(connection, msg, err)
+            return
+        connection.send_result(msg["id"], result)
 
     websocket_api.async_register_command(hass, websocket_get)
     websocket_api.async_register_command(hass, websocket_rescan)
