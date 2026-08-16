@@ -46,6 +46,8 @@ jobs:
           node scripts/check-manual-tariff-entry-authority.mjs
           node --check public/load-all-in-estimate-bridge.js
           node scripts/check-load-all-in-estimate-authority.mjs
+          node --check public/legacy-tariff-migration-bridge.js
+          node scripts/check-legacy-tariff-migration-authority.mjs
 
       - name: Type-check and build
         working-directory: frontend
@@ -62,6 +64,7 @@ jobs:
           cmp frontend/public/supplier-parser-preview-bridge.js custom_components/frakon_energy/frontend_app/supplier-parser-preview-bridge.js
           cmp frontend/public/manual-tariff-entry-bridge.js custom_components/frakon_energy/frontend_app/manual-tariff-entry-bridge.js
           cmp frontend/public/load-all-in-estimate-bridge.js custom_components/frakon_energy/frontend_app/load-all-in-estimate-bridge.js
+          cmp frontend/public/legacy-tariff-migration-bridge.js custom_components/frakon_energy/frontend_app/legacy-tariff-migration-bridge.js
 
       - name: Verify committed dashboard is current
         run: |
