@@ -86,7 +86,7 @@ jobs:
       - name: Validate and build frontend
         working-directory: frontend
         run: |
-          npm run check:live-data
+          node scripts/check-runtime-live-data-contract.mjs
           npm run build
       - name: Package dashboard
         run: bash scripts/build_frontend.sh
