@@ -1,0 +1,66 @@
+name: WS Admin Compat Patch
+
+on:
+  push:
+    branches:
+      - agent/ha-websocket-admin-compat
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/ha-websocket-admin-compat
+          fetch-depth: 0
+      - name: Replace removed ActiveConnection require_admin API
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          root = Path("custom_components/frakon_energy")
+          changed = []
+          for path in root.rglob("*.py"):
+              text = path.read_text(encoding="utf-8")
+              if "connection.require_admin()" not in text:
+                  continue
+              marker = "from homeassistant.components import websocket_api\n"
+              if marker not in text:
+                  raise SystemExit(f"websocket_api import marker missing in {path}")
+              helper_import = (
+                  "from .ws_auth import ensure_admin\n"
+                  if path.parent == root
+                  else "from ..ws_auth import ensure_admin\n"
+              )
+              if helper_import not in text:
+                  text = text.replace(marker, marker + helper_import, 1)
+              text = text.replace("connection.require_admin()", "ensure_admin(connection)")
+              path.write_text(text, encoding="utf-8")
+              changed.append(str(path))
+
+          if not changed:
+              print("No legacy admin calls remain")
+          else:
+              print("Updated:")
+              print("\n".join(changed))
+
+          leftovers = []
+          for path in root.rglob("*.py"):
+              if "connection.require_admin()" in path.read_text(encoding="utf-8"):
+                  leftovers.append(str(path))
+          if leftovers:
+              raise SystemExit("Legacy require_admin calls remain: " + ", ".join(leftovers))
+          PY
+      - name: Commit migration
+        run: |
+          if git diff --quiet; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add custom_components/frakon_energy
+          git commit -m "Replace removed websocket admin connection API"
+          git push origin HEAD:agent/ha-websocket-admin-compat
