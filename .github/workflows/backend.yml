@@ -82,6 +82,8 @@ jobs:
           tests/test_billing_all_in_history_routing.py
           tests/test_legacy_tariff_history.py
           tests/test_legacy_tariff_billing_history.py
+          tests/test_legacy_tariff_migration_ws_api.py
+          tests/test_legacy_tariff_migration_wiring.py
           tests/test_daily_all_in_costs.py
           tests/test_daily_all_in_costs_ws_api.py
           tests/test_daily_all_in_costs_wiring.py
