@@ -122,8 +122,6 @@ class ElectricityContract:
                 raise ValueError("fixation_end must be a date")
             if self.fixation_end < self.valid_from:
                 raise ValueError("Fixation end must not precede contract start")
-            if self.valid_to is not None and self.fixation_end > self.valid_to:
-                raise ValueError("Fixation end must not follow contract end")
         if not isinstance(self.customer_confirmed, bool):
             raise ValueError("customer_confirmed must be boolean")
         object.__setattr__(self, "distribution_tariff", tariff[:-1] + "d")

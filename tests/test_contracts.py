@@ -280,23 +280,3 @@ def test_legacy_indefinite_contract_with_fixation_is_canonicalized() -> None:
 
     assert contract.contract_kind is contracts.ContractKind.INDEFINITE
     assert contract.fixation_end is None
-
-
-def test_fixed_contract_fixation_must_not_follow_contract_end() -> None:
-    contracts = load_contracts()
-    try:
-        contracts.ElectricityContract(
-            contracts.Supplier.CEZ,
-            contracts.Distributor.CEZ_DISTRIBUCE,
-            "Fix",
-            contracts.ContractKind.FIXED,
-            "D25d",
-            contracts.Breaker(3, 25),
-            date(2026, 1, 1),
-            valid_to=date(2027, 12, 31),
-            fixation_end=date(2028, 1, 1),
-        )
-    except ValueError as err:
-        assert "Fixation end must not follow contract end" in str(err)
-    else:
-        raise AssertionError("Fixation end outside contract validity must be rejected")
