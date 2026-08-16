@@ -19,7 +19,7 @@ jobs:
         with:
           ref: agent/commissioning-data-ui-hardening
 
-      - name: Apply UI state fixes
+      - name: Apply final runtime and regression fixes
         shell: bash
         run: |
           python - <<'PY'
@@ -33,45 +33,68 @@ jobs:
                   raise SystemExit(f"{path}: expected {count} match(es), found {found}: {old[:100]!r}")
               file.write_text(text.replace(old, new), encoding="utf-8")
 
-          # Dashboard must distinguish incomplete setup from a completed but expired billing cycle.
-          main = "frontend/src/main.tsx"
+          # HDO changes every second. Configuration entry resolution must not rerun for every hass object revision.
           replace(
-              main,
-              'missingReason(state.accruedCostCzk, "Chybí ceny VT/NT nebo počáteční stav")',
-              'missingReason(state.accruedCostCzk, "Chybí potvrzená cena pro zúčtovací období")',
-          )
-          replace(
-              main,
-              '''function BillingView() { const state = useFrakonEnergyState(); return <section className="page-grid"><BillingSummary /><article className="chart-card"><span className="eyebrow">Zúčtovací období</span><h2>{state.settlementDate ? `Do ${new Date(state.settlementDate).toLocaleDateString("cs-CZ")}` : "Není kompletně nastaveno"}</h2><div className="setup-checklist">{state.missingSetup.length === 0 ? <p>Vyúčtování je připravené.</p> : state.missingSetup.map((item) => <div key={item}><span>!</span><b>{item}</b><small>Vyplňte v nastavení FRAKON Energy.</small></div>)}</div></article></section>; }''',
-              '''function BillingView() { const state = useFrakonEnergyState(); const dateLabel = state.settlementDate ? new Date(state.settlementDate).toLocaleDateString("cs-CZ") : null; return <section className="page-grid"><BillingSummary /><article className="chart-card"><span className="eyebrow">Zúčtovací období</span><h2>{state.billingExpired && dateLabel ? `Období skončilo ${dateLabel}` : dateLabel ? `Do ${dateLabel}` : "Není kompletně nastaveno"}</h2><div className="setup-checklist">{state.billingExpired ? <div><span>!</span><b>Vyúčtovací období je ukončené</b><small>Založte nové období podle posledního vyúčtování a aktuálního elektroměru.</small></div> : state.missingSetup.length === 0 ? <p>Vyúčtování je připravené.</p> : state.missingSetup.map((item) => <div key={item}><span>!</span><b>{item}</b><small>Vyplňte v nastavení FRAKON Energy.</small></div>)}</div></article></section>; }''',
-          )
-          replace(
-              main,
-              '<div><span>Billing</span><b>{state.missingSetup.length === 0 ? "Připraven" : "Nedokončen"}</b></div>',
-              '<div><span>Billing</span><b>{state.billingExpired ? "Nové období" : state.missingSetup.length === 0 ? "Připraven" : "Nedokončen"}</b></div>',
-          )
-          replace(
-              main,
-              'Pro výpočet nákladů a predikce doplňte počáteční stavy elektroměru a měsíční zálohu.',
-              '{state.billingExpired ? "Poslední zúčtovací období už skončilo. Založte nové období podle posledního vyúčtování." : "Pro výpočet nákladů a predikce doplňte počáteční stavy elektroměru a měsíční zálohu."}',
-          )
-          # The previous replacement sits inside JSX text; convert the accidental text braces to JSX expression.
-          replace(
-              main,
-              '<p className="settings-copy">{state.billingExpired ? "Poslední zúčtovací období už skončilo. Založte nové období podle posledního vyúčtování." : "Pro výpočet nákladů a predikce doplňte počáteční stavy elektroměru a měsíční zálohu."}</p>',
-              '<p className="settings-copy">{state.billingExpired ? "Poslední zúčtovací období už skončilo. Založte nové období podle posledního vyúčtování." : "Pro výpočet nákladů a predikce doplňte počáteční stavy elektroměru a měsíční zálohu."}</p>',
+              "frontend/src/main.tsx",
+              '''return () => { active = false; }; }, [hass]); const openIntegration''',
+              '''return () => { active = false; }; }, [hass?.connection]); const openIntegration''',
           )
 
-          # Normalize WebSocket rejection objects so cards show the backend reason instead of [object Object].
-          home = "frontend/src/home-assistant.ts"
+          capacity = "frontend/src/site-capacity-settings.tsx"
           replace(
-              home,
-              '''export async function callHomeAssistantWs<T>(hass: HomeAssistant, message: Record<string, unknown>): Promise<T> { if (hass.callWS) return hass.callWS<T>(message); if (hass.connection?.sendMessagePromise) return hass.connection.sendMessagePromise<T>(message); throw new Error("WebSocket Home Assistantu není dostupný."); }''',
-              '''export async function callHomeAssistantWs<T>(hass: HomeAssistant, message: Record<string, unknown>): Promise<T> { try { if (hass.callWS) return await hass.callWS<T>(message); if (hass.connection?.sendMessagePromise) return await hass.connection.sendMessagePromise<T>(message); throw new Error("WebSocket Home Assistantu není dostupný."); } catch (reason) { if (reason instanceof Error) throw reason; if (typeof reason === "object" && reason !== null && "message" in reason) throw new Error(String((reason as { message?: unknown }).message ?? "Neznámá chyba Home Assistantu.")); throw new Error(String(reason)); } }''',
+              capacity,
+              '''async function findEntry(hass: HomeAssistant): Promise<ConfigEntry | null> {\n  const entryId = await findFrakonEnergyEntryId(hass);\n  return entryId ? { entry_id: entryId } : null;\n}\n\nfunction statusLabel''',
+              '''async function findEntry(hass: HomeAssistant): Promise<ConfigEntry | null> {\n  const entryId = await findFrakonEnergyEntryId(hass);\n  return entryId ? { entry_id: entryId } : null;\n}\n\nfunction errorMessage(reason: unknown, fallback: string): string {\n  if (reason instanceof Error && reason.message) return reason.message;\n  if (typeof reason === "object" && reason !== null && "message" in reason) {\n    const message = String((reason as { message?: unknown }).message ?? "");\n    if (message) return message;\n  }\n  return fallback;\n}\n\nfunction statusLabel''',
           )
+          replace(
+              capacity,
+              'setSafetyError(reason instanceof Error ? reason.message : "Bezpečnostní stav rezervací se nepodařilo načíst.");',
+              'setSafetyError(errorMessage(reason, "Bezpečnostní stav rezervací se nepodařilo načíst."));',
+          )
+          replace(
+              capacity,
+              'setError(reason instanceof Error ? reason.message : "Kapacitu přívodu se nepodařilo načíst.");',
+              'setError(errorMessage(reason, "Kapacitu přívodu se nepodařilo načíst."));',
+          )
+          replace(
+              capacity,
+              '''  }, [hass]);\n\n  useEffect(() => {\n    void load();''',
+              '''  }, [hass?.connection]);\n\n  useEffect(() => {\n    void load();''',
+          )
+
+          flow = "frontend/src/energy-flow-summary.tsx"
+          replace(
+              flow,
+              '''async function loadServerFlow(hass: HomeAssistant, entryId: string): Promise<ServerEnergyFlowSnapshot> {''',
+              '''function errorMessage(reason: unknown, fallback: string): string {\n  if (reason instanceof Error && reason.message) return reason.message;\n  if (typeof reason === "object" && reason !== null && "message" in reason) {\n    const message = String((reason as { message?: unknown }).message ?? "");\n    if (message) return message;\n  }\n  return fallback;\n}\n\nasync function loadServerFlow(hass: HomeAssistant, entryId: string): Promise<ServerEnergyFlowSnapshot> {''',
+          )
+          replace(
+              flow,
+              'if (active) setError(reason instanceof Error ? reason.message : "Energetický tok se nepodařilo načíst.");',
+              'if (active) setError(errorMessage(reason, "Energetický tok se nepodařilo načíst."));',
+          )
+          replace(
+              flow,
+              'if (active) setError(reason instanceof Error ? reason.message : "Energetický tok se nepodařilo obnovit.");',
+              'if (active) setError(errorMessage(reason, "Energetický tok se nepodařilo obnovit."));',
+          )
+
+          contracts_test = Path("tests/test_contracts.py")
+          source = contracts_test.read_text(encoding="utf-8")
+          marker = "def test_indefinite_contract_rejects_fixation_end()"
+          if marker not in source:
+              source += '''\n\n\ndef test_indefinite_contract_rejects_fixation_end() -> None:\n    contracts = load_contracts()\n    try:\n        contracts.ElectricityContract(\n            contracts.Supplier.CEZ,\n            contracts.Distributor.CEZ_DISTRIBUCE,\n            "Na dobu neurčitou",\n            contracts.ContractKind.INDEFINITE,\n            "D25d",\n            contracts.Breaker(3, 25),\n            date(2026, 1, 1),\n            fixation_end=date(2027, 12, 31),\n        )\n    except ValueError as err:\n        assert "Only a fixed contract may define fixation end date" in str(err)\n    else:\n        raise AssertionError("Indefinite contract must not carry a fixation end")\n\n\ndef test_legacy_indefinite_contract_with_fixation_is_canonicalized() -> None:\n    contracts = load_contracts()\n    payload = {\n        "schema_version": contracts.CONTRACT_SCHEMA_VERSION,\n        "supplier": contracts.Supplier.CEZ.value,\n        "distributor": contracts.Distributor.CEZ_DISTRIBUCE.value,\n        "product_name": "Starý neomezený produkt",\n        "contract_kind": contracts.ContractKind.INDEFINITE.value,\n        "distribution_tariff": "D25d",\n        "breaker": {"phases": 3, "amperes": 25},\n        "valid_from": "2026-01-01",\n        "valid_to": "2027-12-31",\n        "fixation_end": "2027-12-31",\n        "customer_confirmed": True,\n    }\n\n    contract = contracts.ElectricityContract.from_dict(payload)\n\n    assert contract.contract_kind is contracts.ContractKind.INDEFINITE\n    assert contract.fixation_end is None\n\n\ndef test_fixed_contract_fixation_must_not_follow_contract_end() -> None:\n    contracts = load_contracts()\n    try:\n        contracts.ElectricityContract(\n            contracts.Supplier.CEZ,\n            contracts.Distributor.CEZ_DISTRIBUCE,\n            "Fix",\n            contracts.ContractKind.FIXED,\n            "D25d",\n            contracts.Breaker(3, 25),\n            date(2026, 1, 1),\n            valid_to=date(2027, 12, 31),\n            fixation_end=date(2028, 1, 1),\n        )\n    except ValueError as err:\n        assert "Fixation end must not follow contract end" in str(err)\n    else:\n        raise AssertionError("Fixation end outside contract validity must be rejected")\n'''
+              contracts_test.write_text(source, encoding="utf-8")
+
+          domain_test = Path("tests/test_domain.py")
+          source = domain_test.read_text(encoding="utf-8")
+          marker = "def test_primary_entry_websocket_is_loaded_visionq_authority()"
+          if marker not in source:
+              source += '''\n\n\ndef test_primary_entry_websocket_is_loaded_visionq_authority() -> None:\n    source = (ROOT / "technology_profile_ws_api.py").read_text(encoding="utf-8")\n    assert 'COMMAND_PRIMARY_ENTRY = "frakon_energy/entry/primary"' in source\n    assert "PROVIDER_VISIONQ" in source\n    assert "entry.entry_id in domain_data" in source\n    assert "visionq_runtime_unavailable" in source\n    assert "ambiguous_visionq_runtime" in source\n\n\ndef test_entity_discovery_missing_runtime_has_actionable_websocket_error() -> None:\n    source = (ROOT / "entity_discovery_ws_api.py").read_text(encoding="utf-8")\n    assert "entity_discovery_runtime_unavailable" in source\n    assert "_send_runtime_error" in source\n'''
+              domain_test.write_text(source, encoding="utf-8")
           PY
 
-      - name: Commit UI state fixes
+      - name: Commit final fixes
         shell: bash
         run: |
           if git diff --quiet; then
@@ -80,6 +103,6 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add frontend/src/main.tsx frontend/src/home-assistant.ts
-          git commit -m "Expose expired billing state and websocket errors"
+          git add frontend/src/main.tsx frontend/src/site-capacity-settings.tsx frontend/src/energy-flow-summary.tsx tests/test_contracts.py tests/test_domain.py
+          git commit -m "Finish commissioning runtime hardening"
           git push origin HEAD:agent/commissioning-data-ui-hardening
