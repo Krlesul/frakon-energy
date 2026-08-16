@@ -92,6 +92,18 @@ class BillingCalculator:
         )
 
     @classmethod
+    def sum_advances(
+        cls,
+        start: date,
+        end: date,
+        advances: Iterable[AdvancePeriod],
+    ) -> Decimal:
+        """Return the monetary advance total without requiring any tariff pricing."""
+        if end < start:
+            raise ValueError("advance total end must not precede start")
+        return _money(cls._sum_advances(start, end, tuple(advances)))
+
+    @classmethod
     def _sum_advances(cls, start: date, end: date, periods: tuple[AdvancePeriod, ...]) -> Decimal:
         total = Decimal("0")
         for month in cls._month_starts(start, end):
