@@ -16,10 +16,13 @@ for (const forbidden of [
 ]) {
   assert.equal(source.includes(forbidden), false, `companion request/UI must not supply ${forbidden}`);
 }
+assert.match(source, /type: "frakon_energy\/entry\/primary"/, "entry resolution must use the authoritative loaded VisionQ runtime");
+assert.match(source, /primary\.provider !== "visionq"/, "primary runtime must be explicitly verified as VisionQ");
+assert.match(source, /primary\.loaded !== true/, "primary runtime must be verified as loaded");
 assert.match(source, /type: "frakon_energy\/load_profiles\/list"/, "entry resolution must use read-only persisted profile lookup");
 assert.match(source, /type: "frakon_energy\/load_plan\/preview_profile"/, "all-in view must use profile preview only");
-assert.match(source, /profileMatches\.length === 1/, "profile must resolve exactly within an entry");
-assert.match(source, /if \(matches\.length !== 1\)/, "profile entry resolution must fail closed on ambiguity");
+assert.match(source, /if \(matches\.length !== 1\)/, "profile must resolve exactly once inside the authoritative VisionQ entry");
+assert.equal(source.includes('type: "config_entries/get"'), false, "multi-entry VisionQ + HDO installations must not use client-side config entry guessing");
 assert.match(source, /estimate\.source !== "confirmed_all_in"/, "all-in source must be confirmed catalog authority");
 assert.match(source, /estimate\.fixed_monthly_excluded !== true/, "single-run estimate must exclude fixed monthly fees");
 assert.match(source, /SHA256_RE\.test\(record\.all_in_tariff_fingerprint/, "tariff fingerprint must be validated");
