@@ -19,6 +19,7 @@ from .entity_discovery_setup import setup_entity_discovery_runtime, unload_entit
 from .entity_discovery_ws_api import async_register_entity_discovery_websocket
 from .ha_entity_registry_adapter import registry_records_from_home_assistant
 from .hdo_coordinator import CezHdoCoordinator
+from .legacy_tariff_migration_ws_api import async_register_legacy_tariff_migration_websocket
 from .load_execution_action_snapshot_ws_api import async_register_load_execution_action_snapshot_websocket
 from .load_execution_approval_ws_api import async_register_load_execution_approval_preview_websocket
 from .load_execution_arm_ws_api import async_register_load_execution_arm_websocket
@@ -205,6 +206,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         async_register_manual_customer_tariff_websocket(hass)
         async_register_daily_all_in_costs_websocket(hass)
         async_register_tariff_diagnostics_websocket(hass)
+        async_register_legacy_tariff_migration_websocket(hass)
         async_register_mnd_source_proposals_websocket(hass)
         async_register_load_plan_websocket(hass)
         async_register_load_profiles_websocket(hass)
