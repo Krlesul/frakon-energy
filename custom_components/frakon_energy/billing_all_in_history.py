@@ -1,4 +1,4 @@
-"""Historical confirmed all-in tariff schedule for billing projections."""
+"""Historical confirmed tariff schedule for billing projections."""
 
 from __future__ import annotations
 
@@ -21,23 +21,69 @@ from .cost import CostProjection, ENERGY_QUANT, MONEY_QUANT, TariffPrices
 
 _DAYS_PER_YEAR = Decimal("365")
 _MONTHS_PER_YEAR = Decimal("12")
+SOURCE_CONFIRMED_ALL_IN = "confirmed_all_in"
+SOURCE_CONFIRMED_LEGACY_HISTORY = "confirmed_legacy_history"
+LEGACY_MANUAL_IMPORT = "legacy_manual_import"
 
 
 @dataclass(frozen=True, slots=True)
 class BillingTariffSegment:
-    """One contiguous calendar period backed by one confirmed all-in version."""
+    """One contiguous calendar period backed by one confirmed tariff version."""
 
     valid_from: date
     valid_to: date
     prices: TariffPrices
-    all_in_tariff_fingerprint: str
-    authority_method: AllInTariffAuthorityMethod
-    supplier: str
-    product_name: str
+    all_in_tariff_fingerprint: str | None
+    authority_method: AllInTariffAuthorityMethod | str
+    supplier: str | None
+    product_name: str | None
+    legacy_tariff_fingerprint: str | None = None
+    source: str = SOURCE_CONFIRMED_ALL_IN
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.valid_from, date) or not isinstance(self.valid_to, date):
+            raise ValueError("billing tariff segment boundaries must be dates")
+        if self.valid_to < self.valid_from:
+            raise ValueError("billing tariff segment end must not precede start")
+        if not isinstance(self.prices, TariffPrices):
+            raise ValueError("billing tariff segment prices must be TariffPrices")
+        if self.source == SOURCE_CONFIRMED_ALL_IN:
+            if not isinstance(self.all_in_tariff_fingerprint, str):
+                raise ValueError("confirmed all-in segment requires all-in fingerprint")
+            if self.legacy_tariff_fingerprint is not None:
+                raise ValueError("confirmed all-in segment cannot claim legacy fingerprint")
+            if not isinstance(self.authority_method, AllInTariffAuthorityMethod):
+                raise ValueError("confirmed all-in segment requires all-in authority")
+            if not isinstance(self.supplier, str) or not self.supplier.strip():
+                raise ValueError("confirmed all-in segment requires supplier")
+            if not isinstance(self.product_name, str) or not self.product_name.strip():
+                raise ValueError("confirmed all-in segment requires product_name")
+        elif self.source == SOURCE_CONFIRMED_LEGACY_HISTORY:
+            if self.all_in_tariff_fingerprint is not None:
+                raise ValueError("legacy segment cannot claim all-in fingerprint")
+            if not isinstance(self.legacy_tariff_fingerprint, str):
+                raise ValueError("legacy segment requires legacy fingerprint")
+            if self.authority_method != LEGACY_MANUAL_IMPORT:
+                raise ValueError("legacy segment requires legacy_manual_import authority")
+            if self.supplier is not None or self.product_name is not None:
+                raise ValueError("legacy segment cannot claim supplier product identity")
+        else:
+            raise ValueError("unsupported billing tariff segment source")
 
     @property
     def day_count(self) -> int:
         return (self.valid_to - self.valid_from).days + 1
+
+    @property
+    def tariff_fingerprint(self) -> str:
+        fingerprint = (
+            self.all_in_tariff_fingerprint
+            if self.source == SOURCE_CONFIRMED_ALL_IN
+            else self.legacy_tariff_fingerprint
+        )
+        if not isinstance(fingerprint, str):
+            raise ValueError("billing tariff segment fingerprint is unavailable")
+        return fingerprint
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,7 +96,7 @@ class HistoricalAllInCostProjection:
 
     @property
     def tariff_version_count(self) -> int:
-        return len({segment.all_in_tariff_fingerprint for segment in self.segments})
+        return len({segment.tariff_fingerprint for segment in self.segments})
 
 
 def _money(value: Decimal) -> Decimal:
@@ -75,13 +121,115 @@ def _segment_prices(assembly: object) -> TariffPrices:
     )
 
 
+def _legacy_segment_for_missing_day(
+    options: Mapping[str, Any],
+    *,
+    day: date,
+    original_error: LookupError,
+) -> BillingTariffSegment:
+    """Resolve a confirmed legacy snapshot or preserve the original missing error."""
+
+    # Kept lazy deliberately: all-in-only billing does not depend on migration
+    # support, and isolated tariff tests can continue loading only their authority
+    # graph. The historical module is required only when an exact day is missing.
+    try:
+        from .legacy_tariff_history import (
+            confirmed_legacy_tariff_from_options,
+            legacy_tariff_fingerprint,
+        )
+    except ModuleNotFoundError as err:
+        if err.name == "custom_components.frakon_energy.legacy_tariff_history":
+            raise original_error
+        raise
+
+    try:
+        snapshot = confirmed_legacy_tariff_from_options(options, day)
+    except LookupError:
+        raise original_error
+    return BillingTariffSegment(
+        valid_from=day,
+        valid_to=day,
+        prices=TariffPrices(
+            high_rate_czk_per_kwh=snapshot.high_rate_czk_per_kwh,
+            low_rate_czk_per_kwh=snapshot.low_rate_czk_per_kwh,
+            fixed_monthly_czk=snapshot.fixed_monthly_czk,
+        ),
+        all_in_tariff_fingerprint=None,
+        legacy_tariff_fingerprint=legacy_tariff_fingerprint(snapshot),
+        authority_method=snapshot.authority_method.value,
+        supplier=None,
+        product_name=None,
+        source=SOURCE_CONFIRMED_LEGACY_HISTORY,
+    )
+
+
+def _all_in_or_legacy_segment_for_day(
+    options: Mapping[str, Any],
+    *,
+    day: date,
+    contracts: tuple[object, ...],
+    all_in_items: tuple[object, ...],
+    authority_by_fingerprint: Mapping[str, object],
+) -> BillingTariffSegment:
+    """Prefer exact all-in authority; use legacy only when exact coverage is absent."""
+
+    try:
+        contract = select_confirmed_contract_for_day(contracts, day)
+    except LookupError as err:
+        return _legacy_segment_for_missing_day(
+            options,
+            day=day,
+            original_error=err,
+        )
+
+    try:
+        item = select_confirmed_all_in_tariff_for_context(
+            all_in_items,
+            supplier=contract.supplier.value,
+            product_name=contract.product_name,
+            distribution_tariff=contract.distribution_tariff,
+            breaker_code=contract.breaker.code,
+            day=day,
+        )
+    except LookupError as err:
+        return _legacy_segment_for_missing_day(
+            options,
+            day=day,
+            original_error=err,
+        )
+
+    fingerprint = all_in_tariff_fingerprint(item)
+    authority = authority_by_fingerprint.get(fingerprint)
+    if authority is None:
+        # Referential corruption in the new authority graph is never a legacy
+        # fallback condition. Preserve the existing fail-closed behavior.
+        raise LookupError(f"all-in tariff authority not found: {fingerprint}")
+    return BillingTariffSegment(
+        valid_from=day,
+        valid_to=day,
+        prices=_segment_prices(item.assembly),
+        all_in_tariff_fingerprint=fingerprint,
+        legacy_tariff_fingerprint=None,
+        authority_method=authority.method,
+        supplier=item.assembly.supplier,
+        product_name=item.assembly.product_name,
+        source=SOURCE_CONFIRMED_ALL_IN,
+    )
+
+
 def confirmed_all_in_billing_schedule(
     options: Mapping[str, Any],
     *,
     start_date: date,
     end_date: date,
 ) -> tuple[BillingTariffSegment, ...]:
-    """Resolve an exact confirmed all-in tariff for every day and compress it."""
+    """Resolve exact confirmed pricing for every day and compress it.
+
+    Confirmed new-model all-in pricing always wins. A confirmed legacy snapshot
+    may fill only a day for which the exact confirmed contract/all-in lookup is
+    absent. Ambiguous contracts, ambiguous all-in versions, missing authority or
+    corrupt catalogs still fail closed and are never hidden by legacy history.
+    """
 
     if not isinstance(options, Mapping):
         raise ValueError("options must be a mapping")
@@ -100,27 +248,19 @@ def confirmed_all_in_billing_schedule(
     segments: list[BillingTariffSegment] = []
     cursor = start_date
     while cursor <= end_date:
-        contract = select_confirmed_contract_for_day(contracts, cursor)
-        item = select_confirmed_all_in_tariff_for_context(
-            all_in_items,
-            supplier=contract.supplier.value,
-            product_name=contract.product_name,
-            distribution_tariff=contract.distribution_tariff,
-            breaker_code=contract.breaker.code,
+        segment = _all_in_or_legacy_segment_for_day(
+            options,
             day=cursor,
+            contracts=contracts,
+            all_in_items=all_in_items,
+            authority_by_fingerprint=authority_by_fingerprint,
         )
-        fingerprint = all_in_tariff_fingerprint(item)
-        authority = authority_by_fingerprint.get(fingerprint)
-        if authority is None:
-            raise LookupError(
-                f"all-in tariff authority not found: {fingerprint}"
-            )
-        prices = _segment_prices(item.assembly)
 
         if (
             segments
-            and segments[-1].all_in_tariff_fingerprint == fingerprint
-            and segments[-1].authority_method is authority.method
+            and segments[-1].source == segment.source
+            and segments[-1].tariff_fingerprint == segment.tariff_fingerprint
+            and segments[-1].authority_method == segment.authority_method
             and segments[-1].valid_to + timedelta(days=1) == cursor
         ):
             previous = segments[-1]
@@ -129,26 +269,18 @@ def confirmed_all_in_billing_schedule(
                 valid_to=cursor,
                 prices=previous.prices,
                 all_in_tariff_fingerprint=previous.all_in_tariff_fingerprint,
+                legacy_tariff_fingerprint=previous.legacy_tariff_fingerprint,
                 authority_method=previous.authority_method,
                 supplier=previous.supplier,
                 product_name=previous.product_name,
+                source=previous.source,
             )
         else:
-            segments.append(
-                BillingTariffSegment(
-                    valid_from=cursor,
-                    valid_to=cursor,
-                    prices=prices,
-                    all_in_tariff_fingerprint=fingerprint,
-                    authority_method=authority.method,
-                    supplier=item.assembly.supplier,
-                    product_name=item.assembly.product_name,
-                )
-            )
+            segments.append(segment)
         cursor += timedelta(days=1)
 
     if not segments:
-        raise LookupError("confirmed all-in billing schedule is empty")
+        raise LookupError("confirmed billing tariff schedule is empty")
     return tuple(segments)
 
 
@@ -167,8 +299,9 @@ def calculate_confirmed_all_in_cost_projection(
 
     The existing billing model assumes observed consumption is uniformly spread
     across elapsed calendar days. This function preserves that assumption, but it
-    prices each elapsed and future day with the exact confirmed all-in tariff that
-    applies on that day. A tariff change therefore cannot reprice the whole cycle.
+    prices each elapsed and future day with the exact confirmed tariff that applies
+    on that day. New confirmed all-in versions remain authoritative; explicitly
+    confirmed legacy snapshots may only fill pre-catalog historical gaps.
     """
 
     if settlement_date < cycle_start:
@@ -223,4 +356,13 @@ def calculate_confirmed_all_in_cost_projection(
         accrued_total_cost_czk=_money(accrued_energy + accrued_fixed),
         projected_total_cost_czk=_money(projected_energy + projected_fixed),
     )
-    return HistoricalAllInCostProjection(cost=cost, segments=segments)
+    method = (
+        "daily_confirmed_all_in_schedule_linear_consumption"
+        if all(segment.source == SOURCE_CONFIRMED_ALL_IN for segment in segments)
+        else "daily_confirmed_mixed_tariff_history_linear_consumption"
+    )
+    return HistoricalAllInCostProjection(
+        cost=cost,
+        segments=segments,
+        method=method,
+    )
