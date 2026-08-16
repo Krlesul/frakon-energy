@@ -1,0 +1,56 @@
+name: Runtime Fix Frontend Build
+
+on:
+  push:
+    branches:
+      - agent/runtime-live-data-discovery-fix
+    paths:
+      - "frontend/**"
+      - ".github/workflows/runtime-fix-build.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: agent/runtime-live-data-discovery-fix
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm install
+
+      - name: Validate runtime contract
+        working-directory: frontend
+        run: node scripts/check-runtime-live-data-contract.mjs
+
+      - name: Build dashboard
+        working-directory: frontend
+        run: npm run build
+
+      - name: Package dashboard
+        run: |
+          rm -rf custom_components/frakon_energy/frontend_app
+          mkdir -p custom_components/frakon_energy/frontend_app
+          cp -R frontend/dist/. custom_components/frakon_energy/frontend_app/
+
+      - name: Commit generated dashboard
+        run: |
+          if git diff --quiet -- custom_components/frakon_energy/frontend_app; then
+            echo "Generated dashboard is already current."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add custom_components/frakon_energy/frontend_app
+          git commit -m "Build frontend runtime fixes"
+          git push origin HEAD:agent/runtime-live-data-discovery-fix
