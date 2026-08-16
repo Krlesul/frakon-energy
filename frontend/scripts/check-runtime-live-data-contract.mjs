@@ -78,6 +78,17 @@ for (const path of [
   }
 }
 
+const technologyOverviewCss = read("src/technology-overview.css");
+for (const forbidden of [
+  ".frakon-no-tariff .tariff-card",
+  ".frakon-no-tariff .hdo-plan-card",
+  ".frakon-no-tariff .bottom-nav button:nth-child(3)",
+]) {
+  if (technologyOverviewCss.includes(forbidden)) {
+    throw new Error(`Core tariff/HDO UI must never be hidden by technology discovery: ${forbidden}`);
+  }
+}
+
 const spotSettings = read("src/spot-price-settings.tsx");
 if (!spotSettings.includes("settings-stack--full") || !spotSettings.includes("commissioning-hardening.css")) {
   throw new Error("Spot/load settings must use the full-width hardened settings stack.");
