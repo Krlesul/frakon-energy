@@ -1,9 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import type { HomeAssistant } from "./home-assistant";
+import { findFrakonEnergyEntryId, type HomeAssistant } from "./home-assistant";
 import "./energy-flow-summary.css";
 
-type ConfigEntry = { entry_id: string; domain?: string };
 type WsConnection = { sendMessagePromise?: <T>(message: Record<string, unknown>) => Promise<T> };
 type FlowDirection = "into-house" | "out-of-house" | "house-load" | "bidirectional";
 type FlowQuality = "complete" | "partial" | "needs_setup";
@@ -71,11 +70,6 @@ async function callWs<T>(hass: HomeAssistant, message: Record<string, unknown>):
   const connection = hass.connection as WsConnection | undefined;
   if (!connection?.sendMessagePromise) throw new Error("WebSocket Home Assistantu není dostupný.");
   return connection.sendMessagePromise<T>(message);
-}
-
-async function findEntry(hass: HomeAssistant): Promise<ConfigEntry | null> {
-  const entries = await callWs<ConfigEntry[]>(hass, { type: "config_entries/get" });
-  return entries.find((item) => item.domain === "frakon_energy") ?? null;
 }
 
 async function loadServerFlow(hass: HomeAssistant, entryId: string): Promise<ServerEnergyFlowSnapshot> {
@@ -166,9 +160,9 @@ function EnergyFlow({ hass }: { hass: HomeAssistant }) {
     let active = true;
     const refresh = async () => {
       try {
-        const entry = await findEntry(hass);
+        const resolvedEntryId = await findFrakonEnergyEntryId(hass);
         if (!active) return;
-        if (!entry) {
+        if (!resolvedEntryId) {
           setEntryId(null);
           setFlow(null);
           setSafety(null);
@@ -176,11 +170,11 @@ function EnergyFlow({ hass }: { hass: HomeAssistant }) {
           return;
         }
         const [value, safetyValue] = await Promise.all([
-          loadServerFlow(hass, entry.entry_id),
-          loadSafetyStatus(hass, entry.entry_id).catch(() => null),
+          loadServerFlow(hass, resolvedEntryId),
+          loadSafetyStatus(hass, resolvedEntryId).catch(() => null),
         ]);
         if (!active) return;
-        setEntryId(entry.entry_id);
+        setEntryId(resolvedEntryId);
         setFlow(value);
         setSafety(safetyValue);
         setError(null);
@@ -231,7 +225,7 @@ function EnergyFlow({ hass }: { hass: HomeAssistant }) {
         if (active) setError(reason instanceof Error ? reason.message : "Energetický tok se nepodařilo obnovit.");
       });
     return () => { active = false; };
-  }, [entryId, hass, sourceFingerprint]);
+  }, [entryId, hass.connection, sourceFingerprint]);
 
   const nodes = useMemo<FlowNode[]>(() => {
     if (!flow) return [];
@@ -300,17 +294,43 @@ function EnergyFlow({ hass }: { hass: HomeAssistant }) {
   </section>;
 }
 
+function removeHost(host: HTMLElement): void {
+  root?.unmount();
+  root = null;
+  host.remove();
+}
+
 function mount(): void {
   const anchor = overviewAnchor();
-  const stale = document.getElementById(HOST_ID);
-  if (!anchor) { stale?.remove(); root = null; return; }
-  let host = stale;
-  if (!host) { host = document.createElement("section"); host.id = HOST_ID; anchor.insertAdjacentElement("afterend", host); root = createRoot(host); }
+  let host = document.getElementById(HOST_ID);
+  if (!anchor) {
+    if (host) removeHost(host);
+    return;
+  }
+  if (host && host.previousElementSibling !== anchor) {
+    removeHost(host);
+    host = null;
+  }
+  if (!host) {
+    host = document.createElement("section");
+    host.id = HOST_ID;
+    anchor.insertAdjacentElement("afterend", host);
+    root = createRoot(host);
+  }
   const hass = currentHass();
   if (hass) root?.render(<EnergyFlow hass={hass} />);
 }
 
-const observer = new MutationObserver(mount);
+function reconcileStructure(): void {
+  const anchor = overviewAnchor();
+  const host = document.getElementById(HOST_ID);
+  const mountedCorrectly = Boolean(anchor && host && host.previousElementSibling === anchor);
+  const absentCorrectly = !anchor && !host;
+  if (mountedCorrectly || absentCorrectly) return;
+  mount();
+}
+
+const observer = new MutationObserver(reconcileStructure);
 observer.observe(document.documentElement, { childList: true, subtree: true });
 window.addEventListener("frakon-energy-hass-updated", mount);
 window.addEventListener("load", mount);
