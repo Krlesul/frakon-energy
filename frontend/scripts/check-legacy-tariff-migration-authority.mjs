@@ -5,6 +5,11 @@ const source = await readFile(
   new URL("../public/legacy-tariff-migration-bridge.js", import.meta.url),
   "utf8",
 );
+const sourceIndex = await readFile(new URL("../index.html", import.meta.url), "utf8");
+const packagedIndex = await readFile(
+  new URL("../../custom_components/frakon_energy/frontend_app/index.html", import.meta.url),
+  "utf8",
+);
 
 assert.equal(source.includes("innerHTML"), false, "backend text must never be rendered through innerHTML");
 assert.match(source, /const SHA256_RE = \/\^\[0-9a-f\]\{64\}\$\//, "migration fingerprint must be validated as SHA-256");
@@ -91,5 +96,16 @@ assert.match(source, /normalizeDecimal\(result\.fixed_monthly_czk,[\s\S]*?!== ex
 const editableInputs = [...source.matchAll(/input\.type = "([^"]+)";/g)].map((match) => match[1]);
 assert.deepEqual(editableInputs, ["date"], "legacy migration UI must expose only date inputs");
 assert.equal(source.includes("inputMode"), false, "legacy prices must never become editable numeric inputs");
+
+assert.equal(
+  (sourceIndex.match(/src="\/legacy-tariff-migration-bridge\.js"/g) ?? []).length,
+  1,
+  "frontend index must load the migration bridge exactly once",
+);
+assert.equal(
+  (packagedIndex.match(/src="\.\/legacy-tariff-migration-bridge\.js"/g) ?? []).length,
+  1,
+  "packaged index must load the migration bridge exactly once",
+);
 
 console.log("Legacy tariff migration frontend authority boundary OK");
