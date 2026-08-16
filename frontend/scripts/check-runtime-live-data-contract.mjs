@@ -41,8 +41,53 @@ for (const alias of [
     throw new Error(`home-assistant.ts is missing the live HDO alias: ${alias}`);
   }
 }
-if (!helper.includes("frakonEntries.find((entry) => !isHdoConfigEntry(entry))")) {
-  throw new Error("Primary FRAKON Energy config entry selection must prefer the non-HDO entry.");
+if (!helper.includes('type: "frakon_energy/entry/primary"')) {
+  throw new Error("Primary FRAKON Energy entry must be resolved by the authoritative server endpoint.");
+}
+if (helper.includes('type: "config_entries/get"')) {
+  throw new Error("home-assistant.ts must not guess the primary runtime from the client-side config-entry list.");
 }
 
-console.log("Runtime live-data/discovery contract OK");
+const capacity = read("src/site-capacity-settings.tsx");
+if (!capacity.includes("findFrakonEnergyEntryId")) {
+  throw new Error("site-capacity-settings.tsx must use the authoritative VisionQ entry resolver.");
+}
+if (capacity.includes('type: "config_entries/get"')) {
+  throw new Error("site-capacity-settings.tsx still contains the old first-config-entry routing.");
+}
+
+const settlement = read("src/phase-settlement-status.tsx");
+if (!settlement.includes("findFrakonEnergyEntryId")) {
+  throw new Error("phase-settlement-status.tsx must use the authoritative VisionQ entry resolver.");
+}
+
+for (const path of [
+  "public/tariff-confirmation-bridge.js",
+  "public/manual-tariff-entry-bridge.js",
+  "public/supplier-parser-preview-bridge.js",
+  "public/mnd-source-confirmation-bridge.js",
+  "public/legacy-tariff-migration-bridge.js",
+  "public/load-all-in-estimate-bridge.js",
+]) {
+  const source = read(path);
+  if (!source.includes('frakon_energy/entry/primary')) {
+    throw new Error(`${path}: tariff/profile bridge must bind to the active VisionQ runtime.`);
+  }
+  if (source.includes('type: "config_entries/get"')) {
+    throw new Error(`${path}: multi-entry installations must not be rejected by config_entries/get heuristics.`);
+  }
+}
+
+const spotSettings = read("src/spot-price-settings.tsx");
+if (!spotSettings.includes("settings-stack--full") || !spotSettings.includes("commissioning-hardening.css")) {
+  throw new Error("Spot/load settings must use the full-width hardened settings stack.");
+}
+
+const css = read("src/commissioning-hardening.css");
+for (const required of [".spot-settings-grid", ".settings-stack--full", ".bottom-nav"]) {
+  if (!css.includes(required)) {
+    throw new Error(`Commissioning CSS is missing ${required}.`);
+  }
+}
+
+console.log("Runtime live-data/discovery commissioning contract OK");
