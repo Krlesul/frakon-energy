@@ -105,7 +105,6 @@ def _sources_for_day(day: date) -> tuple[RegulatedPriceSource, ...]:
             source_url=ERU_LOW_VOLTAGE_2026_XLSX_URL,
             valid_from=YEAR_START,
             valid_to=YEAR_END,
-            document_date=date(2026, 1, 23),
             checksum=ERU_LOW_VOLTAGE_2026_XLSX_SHA256,
         ),
         RegulatedPriceSource(
