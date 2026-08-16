@@ -123,6 +123,7 @@ jobs:
           tests/test_tariff_all_in_preview_ws_api.py
           tests/test_tariff_all_in_preview_wiring.py
           tests/test_regulated_pricing.py
+          tests/test_tariff_acceptance_matrix.py
           tests/test_regulated_catalog.py
           tests/test_regulated_proposals.py
           tests/test_regulated_proposals_ws_api.py
