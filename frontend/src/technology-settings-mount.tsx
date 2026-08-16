@@ -25,15 +25,26 @@ function settingsGrid(): HTMLElement | null {
   return grids.find((grid) => grid.querySelector(".settings-copy")) ?? null;
 }
 
+function removeHost(host: HTMLElement): void {
+  root?.unmount();
+  root = null;
+  host.remove();
+}
+
 function mount(): void {
   const grid = settingsGrid();
+  let host = document.getElementById(HOST_ID);
+
   if (!grid) {
-    const stale = document.getElementById(HOST_ID);
-    if (stale && !document.body.contains(stale)) root = null;
+    if (host) removeHost(host);
     return;
   }
 
-  let host = document.getElementById(HOST_ID);
+  if (host && host.previousElementSibling !== grid) {
+    removeHost(host);
+    host = null;
+  }
+
   if (!host) {
     host = document.createElement("section");
     host.id = HOST_ID;
@@ -46,7 +57,16 @@ function mount(): void {
   root?.render(<><TechnologySettings hass={hass} /><SiteCapacitySettings hass={hass} /><PhaseSettlementStatus hass={hass} /></>);
 }
 
-const observer = new MutationObserver(mount);
+function reconcileStructure(): void {
+  const grid = settingsGrid();
+  const host = document.getElementById(HOST_ID);
+  const mountedCorrectly = Boolean(grid && host && host.previousElementSibling === grid);
+  const absentCorrectly = !grid && !host;
+  if (mountedCorrectly || absentCorrectly) return;
+  mount();
+}
+
+const observer = new MutationObserver(reconcileStructure);
 observer.observe(document.documentElement, { childList: true, subtree: true });
 window.addEventListener("frakon-energy-hass-updated", mount);
 window.addEventListener("load", mount);
