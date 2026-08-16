@@ -8,6 +8,7 @@ let revision = 0;
 let busy = false;
 let proposal = null;
 let confirmation = null;
+let errorState = null;
 let draft = { validFrom: "", validTo: "" };
 
 function hassObject() {
@@ -106,6 +107,13 @@ function resetState() {
   busy = false;
   proposal = null;
   confirmation = null;
+  errorState = null;
+  invalidateView();
+  queueMicrotask(syncBridge);
+}
+
+function clearError() {
+  errorState = null;
   invalidateView();
   queueMicrotask(syncBridge);
 }
@@ -209,6 +217,7 @@ async function proposeMigration() {
   busy = true;
   proposal = null;
   confirmation = null;
+  errorState = null;
   invalidateView();
   syncBridge();
   try {
@@ -226,22 +235,11 @@ async function proposeMigration() {
     proposal = validateProposal(result, { entryId, validFrom, validTo });
   } catch (error) {
     if (revision !== myRevision) return;
-    const root = ensureRoot();
-    if (root) {
-      renderOnce(root, `error-${revision}`, (target) => {
-        const panel = text("div", "frakon-legacy-migration__panel", "");
-        panel.append(
-          text("h3", "", "Migraci nelze připravit"),
-          text("p", "frakon-legacy-migration__error", readableError(error)),
-        );
-        const retry = text("button", "frakon-legacy-migration__secondary", "Zpět k období");
-        retry.type = "button";
-        retry.addEventListener("click", resetState);
-        panel.append(retry);
-        target.append(panel);
-      });
-    }
-    return;
+    errorState = {
+      kind: "propose",
+      title: "Migraci nelze připravit",
+      message: readableError(error),
+    };
   } finally {
     if (revision === myRevision) {
       busy = false;
@@ -256,6 +254,7 @@ async function confirmMigration() {
   const expected = proposal;
   const myRevision = ++revision;
   busy = true;
+  errorState = null;
   invalidateView();
   syncBridge();
   try {
@@ -268,25 +267,11 @@ async function confirmMigration() {
     confirmation = validateConfirmation(result, expected);
   } catch (error) {
     if (revision !== myRevision) return;
-    const root = ensureRoot();
-    if (root) {
-      renderOnce(root, `confirm-error-${revision}`, (target) => {
-        const panel = text("div", "frakon-legacy-migration__panel", "");
-        panel.append(
-          text("h3", "", "Historii nelze potvrdit"),
-          text("p", "frakon-legacy-migration__error", readableError(error)),
-        );
-        const retry = text("button", "frakon-legacy-migration__secondary", "Zpět na preview");
-        retry.type = "button";
-        retry.addEventListener("click", () => {
-          invalidateView();
-          queueMicrotask(syncBridge);
-        });
-        panel.append(retry);
-        target.append(panel);
-      });
-    }
-    return;
+    errorState = {
+      kind: "confirm",
+      title: "Historii nelze potvrdit",
+      message: readableError(error),
+    };
   } finally {
     if (revision === myRevision) {
       busy = false;
@@ -351,6 +336,27 @@ function renderBusy(root) {
       text("h3", "", "Kontroluji immutable migration boundary…"),
       text("p", "frakon-legacy-migration__lead", "Live tarif ani aktivace se tímto krokem nemění."),
     );
+    target.append(panel);
+  });
+}
+
+function renderError(root) {
+  const state = errorState;
+  if (!state) return;
+  renderOnce(root, `error-${state.kind}-${revision}`, (target) => {
+    const panel = text("div", "frakon-legacy-migration__panel", "");
+    panel.append(
+      text("h3", "", state.title),
+      text("p", "frakon-legacy-migration__error", state.message),
+    );
+    const retry = text(
+      "button",
+      "frakon-legacy-migration__secondary",
+      state.kind === "confirm" ? "Zpět na preview" : "Zpět k období",
+    );
+    retry.type = "button";
+    retry.addEventListener("click", clearError);
+    panel.append(retry);
     target.append(panel);
   });
 }
@@ -439,6 +445,7 @@ function syncBridge() {
   const root = ensureRoot();
   if (!root) return;
   if (busy) renderBusy(root);
+  else if (errorState) renderError(root);
   else if (confirmation) renderConfirmed(root);
   else if (proposal) renderProposal(root);
   else renderIdle(root);
