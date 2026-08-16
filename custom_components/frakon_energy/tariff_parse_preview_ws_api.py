@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import date
 from typing import Any, Mapping
 
@@ -35,6 +36,8 @@ from .tariff_source_context import (
 )
 
 COMMAND_TARIFF_PARSE_PREVIEW = "frakon_energy/tariff/parse_preview"
+TARIFF_PARSE_DOWNLOAD_DEADLINE_SECONDS = 25.0
+TARIFF_PARSE_EXECUTOR_DEADLINE_SECONDS = 15.0
 _REGISTERED_KEY = "tariff_parse_preview_websocket_registered"
 _VOL_OPTIONAL = getattr(vol, "Optional", lambda key: key)
 
@@ -158,12 +161,22 @@ def async_register_tariff_parse_preview_websocket(hass: HomeAssistant) -> None:
 
         checked_at = dt_util.now()
         try:
-            download = await async_fetch_selected_tariff_document_ha(
-                hass,
-                candidate=candidate,
-                request=request,
-                checked_at=checked_at,
+            download = await asyncio.wait_for(
+                async_fetch_selected_tariff_document_ha(
+                    hass,
+                    candidate=candidate,
+                    request=request,
+                    checked_at=checked_at,
+                ),
+                timeout=TARIFF_PARSE_DOWNLOAD_DEADLINE_SECONDS,
             )
+        except TimeoutError:
+            connection.send_error(
+                msg["id"],
+                "download_timeout",
+                "Stažení ceníku překročilo bezpečnostní časový limit 25 sekund.",
+            )
+            return
         except Exception as err:
             connection.send_error(msg["id"], "download_failed", str(err))
             return
@@ -184,11 +197,21 @@ def async_register_tariff_parse_preview_websocket(hass: HomeAssistant) -> None:
             return
 
         try:
-            preview = await hass.async_add_executor_job(
-                _extract_and_parse,
-                download,
-                contract,
+            preview = await asyncio.wait_for(
+                hass.async_add_executor_job(
+                    _extract_and_parse,
+                    download,
+                    contract,
+                ),
+                timeout=TARIFF_PARSE_EXECUTOR_DEADLINE_SECONDS,
             )
+        except TimeoutError:
+            connection.send_error(
+                msg["id"],
+                "parse_timeout",
+                "Zpracování PDF ceníku překročilo bezpečnostní časový limit 15 sekund.",
+            )
+            return
         except LookupError as err:
             connection.send_error(msg["id"], "parser_not_supported", str(err))
             return

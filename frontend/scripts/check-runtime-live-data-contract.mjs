@@ -96,6 +96,9 @@ if (tariffWizard.includes("}, [hass]);")) {
 if (!tariffWizard.includes("[hass?.connection]")) {
   throw new Error("Tariff wizard must initialize against the stable Home Assistant connection.");
 }
+if (!tariffWizard.includes("TARIFF_PREVIEW_REQUEST_TIMEOUT_MS = 45_000") || !tariffWizard.includes("withRequestTimeout(")) {
+  throw new Error("Tariff preview must have a finite frontend request watchdog.");
+}
 
 const mainUi = read("src/main.tsx");
 for (const forbidden of ["DEFAULT_NT_SCHEDULE", "fallbackNtIntervals", "Používá se náhradní plán"]) {

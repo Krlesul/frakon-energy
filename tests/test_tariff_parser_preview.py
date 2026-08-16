@@ -333,6 +333,26 @@ def test_cez_preview_returns_exact_validated_supplier_prices_without_authority()
     ]
 
 
+def test_cez_preview_accepts_plain_pypdf_fallback_provenance() -> None:
+    contracts, sources, selection, download_module, pdf_text, preview = load_modules()
+    contract, _candidate, validated, extracted = _cez_inputs(
+        contracts, sources, selection, download_module, pdf_text
+    )
+    fallback = pdf_text.ExtractedTariffPdfText(
+        source_url=extracted.source_url,
+        document_sha256=extracted.document_sha256,
+        page_count=extracted.page_count,
+        text=extracted.text,
+        extraction_method="pypdf_plain_fallback",
+    )
+
+    result = preview.parse_supplier_tariff_preview(validated, fallback, contract)
+
+    assert result.extraction_method == "pypdf_plain_fallback"
+    assert str(result.high_rate_czk_per_kwh) == "3.96"
+    assert str(result.low_rate_czk_per_kwh) == "3.70"
+
+
 def test_eon_preview_returns_exact_validated_supplier_prices_without_authority() -> None:
     contracts, sources, selection, download_module, pdf_text, preview = load_modules()
     contract, candidate, validated, extracted = _eon_inputs(

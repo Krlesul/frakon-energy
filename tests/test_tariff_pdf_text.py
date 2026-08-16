@@ -156,6 +156,30 @@ def test_extracts_layout_text_only_from_validated_parser_authorized_download() -
     assert result.activation_performed is False
 
 
+def test_falls_back_to_plain_text_when_layout_extraction_is_blank(monkeypatch) -> None:
+    sources, download_module, pdf_text = load_modules()
+    content = _pdf_bytes("placeholder")
+    download = _download(sources, download_module, content)
+
+    class FakePage:
+        def extract_text(self, *args, **kwargs):
+            if kwargs.get("extraction_mode") == "layout":
+                return ""
+            return "Ceník elektřiny pro domácnosti\nElektřina na dobu neurčitou\nD25d"
+
+    class FakeReader:
+        is_encrypted = False
+        pages = (FakePage(),)
+
+    monkeypatch.setattr(pdf_text, "PdfReader", lambda *_args, **_kwargs: FakeReader())
+
+    result = pdf_text.extract_validated_tariff_pdf_text(download)
+
+    assert "Elektřina na dobu neurčitou" in result.text
+    assert "D25d" in result.text
+    assert result.extraction_method == "pypdf_plain_fallback"
+
+
 def test_rejects_arbitrary_bytes_or_non_authorized_download() -> None:
     sources, download_module, pdf_text = load_modules()
 

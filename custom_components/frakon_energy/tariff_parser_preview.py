@@ -90,7 +90,7 @@ class SupplierTariffParsePreview:
             raise ValueError("page_count must be a positive integer")
         if self.parser_name != expected_parser:
             raise ValueError("unsupported parser_name")
-        if self.extraction_method != "pypdf_layout":
+        if self.extraction_method not in {"pypdf_layout", "pypdf_plain_fallback"}:
             raise ValueError("unsupported extraction_method")
         if self.extraction_confidence != CONFIDENCE_EXACT:
             raise ValueError("parser preview must pass exact validation before exposure")
