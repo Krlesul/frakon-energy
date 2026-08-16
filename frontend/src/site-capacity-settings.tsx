@@ -141,6 +141,15 @@ async function findEntry(hass: HomeAssistant): Promise<ConfigEntry | null> {
   return entryId ? { entry_id: entryId } : null;
 }
 
+function errorMessage(reason: unknown, fallback: string): string {
+  if (reason instanceof Error && reason.message) return reason.message;
+  if (typeof reason === "object" && reason !== null && "message" in reason) {
+    const message = String((reason as { message?: unknown }).message ?? "");
+    if (message) return message;
+  }
+  return fallback;
+}
+
 function statusLabel(status: SiteCapacityStatus["status"]): string {
   if (status === "within_limit") return "V limitu";
   if (status === "over_limit") return "Limit překročen";
@@ -194,12 +203,12 @@ export function SiteCapacitySettings({ hass }: { hass?: HomeAssistant }) {
         setSafetyError(null);
       } catch (reason) {
         setSafety(null);
-        setSafetyError(reason instanceof Error ? reason.message : "Bezpečnostní stav rezervací se nepodařilo načíst.");
+        setSafetyError(errorMessage(reason, "Bezpečnostní stav rezervací se nepodařilo načíst."));
       }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Kapacitu přívodu se nepodařilo načíst.");
+      setError(errorMessage(reason, "Kapacitu přívodu se nepodařilo načíst."));
     }
-  }, [hass]);
+  }, [hass?.connection]);
 
   useEffect(() => {
     void load();

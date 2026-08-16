@@ -72,6 +72,15 @@ async function callWs<T>(hass: HomeAssistant, message: Record<string, unknown>):
   return connection.sendMessagePromise<T>(message);
 }
 
+function errorMessage(reason: unknown, fallback: string): string {
+  if (reason instanceof Error && reason.message) return reason.message;
+  if (typeof reason === "object" && reason !== null && "message" in reason) {
+    const message = String((reason as { message?: unknown }).message ?? "");
+    if (message) return message;
+  }
+  return fallback;
+}
+
 async function loadServerFlow(hass: HomeAssistant, entryId: string): Promise<ServerEnergyFlowSnapshot> {
   return callWs<ServerEnergyFlowSnapshot>(hass, {
     type: "frakon_energy/energy_flow/status",
@@ -179,7 +188,7 @@ function EnergyFlow({ hass }: { hass: HomeAssistant }) {
         setSafety(safetyValue);
         setError(null);
       } catch (reason) {
-        if (active) setError(reason instanceof Error ? reason.message : "Energetický tok se nepodařilo načíst.");
+        if (active) setError(errorMessage(reason, "Energetický tok se nepodařilo načíst."));
       }
     };
     void refresh();
@@ -222,7 +231,7 @@ function EnergyFlow({ hass }: { hass: HomeAssistant }) {
         setError(null);
       })
       .catch((reason) => {
-        if (active) setError(reason instanceof Error ? reason.message : "Energetický tok se nepodařilo obnovit.");
+        if (active) setError(errorMessage(reason, "Energetický tok se nepodařilo obnovit."));
       });
     return () => { active = false; };
   }, [entryId, hass.connection, sourceFingerprint]);

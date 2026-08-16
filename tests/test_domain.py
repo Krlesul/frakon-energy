@@ -92,3 +92,19 @@ def test_default_settlement_date_is_next_31_january() -> None:
     billing = load_module("billing")
     assert billing.next_default_settlement_date(date(2026, 1, 20)) == date(2026, 1, 31)
     assert billing.next_default_settlement_date(date(2026, 2, 1)) == date(2027, 1, 31)
+
+
+
+def test_primary_entry_websocket_is_loaded_visionq_authority() -> None:
+    source = (ROOT / "technology_profile_ws_api.py").read_text(encoding="utf-8")
+    assert 'COMMAND_PRIMARY_ENTRY = "frakon_energy/entry/primary"' in source
+    assert "PROVIDER_VISIONQ" in source
+    assert "entry.entry_id in domain_data" in source
+    assert "visionq_runtime_unavailable" in source
+    assert "ambiguous_visionq_runtime" in source
+
+
+def test_entity_discovery_missing_runtime_has_actionable_websocket_error() -> None:
+    source = (ROOT / "entity_discovery_ws_api.py").read_text(encoding="utf-8")
+    assert "entity_discovery_runtime_unavailable" in source
+    assert "_send_runtime_error" in source
