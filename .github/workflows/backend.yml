@@ -83,6 +83,9 @@ jobs:
           tests/test_daily_all_in_costs.py
           tests/test_daily_all_in_costs_ws_api.py
           tests/test_daily_all_in_costs_wiring.py
+          tests/test_tariff_diagnostics.py
+          tests/test_tariff_diagnostics_ws_api.py
+          tests/test_tariff_diagnostics_wiring.py
           tests/test_load_all_in_estimate.py
           tests/test_load_all_in_wiring.py
           tests/test_contracts.py
