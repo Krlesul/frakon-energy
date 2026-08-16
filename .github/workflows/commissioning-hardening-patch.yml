@@ -1,0 +1,134 @@
+name: Commissioning Hardening Patch
+
+on:
+  push:
+    branches:
+      - agent/commissioning-data-ui-hardening
+    paths:
+      - ".github/workflows/commissioning-hardening-patch.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: agent/commissioning-data-ui-hardening
+
+      - name: Apply targeted commissioning fixes
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace(path: str, old: str, new: str, *, count: int = 1) -> None:
+              file = Path(path)
+              text = file.read_text(encoding="utf-8")
+              found = text.count(old)
+              if found != count:
+                  raise SystemExit(f"{path}: expected {count} match(es), found {found}: {old[:90]!r}")
+              file.write_text(text.replace(old, new), encoding="utf-8")
+
+          # Capacity settings used the first FRAKON entry instead of the active VisionQ runtime.
+          replace(
+              "frontend/src/site-capacity-settings.tsx",
+              'import type { HomeAssistant } from "./home-assistant";\n\ntype ConfigEntry = { entry_id: string; domain?: string };',
+              'import { findFrakonEnergyEntryId, type HomeAssistant } from "./home-assistant";\n\ntype ConfigEntry = { entry_id: string };',
+          )
+          replace(
+              "frontend/src/site-capacity-settings.tsx",
+              '''async function findEntry(hass: HomeAssistant): Promise<ConfigEntry | null> {\n  const entries = await callWs<ConfigEntry[]>(hass, { type: "config_entries/get" });\n  return entries.find((entry) => entry.domain === "frakon_energy") ?? null;\n}''',
+              '''async function findEntry(hass: HomeAssistant): Promise<ConfigEntry | null> {\n  const entryId = await findFrakonEnergyEntryId(hass);\n  return entryId ? { entry_id: entryId } : null;\n}''',
+          )
+
+          primary_resolver_old = '''async function resolveEntryId() {\n  const entries = await callWs({ type: "config_entries/get" });\n  if (!Array.isArray(entries)) throw new Error("Backend nevrátil seznam konfigurací.");\n  const matches = entries.filter((entry) => entry?.domain === "frakon_energy");\n  if (matches.length !== 1 || typeof matches[0]?.entry_id !== "string") {\n    throw new Error("Nelze jednoznačně určit konfiguraci FRAKON Energy.");\n  }\n  return matches[0].entry_id;\n}'''
+          primary_resolver_new = '''async function resolveEntryId() {\n  const primary = await callWs({ type: "frakon_energy/entry/primary" });\n  if (!primary || primary.provider !== "visionq" || primary.loaded !== true || typeof primary.entry_id !== "string") {\n    throw new Error("Backend neurčil aktivní VisionQ konfiguraci FRAKON Energy.");\n  }\n  return primary.entry_id;\n}'''
+          for path in (
+              "frontend/public/manual-tariff-entry-bridge.js",
+              "frontend/public/supplier-parser-preview-bridge.js",
+              "frontend/public/legacy-tariff-migration-bridge.js",
+          ):
+              replace(path, primary_resolver_old, primary_resolver_new)
+
+          mnd_old = '''async function resolveEntryId() {\n  const entries = await callWs({ type: "config_entries/get" });\n  if (!Array.isArray(entries)) throw new Error("Backend nevrátil seznam konfigurací.");\n  const matchingEntries = entries.filter((entry) => entry?.domain === "frakon_energy");\n  if (matchingEntries.length !== 1 || typeof matchingEntries[0]?.entry_id !== "string") {\n    throw new Error("Nelze jednoznačně určit konfiguraci FRAKON Energy.");\n  }\n  return matchingEntries[0].entry_id;\n}'''
+          replace("frontend/public/mnd-source-confirmation-bridge.js", mnd_old, primary_resolver_new)
+
+          tariff_context_old = '''  const entries = await callWs({ type: "config_entries/get" });\n  if (!Array.isArray(entries)) throw new Error("Backend nevrátil seznam konfigurací.");\n  const matchingEntries = entries.filter((entry) => entry?.domain === "frakon_energy");\n  if (matchingEntries.length !== 1 || typeof matchingEntries[0]?.entry_id !== "string") {\n    throw new Error("Nelze jednoznačně určit konfiguraci FRAKON Energy.");\n  }\n  const entryId = matchingEntries[0].entry_id;'''
+          tariff_context_new = '''  const primary = await callWs({ type: "frakon_energy/entry/primary" });\n  if (!primary || primary.provider !== "visionq" || primary.loaded !== true || typeof primary.entry_id !== "string") {\n    throw new Error("Backend neurčil aktivní VisionQ konfiguraci FRAKON Energy.");\n  }\n  const entryId = primary.entry_id;'''
+          replace("frontend/public/tariff-confirmation-bridge.js", tariff_context_old, tariff_context_new)
+
+          load_profile_old = '''async function resolveEntryForProfile(profileId) {\n  const entries = await callWs({ type: "config_entries/get" });\n  if (!Array.isArray(entries)) throw new Error("Backend nevrátil seznam konfigurací.");\n  const candidates = entries.filter((entry) => entry?.domain === "frakon_energy" && typeof entry?.entry_id === "string");\n  const matches = [];\n  for (const entry of candidates) {\n    try {\n      const response = await callWs({ type: "frakon_energy/load_profiles/list", entry_id: entry.entry_id });\n      if (\n        !response ||\n        response.entry_id !== entry.entry_id ||\n        !Array.isArray(response.profiles) ||\n        response.read_only_execution !== true\n      ) {\n        continue;\n      }\n      const profileMatches = response.profiles.filter((profile) => profile?.profile_id === profileId);\n      if (profileMatches.length === 1) matches.push({ entryId: entry.entry_id, profile: profileMatches[0] });\n      else if (profileMatches.length > 1) throw new Error("Backend vrátil duplicitní profil.");\n    } catch (error) {\n      if (error instanceof Error && error.message === "Backend vrátil duplicitní profil.") throw error;\n    }\n  }\n  if (matches.length !== 1) throw new Error("Profil nelze jednoznačně přiřadit právě jedné konfiguraci FRAKON Energy.");\n  return matches[0];\n}'''
+          load_profile_new = '''async function resolveEntryForProfile(profileId) {\n  const primary = await callWs({ type: "frakon_energy/entry/primary" });\n  if (!primary || primary.provider !== "visionq" || primary.loaded !== true || typeof primary.entry_id !== "string") {\n    throw new Error("Backend neurčil aktivní VisionQ konfiguraci FRAKON Energy.");\n  }\n  const entryId = primary.entry_id;\n  const response = await callWs({ type: "frakon_energy/load_profiles/list", entry_id: entryId });\n  if (!response || response.entry_id !== entryId || !Array.isArray(response.profiles) || response.read_only_execution !== true) {\n    throw new Error("Backend nevrátil platný seznam profilů aktivní VisionQ konfigurace.");\n  }\n  const matches = response.profiles.filter((profile) => profile?.profile_id === profileId);\n  if (matches.length !== 1) throw new Error("Profil není v aktivní VisionQ konfiguraci právě jednou.");\n  return { entryId, profile: matches[0] };\n}'''
+          replace("frontend/public/load-all-in-estimate-bridge.js", load_profile_old, load_profile_new)
+
+          # Contract phase selector used numeric defaults against radio/string values.
+          replace(
+              "custom_components/frakon_energy/config_flow.py",
+              '''                vol.Required(\n                    CONF_CONTRACT_BREAKER_PHASES,\n                    default=defaults[CONF_CONTRACT_BREAKER_PHASES],\n                ): vol.In({1: "1", 3: "3"}),''',
+              '''                vol.Required(\n                    CONF_CONTRACT_BREAKER_PHASES,\n                    default=str(defaults[CONF_CONTRACT_BREAKER_PHASES]),\n                ): vol.In({"1": "1", "3": "3"}),''',
+          )
+          replace(
+              "custom_components/frakon_energy/config_flow.py",
+              '                CONF_CONTRACT_BREAKER_PHASES: contract.breaker.phases,',
+              '                CONF_CONTRACT_BREAKER_PHASES: str(contract.breaker.phases),',
+          )
+          replace(
+              "custom_components/frakon_energy/config_flow.py",
+              '            CONF_CONTRACT_BREAKER_PHASES: 3,',
+              '            CONF_CONTRACT_BREAKER_PHASES: "3",',
+          )
+
+          # Non-fixed contracts must not accidentally carry a stale fixation date.
+          replace(
+              "custom_components/frakon_energy/config_flow.py",
+              '''        valid_to_raw = user_input.get(CONF_CONTRACT_VALID_TO)\n        fixation_end_raw = user_input.get(CONF_CONTRACT_FIXATION_END)\n        return ElectricityContract(''',
+              '''        valid_to_raw = user_input.get(CONF_CONTRACT_VALID_TO)\n        contract_kind = ContractKind(str(user_input[CONF_CONTRACT_KIND]))\n        fixation_end_raw = user_input.get(CONF_CONTRACT_FIXATION_END)\n        if contract_kind != ContractKind.FIXED:\n            fixation_end_raw = None\n        return ElectricityContract(''',
+          )
+          replace(
+              "custom_components/frakon_energy/config_flow.py",
+              '            contract_kind=ContractKind(str(user_input[CONF_CONTRACT_KIND])),',
+              '            contract_kind=contract_kind,',
+          )
+
+          # Advance validity cannot run beyond the billing cycle it belongs to.
+          replace(
+              "custom_components/frakon_energy/config_flow.py",
+              '''        if advance_to is not None and advance_to < advance_from:\n            raise ValueError("advance_end_before_start")''',
+              '''        if advance_to is not None and advance_to < advance_from:\n            raise ValueError("advance_end_before_start")\n        if advance_to is not None and advance_to > settlement:\n            raise ValueError("advance_end_after_settlement")''',
+          )
+
+          # Preserve backward compatibility when loading old malformed non-fixed contracts,
+          # while enforcing the invariant for every canonical in-memory contract.
+          replace(
+              "custom_components/frakon_energy/contracts.py",
+              '''        if self.contract_kind == ContractKind.FIXED and self.fixation_end is None:\n            raise ValueError("Fixed contract requires fixation end date")\n        if self.fixation_end is not None:''',
+              '''        if self.contract_kind == ContractKind.FIXED and self.fixation_end is None:\n            raise ValueError("Fixed contract requires fixation end date")\n        if self.contract_kind != ContractKind.FIXED and self.fixation_end is not None:\n            raise ValueError("Only a fixed contract may define fixation end date")\n        if self.fixation_end is not None:''',
+          )
+          replace(
+              "custom_components/frakon_energy/contracts.py",
+              '''            if self.fixation_end < self.valid_from:\n                raise ValueError("Fixation end must not precede contract start")''',
+              '''            if self.fixation_end < self.valid_from:\n                raise ValueError("Fixation end must not precede contract start")\n            if self.valid_to is not None and self.fixation_end > self.valid_to:\n                raise ValueError("Fixation end must not follow contract end")''',
+          )
+          replace(
+              "custom_components/frakon_energy/contracts.py",
+              '''        valid_to_raw = value.get("valid_to")\n        fixation_end_raw = value.get("fixation_end")\n        return cls(''',
+              '''        valid_to_raw = value.get("valid_to")\n        fixation_end_raw = value.get("fixation_end")\n        if contract_kind != ContractKind.FIXED:\n            fixation_end_raw = None\n        return cls(''',
+          )
+          PY
+
+      - name: Commit targeted fixes
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo "No patch changes"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add frontend/src/site-capacity-settings.tsx frontend/public custom_components/frakon_energy/config_flow.py custom_components/frakon_energy/contracts.py
+          git commit -m "Fix multi-entry routing and option invariants"
+          git push origin HEAD:agent/commissioning-data-ui-hardening
