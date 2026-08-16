@@ -114,7 +114,7 @@ function readDashboardState(hass?: HomeAssistant): DashboardState {
 }
 
 export function useHomeAssistant(): HomeAssistant | undefined { return window.__FRAKON_ENERGY_HASS__ ?? window.hass; }
-export async function callHomeAssistantWs<T>(hass: HomeAssistant, message: Record<string, unknown>): Promise<T> { if (hass.callWS) return hass.callWS<T>(message); if (hass.connection?.sendMessagePromise) return hass.connection.sendMessagePromise<T>(message); throw new Error("WebSocket Home Assistantu není dostupný."); }
+export async function callHomeAssistantWs<T>(hass: HomeAssistant, message: Record<string, unknown>): Promise<T> { try { if (hass.callWS) return await hass.callWS<T>(message); if (hass.connection?.sendMessagePromise) return await hass.connection.sendMessagePromise<T>(message); throw new Error("WebSocket Home Assistantu není dostupný."); } catch (reason) { if (reason instanceof Error) throw reason; if (typeof reason === "object" && reason !== null && "message" in reason) throw new Error(String((reason as { message?: unknown }).message ?? "Neznámá chyba Home Assistantu.")); throw new Error(String(reason)); } }
 export async function findFrakonEnergyEntryId(hass: HomeAssistant): Promise<string | null> {
   const primary = await callHomeAssistantWs<PrimaryEntrySummary>(hass, {
     type: "frakon_energy/entry/primary",
