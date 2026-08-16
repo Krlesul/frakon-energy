@@ -6,7 +6,7 @@ import voluptuous as vol
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 
-from .const import DOMAIN
+from .const import CONF_PROVIDER, DOMAIN, PROVIDER_VISIONQ
 from .energy_flow_settings import (
     BATTERY_POWER_SIGNS,
     CONF_BATTERY_POWER_SIGN,
@@ -22,6 +22,7 @@ from .energy_flow_settings import (
 from .technology_profile import HouseTechnology
 from .technology_profile_storage import update_technology_enabled
 
+COMMAND_PRIMARY_ENTRY = "frakon_energy/entry/primary"
 COMMAND_SET_TECHNOLOGY_ENABLED = "frakon_energy/technology/set_enabled"
 COMMAND_GET_ENERGY_FLOW_SETTINGS = "frakon_energy/energy_flow/get"
 COMMAND_SET_ENERGY_FLOW_SETTINGS = "frakon_energy/energy_flow/set"
@@ -44,6 +45,21 @@ def _entry_or_error(
     return entry
 
 
+def _loaded_visionq_entries(hass: HomeAssistant):
+    domain_data = hass.data.get(DOMAIN, {})
+    entries = [
+        entry
+        for entry in hass.config_entries.async_entries(DOMAIN)
+        if entry.data.get(CONF_PROVIDER, PROVIDER_VISIONQ) == PROVIDER_VISIONQ
+    ]
+    loaded = [
+        entry
+        for entry in entries
+        if isinstance(domain_data, Mapping) and entry.entry_id in domain_data
+    ]
+    return entries, loaded
+
+
 @callback
 def async_register_technology_profile_websocket(hass: HomeAssistant) -> None:
     """Register administrator-only technology and energy-flow commands once."""
@@ -51,6 +67,52 @@ def async_register_technology_profile_websocket(hass: HomeAssistant) -> None:
     domain_data = hass.data.setdefault(DOMAIN, {})
     if domain_data.get(_REGISTERED_KEY):
         return
+
+    @websocket_api.websocket_command(
+        {
+            vol.Required("type"): COMMAND_PRIMARY_ENTRY,
+        }
+    )
+    @websocket_api.async_response
+    async def websocket_primary_entry(
+        hass: HomeAssistant,
+        connection: websocket_api.ActiveConnection,
+        msg: Mapping[str, Any],
+    ) -> None:
+        connection.require_admin()
+        entries, loaded = _loaded_visionq_entries(hass)
+        if not loaded:
+            connection.send_error(
+                msg["id"],
+                "visionq_runtime_unavailable",
+                (
+                    "Není načtená žádná VisionQ položka FRAKON Energy. "
+                    f"Nalezeno VisionQ konfigurací: {len(entries)}."
+                ),
+            )
+            return
+        if len(loaded) != 1:
+            connection.send_error(
+                msg["id"],
+                "ambiguous_visionq_runtime",
+                (
+                    "Je načteno více VisionQ položek FRAKON Energy; nelze bezpečně "
+                    f"zvolit hlavní instanci ({len(loaded)})."
+                ),
+            )
+            return
+        entry = loaded[0]
+        connection.send_result(
+            msg["id"],
+            {
+                "entry_id": entry.entry_id,
+                "title": entry.title,
+                "provider": PROVIDER_VISIONQ,
+                "loaded": True,
+                "visionq_entry_count": len(entries),
+                "loaded_visionq_entry_count": len(loaded),
+            },
+        )
 
     @websocket_api.websocket_command(
         {
@@ -138,6 +200,7 @@ def async_register_technology_profile_websocket(hass: HomeAssistant) -> None:
         hass.config_entries.async_update_entry(entry, options=options)
         connection.send_result(msg["id"], settings)
 
+    websocket_api.async_register_command(hass, websocket_primary_entry)
     websocket_api.async_register_command(hass, websocket_set_enabled)
     websocket_api.async_register_command(hass, websocket_get_energy_flow_settings)
     websocket_api.async_register_command(hass, websocket_set_energy_flow_settings)
