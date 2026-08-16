@@ -15,6 +15,7 @@ from typing import Any, Mapping
 
 import voluptuous as vol
 from homeassistant.components import websocket_api
+from .ws_auth import ensure_admin
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.util import dt as dt_util
 
@@ -142,7 +143,7 @@ def async_register_manual_customer_tariff_websocket(
         connection: websocket_api.ActiveConnection,
         msg: Mapping[str, Any],
     ) -> None:
-        connection.require_admin()
+        ensure_admin(connection)
         entry = _entry_or_error(hass, connection, msg)
         if entry is None:
             return

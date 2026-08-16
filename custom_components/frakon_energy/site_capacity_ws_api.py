@@ -5,6 +5,7 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant.components import websocket_api
+from .ws_auth import ensure_admin
 from homeassistant.core import HomeAssistant, callback
 
 from .const import DOMAIN
@@ -115,7 +116,7 @@ def async_register_site_capacity_websocket(hass: HomeAssistant) -> None:
         connection: websocket_api.ActiveConnection,
         msg: dict[str, Any],
     ) -> None:
-        connection.require_admin()
+        ensure_admin(connection)
         try:
             result = await async_site_capacity_status(hass, entry_id=msg["entry_id"])
         except ValueError as err:
@@ -138,7 +139,7 @@ def async_register_site_capacity_websocket(hass: HomeAssistant) -> None:
         connection: websocket_api.ActiveConnection,
         msg: dict[str, Any],
     ) -> None:
-        connection.require_admin()
+        ensure_admin(connection)
         try:
             result = await async_site_phase_current_status(hass, entry_id=msg["entry_id"])
         except ValueError as err:
@@ -161,7 +162,7 @@ def async_register_site_capacity_websocket(hass: HomeAssistant) -> None:
         connection: websocket_api.ActiveConnection,
         msg: dict[str, Any],
     ) -> None:
-        connection.require_admin()
+        ensure_admin(connection)
         try:
             result = await async_site_phase_capacity_status(hass, entry_id=msg["entry_id"])
         except ValueError as err:
@@ -186,7 +187,7 @@ def async_register_site_capacity_websocket(hass: HomeAssistant) -> None:
         connection: websocket_api.ActiveConnection,
         msg: dict[str, Any],
     ) -> None:
-        connection.require_admin()
+        ensure_admin(connection)
         try:
             entry = _entry(hass, msg["entry_id"])
             value = msg[CONF_MAX_GRID_IMPORT_KW]
@@ -232,7 +233,7 @@ def async_register_site_capacity_websocket(hass: HomeAssistant) -> None:
         connection: websocket_api.ActiveConnection,
         msg: dict[str, Any],
     ) -> None:
-        connection.require_admin()
+        ensure_admin(connection)
         try:
             entry = _entry(hass, msg["entry_id"])
             value = msg[CONF_MAX_PHASE_CURRENT_A]

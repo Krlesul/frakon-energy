@@ -4,6 +4,7 @@ from typing import Any, Mapping
 
 import voluptuous as vol
 from homeassistant.components import websocket_api
+from .ws_auth import ensure_admin
 from homeassistant.core import HomeAssistant, callback
 
 from .const import CONF_PROVIDER, DOMAIN, PROVIDER_VISIONQ
@@ -79,7 +80,7 @@ def async_register_technology_profile_websocket(hass: HomeAssistant) -> None:
         connection: websocket_api.ActiveConnection,
         msg: Mapping[str, Any],
     ) -> None:
-        connection.require_admin()
+        ensure_admin(connection)
         entries, loaded = _loaded_visionq_entries(hass)
         if not loaded:
             connection.send_error(
@@ -128,7 +129,7 @@ def async_register_technology_profile_websocket(hass: HomeAssistant) -> None:
         connection: websocket_api.ActiveConnection,
         msg: Mapping[str, Any],
     ) -> None:
-        connection.require_admin()
+        ensure_admin(connection)
         entry = _entry_or_error(hass, connection, msg)
         if entry is None:
             return
@@ -160,7 +161,7 @@ def async_register_technology_profile_websocket(hass: HomeAssistant) -> None:
         connection: websocket_api.ActiveConnection,
         msg: Mapping[str, Any],
     ) -> None:
-        connection.require_admin()
+        ensure_admin(connection)
         entry = _entry_or_error(hass, connection, msg)
         if entry is None:
             return
@@ -182,7 +183,7 @@ def async_register_technology_profile_websocket(hass: HomeAssistant) -> None:
         connection: websocket_api.ActiveConnection,
         msg: Mapping[str, Any],
     ) -> None:
-        connection.require_admin()
+        ensure_admin(connection)
         entry = _entry_or_error(hass, connection, msg)
         if entry is None:
             return

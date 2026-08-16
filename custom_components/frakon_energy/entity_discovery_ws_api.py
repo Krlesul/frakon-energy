@@ -4,6 +4,7 @@ from typing import Any, Mapping
 
 import voluptuous as vol
 from homeassistant.components import websocket_api
+from .ws_auth import ensure_admin
 from homeassistant.core import HomeAssistant, callback
 
 from .entity_discovery_lifecycle import EntityDiscoveryRuntimeRegistry
@@ -88,7 +89,7 @@ def async_register_entity_discovery_websocket(
         connection: websocket_api.ActiveConnection,
         msg: Mapping[str, Any],
     ) -> None:
-        connection.require_admin()
+        ensure_admin(connection)
         try:
             result = _runtime(runtime_registry, msg).dispatch(
                 COMMAND_RESCAN, msg, is_admin=True
@@ -105,7 +106,7 @@ def async_register_entity_discovery_websocket(
         connection: websocket_api.ActiveConnection,
         msg: Mapping[str, Any],
     ) -> None:
-        connection.require_admin()
+        ensure_admin(connection)
         try:
             result = _runtime(runtime_registry, msg).dispatch(
                 COMMAND_SAVE, msg, is_admin=True
@@ -122,7 +123,7 @@ def async_register_entity_discovery_websocket(
         connection: websocket_api.ActiveConnection,
         msg: Mapping[str, Any],
     ) -> None:
-        connection.require_admin()
+        ensure_admin(connection)
         try:
             result = _runtime(runtime_registry, msg).dispatch(
                 COMMAND_REMOVE, msg, is_admin=True
