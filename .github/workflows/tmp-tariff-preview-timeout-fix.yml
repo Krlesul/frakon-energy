@@ -1,0 +1,148 @@
+name: Temporary Tariff Preview Timeout Fix
+
+on:
+  push:
+    branches:
+      - agent/fix-tariff-preview-timeout
+
+permissions:
+  contents: write
+
+jobs:
+  fix-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: agent/fix-tariff-preview-timeout
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Apply bounded preview deadlines
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected exactly one marker, got {count}: {old[:120]!r}')
+              p.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          # Backend: deadline both network and executor phases so a WebSocket request
+          # can never remain pending indefinitely.
+          p = Path('custom_components/frakon_energy/tariff_parse_preview_ws_api.py')
+          text = p.read_text(encoding='utf-8')
+          text = text.replace('from __future__ import annotations\n\nfrom datetime import date\n', 'from __future__ import annotations\n\nimport asyncio\nfrom datetime import date\n', 1)
+          text = text.replace(
+              'COMMAND_TARIFF_PARSE_PREVIEW = "frakon_energy/tariff/parse_preview"\n_REGISTERED_KEY = "tariff_parse_preview_websocket_registered"\n',
+              'COMMAND_TARIFF_PARSE_PREVIEW = "frakon_energy/tariff/parse_preview"\nTARIFF_PARSE_DOWNLOAD_DEADLINE_SECONDS = 25.0\nTARIFF_PARSE_EXECUTOR_DEADLINE_SECONDS = 15.0\n_REGISTERED_KEY = "tariff_parse_preview_websocket_registered"\n',
+              1,
+          )
+          old_download = '''        try:\n            download = await async_fetch_selected_tariff_document_ha(\n                hass,\n                candidate=candidate,\n                request=request,\n                checked_at=checked_at,\n            )\n        except Exception as err:\n            connection.send_error(msg["id"], "download_failed", str(err))\n            return\n'''
+          new_download = '''        try:\n            download = await asyncio.wait_for(\n                async_fetch_selected_tariff_document_ha(\n                    hass,\n                    candidate=candidate,\n                    request=request,\n                    checked_at=checked_at,\n                ),\n                timeout=TARIFF_PARSE_DOWNLOAD_DEADLINE_SECONDS,\n            )\n        except TimeoutError:\n            connection.send_error(\n                msg["id"],\n                "download_timeout",\n                "Stažení ceníku překročilo bezpečnostní časový limit 25 sekund.",\n            )\n            return\n        except Exception as err:\n            connection.send_error(msg["id"], "download_failed", str(err))\n            return\n'''
+          if text.count(old_download) != 1:
+              raise SystemExit('backend download marker mismatch')
+          text = text.replace(old_download, new_download, 1)
+          old_parse = '''        try:\n            preview = await hass.async_add_executor_job(\n                _extract_and_parse,\n                download,\n                contract,\n            )\n        except LookupError as err:\n'''
+          new_parse = '''        try:\n            preview = await asyncio.wait_for(\n                hass.async_add_executor_job(\n                    _extract_and_parse,\n                    download,\n                    contract,\n                ),\n                timeout=TARIFF_PARSE_EXECUTOR_DEADLINE_SECONDS,\n            )\n        except TimeoutError:\n            connection.send_error(\n                msg["id"],\n                "parse_timeout",\n                "Zpracování PDF ceníku překročilo bezpečnostní časový limit 15 sekund.",\n            )\n            return\n        except LookupError as err:\n'''
+          if text.count(old_parse) != 1:
+              raise SystemExit('backend parse marker mismatch')
+          text = text.replace(old_parse, new_parse, 1)
+          p.write_text(text, encoding='utf-8')
+
+          # Frontend: independent watchdog. Even if HA/backend fails to settle the
+          # promise, the spinner is cleared and the user receives an actionable error.
+          p = Path('frontend/src/tariff-wizard.tsx')
+          text = p.read_text(encoding='utf-8')
+          marker = '''function readableError(error: unknown): string {\n  if (error instanceof Error) return error.message;\n  if (typeof error === "string") return error;\n  if (error && typeof error === "object") {\n    const candidate = error as { message?: unknown; error?: unknown };\n    if (typeof candidate.message === "string") return candidate.message;\n    if (typeof candidate.error === "string") return candidate.error;\n  }\n  return "Nepodařilo se dokončit požadavek.";\n}\n'''
+          helper = marker + '''\nconst TARIFF_PREVIEW_REQUEST_TIMEOUT_MS = 45_000;\n\nasync function withRequestTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {\n  let timer: number | undefined;\n  try {\n    return await Promise.race([\n      promise,\n      new Promise<never>((_, reject) => {\n        timer = window.setTimeout(() => reject(new Error(message)), timeoutMs);\n      }),\n    ]);\n  } finally {\n    if (timer !== undefined) window.clearTimeout(timer);\n  }\n}\n'''
+          if text.count(marker) != 1:
+              raise SystemExit('frontend readableError marker mismatch')
+          text = text.replace(marker, helper, 1)
+          old_call = '''      const response = await callHomeAssistantWs<TariffParsePreviewResponse>(hass, {\n        type: "frakon_energy/tariff/parse_preview",\n        entry_id: entryId,\n        contract: contractPayload(draft, selectedProduct),\n        day: draft.discoveryDay,\n        candidate_fingerprint: candidate.fingerprint,\n      });\n'''
+          new_call = '''      const response = await withRequestTimeout(\n        callHomeAssistantWs<TariffParsePreviewResponse>(hass, {\n          type: "frakon_energy/tariff/parse_preview",\n          entry_id: entryId,\n          contract: contractPayload(draft, selectedProduct),\n          day: draft.discoveryDay,\n          candidate_fingerprint: candidate.fingerprint,\n        }),\n        TARIFF_PREVIEW_REQUEST_TIMEOUT_MS,\n        "Načtení a ověření ceníku překročilo 45 sekund. Požadavek byl ukončen; zkus jej znovu.",\n      );\n'''
+          if text.count(old_call) != 1:
+              raise SystemExit('frontend preview call marker mismatch')
+          text = text.replace(old_call, new_call, 1)
+          p.write_text(text, encoding='utf-8')
+
+          # Runtime tests for both timeout phases.
+          p = Path('tests/test_tariff_parse_preview_ws_api.py')
+          text = p.read_text(encoding='utf-8')
+          text = text.replace(
+              '''        fetch_calls.append((hass, candidate, request, checked_at))\n        if fetch_mode == "error":\n''',
+              '''        fetch_calls.append((hass, candidate, request, checked_at))\n        if fetch_mode == "slow":\n            await asyncio.sleep(0.05)\n        if fetch_mode == "error":\n''',
+              1,
+          )
+          text = text.replace(
+              '''class Hass:\n    def __init__(self, entry, registry):\n        self.data = {"frakon_energy": {"tariff_adapter_registry": registry}}\n        self.config_entries = ConfigEntries(entry)\n        self.executor_calls = []\n\n    async def async_add_executor_job(self, target, *args):\n        self.executor_calls.append((target, args))\n        return target(*args)\n''',
+              '''class Hass:\n    def __init__(self, entry, registry, *, executor_delay=0.0):\n        self.data = {"frakon_energy": {"tariff_adapter_registry": registry}}\n        self.config_entries = ConfigEntries(entry)\n        self.executor_calls = []\n        self.executor_delay = executor_delay\n\n    async def async_add_executor_job(self, target, *args):\n        self.executor_calls.append((target, args))\n        if self.executor_delay:\n            await asyncio.sleep(self.executor_delay)\n        return target(*args)\n''',
+              1,
+          )
+          append_marker = '''def test_download_failure_has_no_parser_side_effects() -> None:\n'''
+          timeout_tests = '''def test_download_timeout_is_explicit_and_never_reaches_parser() -> None:\n    ws, contracts, sources, selection, _discovery, registered, fetch_calls, extraction_calls, parser_calls, _content = load_module(fetch_mode="slow")\n    adapter = Adapter(sources)\n    hass = Hass(_entry(), _registry(sources, adapter))\n    connection = Connection()\n    fingerprint = selection.tariff_candidate_selection_fingerprint(adapter.candidate)\n    ws.TARIFF_PARSE_DOWNLOAD_DEADLINE_SECONDS = 0.001\n    ws.async_register_tariff_parse_preview_websocket(hass)\n\n    asyncio.run(registered[0](hass, connection, _message(ws, contracts, fingerprint)))\n\n    assert len(fetch_calls) == 1\n    assert connection.results == []\n    assert connection.errors[0][1] == "download_timeout"\n    assert hass.executor_calls == []\n    assert extraction_calls == []\n    assert parser_calls == []\n\n\ndef test_parser_executor_timeout_is_explicit_and_request_finishes() -> None:\n    ws, contracts, sources, selection, _discovery, registered, _fetch_calls, extraction_calls, parser_calls, _content = load_module()\n    adapter = Adapter(sources)\n    hass = Hass(_entry(), _registry(sources, adapter), executor_delay=0.05)\n    connection = Connection()\n    fingerprint = selection.tariff_candidate_selection_fingerprint(adapter.candidate)\n    ws.TARIFF_PARSE_EXECUTOR_DEADLINE_SECONDS = 0.001\n    ws.async_register_tariff_parse_preview_websocket(hass)\n\n    asyncio.run(registered[0](hass, connection, _message(ws, contracts, fingerprint)))\n\n    assert connection.results == []\n    assert connection.errors[0][1] == "parse_timeout"\n    assert len(hass.executor_calls) == 1\n    assert extraction_calls == []\n    assert parser_calls == []\n\n\n'''
+          if text.count(append_marker) != 1:
+              raise SystemExit('timeout test insertion marker mismatch')
+          text = text.replace(append_marker, timeout_tests + append_marker, 1)
+          p.write_text(text, encoding='utf-8')
+
+          # Frontend release contract prevents an infinite preview spinner from returning.
+          p = Path('frontend/scripts/check-runtime-live-data-contract.mjs')
+          text = p.read_text(encoding='utf-8')
+          marker = 'const tariffWizard = read("src/tariff-wizard.tsx");\n'
+          if marker not in text:
+              # Previous release might use another placement; insert before spot settings.
+              marker = 'const spotSettings = read("src/spot-price-settings.tsx");\n'
+              guard = '''const tariffWizard = read("src/tariff-wizard.tsx");\nif (!tariffWizard.includes("TARIFF_PREVIEW_REQUEST_TIMEOUT_MS = 45_000") || !tariffWizard.includes("withRequestTimeout(")) {\n  throw new Error("Tariff preview must have a finite frontend request watchdog.");\n}\n\n'''
+              if text.count(marker) != 1:
+                  raise SystemExit('frontend runtime contract insertion marker mismatch')
+              text = text.replace(marker, guard + marker, 1)
+          else:
+              guard_marker = marker
+              guard = marker + '''if (!tariffWizard.includes("TARIFF_PREVIEW_REQUEST_TIMEOUT_MS = 45_000") || !tariffWizard.includes("withRequestTimeout(")) {\n  throw new Error("Tariff preview must have a finite frontend request watchdog.");\n}\n'''
+              text = text.replace(guard_marker, guard, 1)
+          p.write_text(text, encoding='utf-8')
+          PY
+      - name: Install targeted dependencies
+        run: |
+          python -m pip install -q pytest pypdf==6.14.2
+      - name: Reproduce exact live CEZ PDF extraction
+        continue-on-error: true
+        run: |
+          curl --fail --location --max-time 25 --output /tmp/cez-live.pdf 'https://www.cez.cz/file/edee/2025/10/x01_moo_ee_na_dobu_neurcitou.pdf'
+          timeout 20s python - <<'PY'
+          from pathlib import Path
+          from pypdf import PdfReader
+          p = Path('/tmp/cez-live.pdf')
+          print('bytes', p.stat().st_size)
+          reader = PdfReader(str(p), strict=False)
+          print('pages', len(reader.pages))
+          text = reader.pages[0].extract_text(extraction_mode='layout', layout_mode_space_vertically=False)
+          print('text chars', len(text or ''))
+          assert 'Elektřina na dobu neurčitou' in (text or '')
+          assert 'D25d' in (text or '')
+          PY
+      - name: Run backend preview tests
+        run: python -m pytest -q tests/test_tariff_parse_preview_ws_api.py tests/test_tariff_http_transport.py tests/test_tariff_http_ha.py
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run check:live-data
+          npm run build
+      - name: Package dashboard
+        run: bash scripts/build_frontend.sh
+      - name: Commit generated fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add custom_components/frakon_energy/tariff_parse_preview_ws_api.py frontend/src/tariff-wizard.tsx tests/test_tariff_parse_preview_ws_api.py frontend/scripts/check-runtime-live-data-contract.mjs custom_components/frakon_energy/frontend_app
+          git commit -m "Bound tariff preview request lifetime"
+          git push origin HEAD:agent/fix-tariff-preview-timeout
