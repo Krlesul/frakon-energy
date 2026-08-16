@@ -18,16 +18,12 @@ from .all_in_catalog import (
 )
 from .contracts import contracts_from_options, select_confirmed_contract_for_day
 from .cost import CostProjection, ENERGY_QUANT, MONEY_QUANT, TariffPrices
-from .legacy_tariff_history import (
-    LegacyTariffAuthorityMethod,
-    confirmed_legacy_tariff_from_options,
-    legacy_tariff_fingerprint,
-)
 
 _DAYS_PER_YEAR = Decimal("365")
 _MONTHS_PER_YEAR = Decimal("12")
 SOURCE_CONFIRMED_ALL_IN = "confirmed_all_in"
 SOURCE_CONFIRMED_LEGACY_HISTORY = "confirmed_legacy_history"
+LEGACY_MANUAL_IMPORT = "legacy_manual_import"
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,7 +34,7 @@ class BillingTariffSegment:
     valid_to: date
     prices: TariffPrices
     all_in_tariff_fingerprint: str | None
-    authority_method: AllInTariffAuthorityMethod | LegacyTariffAuthorityMethod
+    authority_method: AllInTariffAuthorityMethod | str
     supplier: str | None
     product_name: str | None
     legacy_tariff_fingerprint: str | None = None
@@ -67,7 +63,7 @@ class BillingTariffSegment:
                 raise ValueError("legacy segment cannot claim all-in fingerprint")
             if not isinstance(self.legacy_tariff_fingerprint, str):
                 raise ValueError("legacy segment requires legacy fingerprint")
-            if self.authority_method is not LegacyTariffAuthorityMethod.LEGACY_MANUAL_IMPORT:
+            if self.authority_method != LEGACY_MANUAL_IMPORT:
                 raise ValueError("legacy segment requires legacy_manual_import authority")
             if self.supplier is not None or self.product_name is not None:
                 raise ValueError("legacy segment cannot claim supplier product identity")
@@ -133,6 +129,14 @@ def _legacy_segment_for_missing_day(
 ) -> BillingTariffSegment:
     """Resolve a confirmed legacy snapshot or preserve the original missing error."""
 
+    # Kept lazy deliberately: all-in-only billing does not depend on migration
+    # support, and isolated tariff tests can continue loading only their authority
+    # graph.  The historical module is required only when an exact day is missing.
+    from .legacy_tariff_history import (
+        confirmed_legacy_tariff_from_options,
+        legacy_tariff_fingerprint,
+    )
+
     try:
         snapshot = confirmed_legacy_tariff_from_options(options, day)
     except LookupError:
@@ -147,7 +151,7 @@ def _legacy_segment_for_missing_day(
         ),
         all_in_tariff_fingerprint=None,
         legacy_tariff_fingerprint=legacy_tariff_fingerprint(snapshot),
-        authority_method=snapshot.authority_method,
+        authority_method=snapshot.authority_method.value,
         supplier=None,
         product_name=None,
         source=SOURCE_CONFIRMED_LEGACY_HISTORY,
@@ -193,7 +197,7 @@ def _all_in_or_legacy_segment_for_day(
     authority = authority_by_fingerprint.get(fingerprint)
     if authority is None:
         # Referential corruption in the new authority graph is never a legacy
-        # fallback condition.  Preserve the existing fail-closed behavior.
+        # fallback condition. Preserve the existing fail-closed behavior.
         raise LookupError(f"all-in tariff authority not found: {fingerprint}")
     return BillingTariffSegment(
         valid_from=day,
@@ -216,9 +220,9 @@ def confirmed_all_in_billing_schedule(
 ) -> tuple[BillingTariffSegment, ...]:
     """Resolve exact confirmed pricing for every day and compress it.
 
-    Confirmed new-model all-in pricing always wins.  A confirmed legacy snapshot
+    Confirmed new-model all-in pricing always wins. A confirmed legacy snapshot
     may fill only a day for which the exact confirmed contract/all-in lookup is
-    absent.  Ambiguous contracts, ambiguous all-in versions, missing authority or
+    absent. Ambiguous contracts, ambiguous all-in versions, missing authority or
     corrupt catalogs still fail closed and are never hidden by legacy history.
     """
 
@@ -251,7 +255,7 @@ def confirmed_all_in_billing_schedule(
             segments
             and segments[-1].source == segment.source
             and segments[-1].tariff_fingerprint == segment.tariff_fingerprint
-            and segments[-1].authority_method is segment.authority_method
+            and segments[-1].authority_method == segment.authority_method
             and segments[-1].valid_to + timedelta(days=1) == cursor
         ):
             previous = segments[-1]
