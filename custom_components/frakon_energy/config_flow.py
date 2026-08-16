@@ -353,8 +353,8 @@ class FrakonEnergyOptionsFlow(config_entries.OptionsFlow):
                 ): selector.TextSelector(),
                 vol.Required(
                     CONF_CONTRACT_BREAKER_PHASES,
-                    default=defaults[CONF_CONTRACT_BREAKER_PHASES],
-                ): vol.In({1: "1", 3: "3"}),
+                    default=str(defaults[CONF_CONTRACT_BREAKER_PHASES]),
+                ): vol.In({"1": "1", "3": "3"}),
                 vol.Required(
                     CONF_CONTRACT_BREAKER_AMPERES,
                     default=defaults[CONF_CONTRACT_BREAKER_AMPERES],
@@ -478,7 +478,7 @@ class FrakonEnergyOptionsFlow(config_entries.OptionsFlow):
                 CONF_CONTRACT_PRODUCT: contract.product_name,
                 CONF_CONTRACT_KIND: contract.contract_kind.value,
                 CONF_CONTRACT_DISTRIBUTION_TARIFF: contract.distribution_tariff,
-                CONF_CONTRACT_BREAKER_PHASES: contract.breaker.phases,
+                CONF_CONTRACT_BREAKER_PHASES: str(contract.breaker.phases),
                 CONF_CONTRACT_BREAKER_AMPERES: contract.breaker.amperes,
                 CONF_CONTRACT_VALID_FROM: contract.valid_from.isoformat(),
                 CONF_CONTRACT_VALID_TO: (
@@ -498,7 +498,7 @@ class FrakonEnergyOptionsFlow(config_entries.OptionsFlow):
             CONF_CONTRACT_PRODUCT: "",
             CONF_CONTRACT_KIND: ContractKind.INDEFINITE.value,
             CONF_CONTRACT_DISTRIBUTION_TARIFF: "D25d",
-            CONF_CONTRACT_BREAKER_PHASES: 3,
+            CONF_CONTRACT_BREAKER_PHASES: "3",
             CONF_CONTRACT_BREAKER_AMPERES: 25,
             CONF_CONTRACT_VALID_FROM: today.isoformat(),
             CONF_CONTRACT_VALID_TO: "",
@@ -511,12 +511,15 @@ class FrakonEnergyOptionsFlow(config_entries.OptionsFlow):
         if not amperes_raw.is_integer():
             raise ValueError("breaker amperage must be an integer")
         valid_to_raw = user_input.get(CONF_CONTRACT_VALID_TO)
+        contract_kind = ContractKind(str(user_input[CONF_CONTRACT_KIND]))
         fixation_end_raw = user_input.get(CONF_CONTRACT_FIXATION_END)
+        if contract_kind != ContractKind.FIXED:
+            fixation_end_raw = None
         return ElectricityContract(
             supplier=Supplier(str(user_input[CONF_CONTRACT_SUPPLIER])),
             distributor=Distributor(str(user_input[CONF_CONTRACT_DISTRIBUTOR])),
             product_name=str(user_input[CONF_CONTRACT_PRODUCT]).strip(),
-            contract_kind=ContractKind(str(user_input[CONF_CONTRACT_KIND])),
+            contract_kind=contract_kind,
             distribution_tariff=str(
                 user_input[CONF_CONTRACT_DISTRIBUTION_TARIFF]
             ).strip(),
@@ -552,6 +555,8 @@ class FrakonEnergyOptionsFlow(config_entries.OptionsFlow):
             raise ValueError("advance_outside_cycle")
         if advance_to is not None and advance_to < advance_from:
             raise ValueError("advance_end_before_start")
+        if advance_to is not None and advance_to > settlement:
+            raise ValueError("advance_end_after_settlement")
         if user_input.get(CONF_METER_REPLACED):
             replacement_raw = user_input.get(CONF_METER_REPLACEMENT_DATE)
             if not replacement_raw:

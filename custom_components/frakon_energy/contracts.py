@@ -115,11 +115,15 @@ class ElectricityContract:
                 raise ValueError("Contract end must not precede contract start")
         if self.contract_kind == ContractKind.FIXED and self.fixation_end is None:
             raise ValueError("Fixed contract requires fixation end date")
+        if self.contract_kind != ContractKind.FIXED and self.fixation_end is not None:
+            raise ValueError("Only a fixed contract may define fixation end date")
         if self.fixation_end is not None:
             if not isinstance(self.fixation_end, date):
                 raise ValueError("fixation_end must be a date")
             if self.fixation_end < self.valid_from:
                 raise ValueError("Fixation end must not precede contract start")
+            if self.valid_to is not None and self.fixation_end > self.valid_to:
+                raise ValueError("Fixation end must not follow contract end")
         if not isinstance(self.customer_confirmed, bool):
             raise ValueError("customer_confirmed must be boolean")
         object.__setattr__(self, "distribution_tariff", tariff[:-1] + "d")
@@ -161,6 +165,8 @@ class ElectricityContract:
             raise ValueError("invalid electricity contract enum value") from err
         valid_to_raw = value.get("valid_to")
         fixation_end_raw = value.get("fixation_end")
+        if contract_kind != ContractKind.FIXED:
+            fixation_end_raw = None
         return cls(
             supplier=supplier,
             distributor=distributor,

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { HomeAssistant } from "./home-assistant";
+import { findFrakonEnergyEntryId, type HomeAssistant } from "./home-assistant";
 
-type ConfigEntry = { entry_id: string; domain?: string };
+type ConfigEntry = { entry_id: string };
 type WsConnection = { sendMessagePromise?: <T>(message: Record<string, unknown>) => Promise<T> };
 type SiteCapacityStatus = {
   entry_id: string;
@@ -137,8 +137,8 @@ async function callWs<T>(hass: HomeAssistant, message: Record<string, unknown>):
 }
 
 async function findEntry(hass: HomeAssistant): Promise<ConfigEntry | null> {
-  const entries = await callWs<ConfigEntry[]>(hass, { type: "config_entries/get" });
-  return entries.find((entry) => entry.domain === "frakon_energy") ?? null;
+  const entryId = await findFrakonEnergyEntryId(hass);
+  return entryId ? { entry_id: entryId } : null;
 }
 
 function statusLabel(status: SiteCapacityStatus["status"]): string {
