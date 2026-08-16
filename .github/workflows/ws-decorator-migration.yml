@@ -23,26 +23,65 @@ jobs:
 
           root = Path("custom_components/frakon_energy")
           changed_prod = []
+          migrated_handlers = 0
           for path in root.rglob("*.py"):
               text = path.read_text(encoding="utf-8")
-              calls = text.count("ensure_admin(connection)")
-              if not calls:
+              if "ensure_admin(connection)" not in text:
                   continue
-              async_decorators = text.count("@websocket_api.async_response")
-              if calls != async_decorators:
-                  raise SystemExit(
-                      f"Refusing ambiguous migration for {path}: "
-                      f"{calls} admin calls vs {async_decorators} async handlers"
-                  )
+
               text = text.replace("from .ws_auth import ensure_admin\n", "")
               text = text.replace("from ..ws_auth import ensure_admin\n", "")
-              text = text.replace(
-                  "@websocket_api.async_response",
-                  "@websocket_api.require_admin\n    @websocket_api.async_response",
-              )
-              text = text.replace("        ensure_admin(connection)\n", "")
-              text = text.replace("    ensure_admin(connection)\n", "")
-              path.write_text(text, encoding="utf-8")
+              lines = text.splitlines(keepends=True)
+              call_indexes = [
+                  index
+                  for index, line in enumerate(lines)
+                  if line.strip() == "ensure_admin(connection)"
+              ]
+
+              # Work backwards so decorator insertion never invalidates indexes
+              # for handlers earlier in the file.
+              for call_index in reversed(call_indexes):
+                  def_index = None
+                  for index in range(call_index - 1, -1, -1):
+                      if lines[index].lstrip().startswith("async def "):
+                          def_index = index
+                          break
+                  if def_index is None:
+                      raise SystemExit(f"No async handler found for admin call in {path}")
+
+                  async_decorator_index = None
+                  for index in range(def_index - 1, -1, -1):
+                      stripped = lines[index].strip()
+                      if stripped == "@websocket_api.async_response":
+                          async_decorator_index = index
+                          break
+                      if stripped and not stripped.startswith("@"):
+                          break
+                  if async_decorator_index is None:
+                      raise SystemExit(
+                          f"No async_response decorator found for admin handler in {path}"
+                      )
+
+                  indent = lines[async_decorator_index][
+                      : len(lines[async_decorator_index])
+                      - len(lines[async_decorator_index].lstrip())
+                  ]
+                  decorator_line = f"{indent}@websocket_api.require_admin\n"
+                  if (
+                      async_decorator_index == 0
+                      or lines[async_decorator_index - 1] != decorator_line
+                  ):
+                      lines.insert(async_decorator_index, decorator_line)
+                      if async_decorator_index <= call_index:
+                          call_index += 1
+
+                  del lines[call_index]
+                  migrated_handlers += 1
+
+              new_text = "".join(lines)
+              if "ensure_admin(connection)" in new_text:
+                  raise SystemExit(f"Admin call remained after migration in {path}")
+              path.write_text(new_text, encoding="utf-8")
               changed_prod.append(str(path))
 
           if not changed_prod:
@@ -80,7 +119,7 @@ jobs:
           domain = Path("tests/test_domain.py")
           text = domain.read_text(encoding="utf-8")
           old = '''def test_websocket_admin_guard_matches_current_home_assistant_contract() -> None:\n    source = (ROOT / "ws_auth.py").read_text(encoding="utf-8")\n    assert "connection.require_admin()" not in source\n    assert "user.is_admin" in source\n    assert "Unauthorized" in source\n'''
-          new = '''def test_websocket_admin_handlers_use_current_home_assistant_decorator() -> None:\n    admin_modules = [\n        path\n        for path in ROOT.rglob("*_ws_api.py")\n        if "require_admin" in path.read_text(encoding="utf-8")\n    ]\n    assert admin_modules\n    for path in admin_modules:\n        source = path.read_text(encoding="utf-8")\n        assert "ensure_admin(connection)" not in source\n        assert "@websocket_api.require_admin" in source\n'''
+          new = '''def test_websocket_admin_handlers_use_current_home_assistant_decorator() -> None:\n    admin_modules = [\n        path\n        for path in ROOT.rglob("*_ws_api.py")\n        if "@websocket_api.require_admin" in path.read_text(encoding="utf-8")\n    ]\n    assert admin_modules\n    for path in admin_modules:\n        source = path.read_text(encoding="utf-8")\n        assert "ensure_admin(connection)" not in source\n        assert "connection.require_admin()" not in source\n'''
           if old not in text:
               raise SystemExit("Expected domain regression block not found")
           domain.write_text(text.replace(old, new, 1), encoding="utf-8")
@@ -94,6 +133,7 @@ jobs:
               raise SystemExit("Legacy admin calls remain: " + ", ".join(leftovers))
 
           print(f"Migrated production modules: {len(changed_prod)}")
+          print(f"Migrated admin handlers: {migrated_handlers}")
           print(f"Updated isolated WS test stubs: {len(changed_tests)}")
           PY
       - name: Compile migrated integration
