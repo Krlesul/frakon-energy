@@ -47,13 +47,11 @@ function wizard() {
 }
 
 async function resolveEntryId() {
-  const entries = await callWs({ type: "config_entries/get" });
-  if (!Array.isArray(entries)) throw new Error("Backend nevrátil seznam konfigurací.");
-  const matches = entries.filter((entry) => entry?.domain === "frakon_energy");
-  if (matches.length !== 1 || typeof matches[0]?.entry_id !== "string") {
-    throw new Error("Nelze jednoznačně určit konfiguraci FRAKON Energy.");
+  const primary = await callWs({ type: "frakon_energy/entry/primary" });
+  if (!primary || primary.provider !== "visionq" || primary.loaded !== true || typeof primary.entry_id !== "string") {
+    throw new Error("Backend neurčil aktivní VisionQ konfiguraci FRAKON Energy.");
   }
-  return matches[0].entry_id;
+  return primary.entry_id;
 }
 
 function normalizeDate(rawValue, label) {

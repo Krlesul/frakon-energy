@@ -238,3 +238,45 @@ def test_contract_options_reject_duplicate_identity_and_unknown_confirmation() -
         pass
     else:
         raise AssertionError("Unknown contract confirmation target must be rejected")
+
+
+
+def test_indefinite_contract_rejects_fixation_end() -> None:
+    contracts = load_contracts()
+    try:
+        contracts.ElectricityContract(
+            contracts.Supplier.CEZ,
+            contracts.Distributor.CEZ_DISTRIBUCE,
+            "Na dobu neurčitou",
+            contracts.ContractKind.INDEFINITE,
+            "D25d",
+            contracts.Breaker(3, 25),
+            date(2026, 1, 1),
+            fixation_end=date(2027, 12, 31),
+        )
+    except ValueError as err:
+        assert "Only a fixed contract may define fixation end date" in str(err)
+    else:
+        raise AssertionError("Indefinite contract must not carry a fixation end")
+
+
+def test_legacy_indefinite_contract_with_fixation_is_canonicalized() -> None:
+    contracts = load_contracts()
+    payload = {
+        "schema_version": contracts.CONTRACT_SCHEMA_VERSION,
+        "supplier": contracts.Supplier.CEZ.value,
+        "distributor": contracts.Distributor.CEZ_DISTRIBUCE.value,
+        "product_name": "Starý neomezený produkt",
+        "contract_kind": contracts.ContractKind.INDEFINITE.value,
+        "distribution_tariff": "D25d",
+        "breaker": {"phases": 3, "amperes": 25},
+        "valid_from": "2026-01-01",
+        "valid_to": "2027-12-31",
+        "fixation_end": "2027-12-31",
+        "customer_confirmed": True,
+    }
+
+    contract = contracts.ElectricityContract.from_dict(payload)
+
+    assert contract.contract_kind is contracts.ContractKind.INDEFINITE
+    assert contract.fixation_end is None

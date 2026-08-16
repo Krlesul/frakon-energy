@@ -246,6 +246,7 @@ class FrakonBillingSensor(CoordinatorEntity[FrakonEnergyCoordinator], SensorEnti
         )
 
     def _values(self) -> dict[str, object]:
+        """Return independent billing facts even when tariff pricing is unavailable."""
         options = self._entry.options
         try:
             cycle = BillingCycle(
@@ -263,9 +264,37 @@ class FrakonBillingSensor(CoordinatorEntity[FrakonEnergyCoordinator], SensorEnti
                 valid_to=date.fromisoformat(advance_to_raw) if advance_to_raw else None,
                 monthly_amount_czk=Decimal(str(options[CONF_MONTHLY_ADVANCE])),
             )
-            today = date.today()
-            as_of = min(max(today, cycle.start_date), cycle.expected_settlement_date)
-            tariff_selection = self._tariff_selection(as_of)
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return {}
+
+        today = date.today()
+        as_of = min(max(today, cycle.start_date), cycle.expected_settlement_date)
+        values: dict[str, object] = {
+            "monthly_advance": advance.monthly_amount_czk,
+            "paid_advances": BillingCalculator.sum_advances(
+                cycle.start_date, as_of, (advance,)
+            ),
+            "projected_advances": BillingCalculator.sum_advances(
+                cycle.start_date, cycle.expected_settlement_date, (advance,)
+            ),
+            "baseline_vt": cycle.baseline.high_rate_kwh,
+            "baseline_nt": cycle.baseline.low_rate_kwh,
+            "cycle_start": cycle.start_date,
+            "settlement_date": cycle.expected_settlement_date,
+            "cycle_consumption_vt": None,
+            "cycle_consumption_nt": None,
+            "today_consumption": None,
+            "month_consumption": None,
+            "accrued_cost": None,
+            "current_balance": None,
+            "projected_cost": None,
+            "projected_balance": None,
+            "recommended_advance": None,
+        }
+
+        consumption_vt: Decimal | None = None
+        consumption_nt: Decimal | None = None
+        try:
             measurement = self.coordinator.data
             consumption_vt, consumption_nt = total_cycle_consumption(
                 self._meter_segments(cycle),
@@ -274,6 +303,37 @@ class FrakonBillingSensor(CoordinatorEntity[FrakonEnergyCoordinator], SensorEnti
                 current_high_rate_kwh=Decimal(str(measurement.high_rate_kwh)),
                 current_low_rate_kwh=Decimal(str(measurement.low_rate_kwh)),
             )
+            values["cycle_consumption_vt"] = consumption_vt
+            values["cycle_consumption_nt"] = consumption_nt
+        except (KeyError, TypeError, ValueError, AttributeError):
+            pass
+
+        try:
+            daily = tuple(self.coordinator.history.daily_consumption())
+            today_items = tuple(item for item in daily if item.day == today)
+            month_items = tuple(
+                item
+                for item in daily
+                if item.day.year == today.year and item.day.month == today.month
+            )
+            if today_items:
+                values["today_consumption"] = sum(
+                    (item.high_rate_kwh + item.low_rate_kwh for item in today_items),
+                    Decimal("0"),
+                )
+            if month_items:
+                values["month_consumption"] = sum(
+                    (item.high_rate_kwh + item.low_rate_kwh for item in month_items),
+                    Decimal("0"),
+                )
+        except (TypeError, ValueError, AttributeError):
+            pass
+
+        if consumption_vt is None or consumption_nt is None:
+            return values
+
+        try:
+            tariff_selection = self._tariff_selection(as_of)
             cost = calculate_cost_projection(
                 cycle_start=cycle.start_date,
                 settlement_date=cycle.expected_settlement_date,
@@ -285,33 +345,27 @@ class FrakonBillingSensor(CoordinatorEntity[FrakonEnergyCoordinator], SensorEnti
                 prices=tariff_selection.prices,
             )
             billing = BillingCalculator.calculate(
-                cycle=cycle, as_of=as_of, advances=(advance,),
+                cycle=cycle,
+                as_of=as_of,
+                advances=(advance,),
                 accrued_cost_czk=cost.accrued_total_cost_czk,
                 projected_total_cost_czk=cost.projected_total_cost_czk,
             )
-            daily = self.coordinator.history.daily_consumption()
-            today_total = sum((item.high_rate_kwh + item.low_rate_kwh for item in daily if item.day == today), Decimal("0"))
-            month_total = sum((item.high_rate_kwh + item.low_rate_kwh for item in daily if item.day.year == today.year and item.day.month == today.month), Decimal("0"))
-            return {
-                "monthly_advance": advance.monthly_amount_czk,
+        except (KeyError, LookupError, TypeError, ValueError, AttributeError):
+            return values
+
+        values.update(
+            {
                 "paid_advances": billing.paid_advances_czk,
                 "projected_advances": billing.projected_total_advances_czk,
-                "baseline_vt": cycle.baseline.high_rate_kwh,
-                "baseline_nt": cycle.baseline.low_rate_kwh,
-                "cycle_start": cycle.start_date,
-                "settlement_date": cycle.expected_settlement_date,
-                "cycle_consumption_vt": consumption_vt,
-                "cycle_consumption_nt": consumption_nt,
-                "today_consumption": today_total,
-                "month_consumption": month_total,
                 "accrued_cost": billing.accrued_cost_czk,
                 "current_balance": billing.current_balance_czk,
                 "projected_cost": billing.projected_total_cost_czk,
                 "projected_balance": billing.projected_settlement_balance_czk,
                 "recommended_advance": billing.recommended_monthly_advance_czk,
             }
-        except (KeyError, LookupError, TypeError, ValueError, AttributeError):
-            return {}
+        )
+        return values
 
 
 class CezHdoSensor(CoordinatorEntity[CezHdoCoordinator], SensorEntity):

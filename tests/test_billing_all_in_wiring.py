@@ -119,3 +119,46 @@ def test_billing_attributes_publish_actual_tariff_authority_metadata() -> None:
     assert "selection.prices.high_rate_czk_per_kwh" in source
     assert "selection.prices.low_rate_czk_per_kwh" in source
     assert "selection.prices.fixed_monthly_czk" in source
+
+
+def test_pricing_failure_does_not_erase_independent_billing_facts() -> None:
+    """A missing all-in tariff must not make saved advances and meter setup unknown."""
+
+    billing = _class(_tree(), "FrakonBillingSensor")
+    values = _function(billing, "_values")
+    source = ast.unparse(values)
+
+    base_marker = "'monthly_advance': advance.monthly_amount_czk"
+    pricing_marker = "tariff_selection = self._tariff_selection(as_of)"
+    assert base_marker in source
+    assert pricing_marker in source
+    assert source.index(base_marker) < source.index(pricing_marker)
+
+    assert source.count("BillingCalculator.sum_advances") == 2
+    assert "'baseline_vt': cycle.baseline.high_rate_kwh" in source
+    assert "'baseline_nt': cycle.baseline.low_rate_kwh" in source
+    assert "'cycle_start': cycle.start_date" in source
+    assert "'settlement_date': cycle.expected_settlement_date" in source
+
+    # Cost-dependent values start unavailable and only become populated after
+    # tariff selection and cost projection complete successfully.
+    for key in (
+        "accrued_cost",
+        "current_balance",
+        "projected_cost",
+        "projected_balance",
+        "recommended_advance",
+    ):
+        assert f"'{key}': None" in source
+    assert "return values" in source
+
+
+def test_empty_daily_history_stays_unknown_instead_of_fake_zero() -> None:
+    billing = _class(_tree(), "FrakonBillingSensor")
+    values = _function(billing, "_values")
+    source = ast.unparse(values)
+
+    assert "if today_items:" in source
+    assert "if month_items:" in source
+    assert "'today_consumption': None" in source
+    assert "'month_consumption': None" in source

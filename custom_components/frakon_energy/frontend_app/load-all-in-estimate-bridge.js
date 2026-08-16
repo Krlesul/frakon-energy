@@ -78,30 +78,18 @@ function runtimeIsoValues() {
 }
 
 async function resolveEntryForProfile(profileId) {
-  const entries = await callWs({ type: "config_entries/get" });
-  if (!Array.isArray(entries)) throw new Error("Backend nevrátil seznam konfigurací.");
-  const candidates = entries.filter((entry) => entry?.domain === "frakon_energy" && typeof entry?.entry_id === "string");
-  const matches = [];
-  for (const entry of candidates) {
-    try {
-      const response = await callWs({ type: "frakon_energy/load_profiles/list", entry_id: entry.entry_id });
-      if (
-        !response ||
-        response.entry_id !== entry.entry_id ||
-        !Array.isArray(response.profiles) ||
-        response.read_only_execution !== true
-      ) {
-        continue;
-      }
-      const profileMatches = response.profiles.filter((profile) => profile?.profile_id === profileId);
-      if (profileMatches.length === 1) matches.push({ entryId: entry.entry_id, profile: profileMatches[0] });
-      else if (profileMatches.length > 1) throw new Error("Backend vrátil duplicitní profil.");
-    } catch (error) {
-      if (error instanceof Error && error.message === "Backend vrátil duplicitní profil.") throw error;
-    }
+  const primary = await callWs({ type: "frakon_energy/entry/primary" });
+  if (!primary || primary.provider !== "visionq" || primary.loaded !== true || typeof primary.entry_id !== "string") {
+    throw new Error("Backend neurčil aktivní VisionQ konfiguraci FRAKON Energy.");
   }
-  if (matches.length !== 1) throw new Error("Profil nelze jednoznačně přiřadit právě jedné konfiguraci FRAKON Energy.");
-  return matches[0];
+  const entryId = primary.entry_id;
+  const response = await callWs({ type: "frakon_energy/load_profiles/list", entry_id: entryId });
+  if (!response || response.entry_id !== entryId || !Array.isArray(response.profiles) || response.read_only_execution !== true) {
+    throw new Error("Backend nevrátil platný seznam profilů aktivní VisionQ konfigurace.");
+  }
+  const matches = response.profiles.filter((profile) => profile?.profile_id === profileId);
+  if (matches.length !== 1) throw new Error("Profil není v aktivní VisionQ konfiguraci právě jednou.");
+  return { entryId, profile: matches[0] };
 }
 
 function validateTariffRecord(record) {

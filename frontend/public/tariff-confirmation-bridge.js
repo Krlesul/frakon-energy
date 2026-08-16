@@ -108,13 +108,11 @@ async function exactWizardContext() {
   const validFrom = requiredValue("Smlouva platí od");
   const day = requiredValue("Ceník ověřit k datu");
 
-  const entries = await callWs({ type: "config_entries/get" });
-  if (!Array.isArray(entries)) throw new Error("Backend nevrátil seznam konfigurací.");
-  const matchingEntries = entries.filter((entry) => entry?.domain === "frakon_energy");
-  if (matchingEntries.length !== 1 || typeof matchingEntries[0]?.entry_id !== "string") {
-    throw new Error("Nelze jednoznačně určit konfiguraci FRAKON Energy.");
+  const primary = await callWs({ type: "frakon_energy/entry/primary" });
+  if (!primary || primary.provider !== "visionq" || primary.loaded !== true || typeof primary.entry_id !== "string") {
+    throw new Error("Backend neurčil aktivní VisionQ konfiguraci FRAKON Energy.");
   }
-  const entryId = matchingEntries[0].entry_id;
+  const entryId = primary.entry_id;
 
   const catalog = await callWs({ type: "frakon_energy/tariff/catalog", entry_id: entryId });
   if (

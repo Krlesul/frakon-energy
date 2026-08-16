@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { HomeAssistant } from "./home-assistant";
+import { findFrakonEnergyEntryId, type HomeAssistant } from "./home-assistant";
 
-type ConfigEntry = { entry_id: string; domain?: string };
+type ConfigEntry = { entry_id: string };
 type WsConnection = { sendMessagePromise?: <T>(message: Record<string, unknown>) => Promise<T> };
 type SiteCapacityStatus = {
   entry_id: string;
@@ -137,8 +137,17 @@ async function callWs<T>(hass: HomeAssistant, message: Record<string, unknown>):
 }
 
 async function findEntry(hass: HomeAssistant): Promise<ConfigEntry | null> {
-  const entries = await callWs<ConfigEntry[]>(hass, { type: "config_entries/get" });
-  return entries.find((entry) => entry.domain === "frakon_energy") ?? null;
+  const entryId = await findFrakonEnergyEntryId(hass);
+  return entryId ? { entry_id: entryId } : null;
+}
+
+function errorMessage(reason: unknown, fallback: string): string {
+  if (reason instanceof Error && reason.message) return reason.message;
+  if (typeof reason === "object" && reason !== null && "message" in reason) {
+    const message = String((reason as { message?: unknown }).message ?? "");
+    if (message) return message;
+  }
+  return fallback;
 }
 
 function statusLabel(status: SiteCapacityStatus["status"]): string {
@@ -194,12 +203,12 @@ export function SiteCapacitySettings({ hass }: { hass?: HomeAssistant }) {
         setSafetyError(null);
       } catch (reason) {
         setSafety(null);
-        setSafetyError(reason instanceof Error ? reason.message : "Bezpečnostní stav rezervací se nepodařilo načíst.");
+        setSafetyError(errorMessage(reason, "Bezpečnostní stav rezervací se nepodařilo načíst."));
       }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Kapacitu přívodu se nepodařilo načíst.");
+      setError(errorMessage(reason, "Kapacitu přívodu se nepodařilo načíst."));
     }
-  }, [hass]);
+  }, [hass?.connection]);
 
   useEffect(() => {
     void load();
