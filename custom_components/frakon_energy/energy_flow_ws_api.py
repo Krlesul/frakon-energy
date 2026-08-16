@@ -47,13 +47,13 @@ def async_register_energy_flow_websocket(hass: HomeAssistant) -> None:
             vol.Required("entry_id"): str,
         }
     )
+    @websocket_api.require_admin
     @websocket_api.async_response
     async def websocket_status(
         hass: HomeAssistant,
         connection: websocket_api.ActiveConnection,
         msg: dict[str, Any],
     ) -> None:
-        connection.require_admin()
         try:
             result = await async_energy_flow_status(
                 hass,

@@ -93,12 +93,21 @@ def load_module():
     def async_response(func):
         return func
 
+    def require_admin(func):
+        async def wrapped(hass, connection, msg):
+            legacy = getattr(connection, "require_admin", None)
+            if legacy is not None:
+                legacy()
+            return await func(hass, connection, msg)
+        return wrapped
+
     def async_register_command(_hass, command):
         registered_commands.append(command)
 
     websocket_api.ActiveConnection = ActiveConnection
     websocket_api.websocket_command = websocket_command
     websocket_api.async_response = async_response
+    websocket_api.require_admin = require_admin
     websocket_api.async_register_command = async_register_command
     sys.modules["homeassistant.components.websocket_api"] = websocket_api
     components.websocket_api = websocket_api

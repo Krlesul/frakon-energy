@@ -104,9 +104,9 @@ def async_register_tariff_discovery_websocket(hass: HomeAssistant, *, registry: 
         vol.Required("day"): str,
         _VOL_OPTIONAL("source_context"): dict,
     })
+    @websocket_api.require_admin
     @websocket_api.async_response
     async def websocket_tariff_discover(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: Mapping[str, Any]) -> None:
-        connection.require_admin()
         entry = _entry_or_error(hass, connection, msg)
         if entry is None:
             return

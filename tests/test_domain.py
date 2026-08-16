@@ -120,3 +120,31 @@ def test_billing_advance_cannot_outlive_its_settlement_cycle() -> None:
     source = (ROOT / "config_flow.py").read_text(encoding="utf-8")
     assert "advance_end_after_settlement" in source
     assert "advance_to > settlement" in source
+
+
+def test_removed_active_connection_require_admin_is_not_used() -> None:
+    """Current Home Assistant ActiveConnection has no require_admin instance API."""
+    violations = []
+    for path in ROOT.rglob("*.py"):
+        if path.name == "ws_auth.py":
+            continue
+        if "connection.require_admin()" in path.read_text(encoding="utf-8"):
+            violations.append(str(path.relative_to(ROOT)))
+
+    assert not violations, (
+        "Removed Home Assistant websocket admin API is still used: "
+        + ", ".join(violations)
+    )
+
+
+def test_websocket_admin_handlers_use_current_home_assistant_decorator() -> None:
+    admin_modules = [
+        path
+        for path in ROOT.rglob("*_ws_api.py")
+        if "@websocket_api.require_admin" in path.read_text(encoding="utf-8")
+    ]
+    assert admin_modules
+    for path in admin_modules:
+        source = path.read_text(encoding="utf-8")
+        assert "ensure_admin(connection)" not in source
+        assert "connection.require_admin()" not in source

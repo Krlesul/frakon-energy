@@ -82,13 +82,13 @@ def async_register_entity_discovery_websocket(
         connection.send_result(msg["id"], result)
 
     @websocket_api.websocket_command(_command_schema(COMMAND_RESCAN))
+    @websocket_api.require_admin
     @websocket_api.async_response
     async def websocket_rescan(
         hass: HomeAssistant,
         connection: websocket_api.ActiveConnection,
         msg: Mapping[str, Any],
     ) -> None:
-        connection.require_admin()
         try:
             result = _runtime(runtime_registry, msg).dispatch(
                 COMMAND_RESCAN, msg, is_admin=True
@@ -99,13 +99,13 @@ def async_register_entity_discovery_websocket(
         connection.send_result(msg["id"], result)
 
     @websocket_api.websocket_command(_command_schema(COMMAND_SAVE, include_entity=True))
+    @websocket_api.require_admin
     @websocket_api.async_response
     async def websocket_save(
         hass: HomeAssistant,
         connection: websocket_api.ActiveConnection,
         msg: Mapping[str, Any],
     ) -> None:
-        connection.require_admin()
         try:
             result = _runtime(runtime_registry, msg).dispatch(
                 COMMAND_SAVE, msg, is_admin=True
@@ -116,13 +116,13 @@ def async_register_entity_discovery_websocket(
         connection.send_result(msg["id"], result)
 
     @websocket_api.websocket_command(_command_schema(COMMAND_REMOVE))
+    @websocket_api.require_admin
     @websocket_api.async_response
     async def websocket_remove(
         hass: HomeAssistant,
         connection: websocket_api.ActiveConnection,
         msg: Mapping[str, Any],
     ) -> None:
-        connection.require_admin()
         try:
             result = _runtime(runtime_registry, msg).dispatch(
                 COMMAND_REMOVE, msg, is_admin=True

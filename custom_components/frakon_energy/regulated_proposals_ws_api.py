@@ -52,13 +52,13 @@ def async_register_regulated_tariff_proposals_websocket(hass: HomeAssistant) -> 
             vol.Required("evidence"): list,
         }
     )
+    @websocket_api.require_admin
     @websocket_api.async_response
     async def websocket_regulated_tariff_propose(
         hass: HomeAssistant,
         connection: websocket_api.ActiveConnection,
         msg: Mapping[str, Any],
     ) -> None:
-        connection.require_admin()
         entry = _entry_or_error(hass, connection, msg)
         if entry is None:
             return
@@ -98,13 +98,13 @@ def async_register_regulated_tariff_proposals_websocket(hass: HomeAssistant) -> 
             vol.Required("proposal_fingerprint"): str,
         }
     )
+    @websocket_api.require_admin
     @websocket_api.async_response
     async def websocket_regulated_tariff_confirm(
         hass: HomeAssistant,
         connection: websocket_api.ActiveConnection,
         msg: Mapping[str, Any],
     ) -> None:
-        connection.require_admin()
         entry = _entry_or_error(hass, connection, msg)
         if entry is None:
             return

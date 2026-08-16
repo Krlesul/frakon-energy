@@ -154,13 +154,13 @@ def async_register_mnd_source_proposals_websocket(hass: HomeAssistant) -> None:
             _VOL_OPTIONAL("valid_to"): str,
         }
     )
+    @websocket_api.require_admin
     @websocket_api.async_response
     async def websocket_mnd_source_propose(
         hass: HomeAssistant,
         connection: websocket_api.ActiveConnection,
         msg: Mapping[str, Any],
     ) -> None:
-        connection.require_admin()
         entry = _entry_or_error(hass, connection, msg)
         if entry is None:
             return
@@ -279,13 +279,13 @@ def async_register_mnd_source_proposals_websocket(hass: HomeAssistant) -> None:
             vol.Required("proposal_fingerprint"): str,
         }
     )
+    @websocket_api.require_admin
     @websocket_api.async_response
     async def websocket_mnd_source_confirm(
         hass: HomeAssistant,
         connection: websocket_api.ActiveConnection,
         msg: Mapping[str, Any],
     ) -> None:
-        connection.require_admin()
         entry = _entry_or_error(hass, connection, msg)
         if entry is None:
             return

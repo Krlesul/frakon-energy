@@ -44,13 +44,13 @@ def async_register_tariff_product_catalog_websocket(hass: HomeAssistant) -> None
             vol.Required("entry_id"): str,
         }
     )
+    @websocket_api.require_admin
     @websocket_api.async_response
     async def websocket_tariff_product_catalog(
         hass: HomeAssistant,
         connection: websocket_api.ActiveConnection,
         msg: Mapping[str, Any],
     ) -> None:
-        connection.require_admin()
         entry = _entry_or_error(hass, connection, msg)
         if entry is None:
             return

@@ -138,9 +138,9 @@ def async_register_load_profiles_websocket(hass: HomeAssistant) -> None:
         connection.send_result(msg["id"], _payload(entry))
 
     @websocket_api.websocket_command({vol.Required("type"): COMMAND_PHASE_PREVIEW, vol.Required("entry_id"): str, vol.Required("profile_id"): str})
+    @websocket_api.require_admin
     @websocket_api.async_response
     async def websocket_phase_preview(hass, connection, msg) -> None:
-        connection.require_admin()
         try:
             result = await async_phase_preview(hass, entry_id=msg["entry_id"], profile_id=msg["profile_id"])
         except (ValueError, TypeError) as err:
@@ -150,9 +150,9 @@ def async_register_load_profiles_websocket(hass: HomeAssistant) -> None:
         connection.send_result(msg["id"], result)
 
     @websocket_api.websocket_command({vol.Required("type"): COMMAND_PHASE_READINESS, vol.Required("entry_id"): str, vol.Required("profile_id"): str})
+    @websocket_api.require_admin
     @websocket_api.async_response
     async def websocket_phase_readiness(hass, connection, msg) -> None:
-        connection.require_admin()
         try:
             result = await async_phase_readiness(hass, entry_id=msg["entry_id"], profile_id=msg["profile_id"])
         except (ValueError, TypeError) as err:

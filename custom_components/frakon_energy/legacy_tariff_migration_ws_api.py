@@ -91,13 +91,13 @@ def async_register_legacy_tariff_migration_websocket(hass: HomeAssistant) -> Non
             vol.Required("valid_to"): str,
         }
     )
+    @websocket_api.require_admin
     @websocket_api.async_response
     async def websocket_legacy_tariff_propose(
         hass: HomeAssistant,
         connection: websocket_api.ActiveConnection,
         msg: Mapping[str, Any],
     ) -> None:
-        connection.require_admin()
         entry = _entry_or_error(hass, connection, msg)
         if entry is None:
             return
@@ -153,13 +153,13 @@ def async_register_legacy_tariff_migration_websocket(hass: HomeAssistant) -> Non
             vol.Required("snapshot_fingerprint"): str,
         }
     )
+    @websocket_api.require_admin
     @websocket_api.async_response
     async def websocket_legacy_tariff_confirm(
         hass: HomeAssistant,
         connection: websocket_api.ActiveConnection,
         msg: Mapping[str, Any],
     ) -> None:
-        connection.require_admin()
         entry = _entry_or_error(hass, connection, msg)
         if entry is None:
             return

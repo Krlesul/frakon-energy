@@ -250,6 +250,15 @@ def load_module(*, regulated_mode="success", fetch_mode="success", preview_mode=
 
     websocket_api.ActiveConnection = ActiveConnection
     websocket_api.websocket_command = websocket_command
+    def require_admin(func):
+        async def wrapped(hass, connection, msg):
+            legacy = getattr(connection, "require_admin", None)
+            if legacy is not None:
+                legacy()
+            return await func(hass, connection, msg)
+        return wrapped
+
+    websocket_api.require_admin = require_admin
     websocket_api.async_response = lambda func: func
     websocket_api.async_register_command = (
         lambda _hass, command: registered_commands.append(command)

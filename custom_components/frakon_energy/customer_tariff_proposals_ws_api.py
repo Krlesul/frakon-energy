@@ -108,9 +108,9 @@ def async_register_customer_tariff_proposals_websocket(hass: HomeAssistant) -> N
         vol.Required("candidate_fingerprint"): str,
         _VOL_OPTIONAL("source_context"): dict,
     })
+    @websocket_api.require_admin
     @websocket_api.async_response
     async def websocket_customer_tariff_propose(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: Mapping[str, Any]) -> None:
-        connection.require_admin()
         entry = _entry_or_error(hass, connection, msg)
         if entry is None:
             return
@@ -244,9 +244,9 @@ def async_register_customer_tariff_proposals_websocket(hass: HomeAssistant) -> N
         vol.Required("entry_id"): str,
         vol.Required("proposal_fingerprint"): str,
     })
+    @websocket_api.require_admin
     @websocket_api.async_response
     async def websocket_customer_tariff_confirm(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: Mapping[str, Any]) -> None:
-        connection.require_admin()
         entry = _entry_or_error(hass, connection, msg)
         if entry is None:
             return

@@ -73,13 +73,13 @@ def async_register_technology_profile_websocket(hass: HomeAssistant) -> None:
             vol.Required("type"): COMMAND_PRIMARY_ENTRY,
         }
     )
+    @websocket_api.require_admin
     @websocket_api.async_response
     async def websocket_primary_entry(
         hass: HomeAssistant,
         connection: websocket_api.ActiveConnection,
         msg: Mapping[str, Any],
     ) -> None:
-        connection.require_admin()
         entries, loaded = _loaded_visionq_entries(hass)
         if not loaded:
             connection.send_error(
@@ -122,13 +122,13 @@ def async_register_technology_profile_websocket(hass: HomeAssistant) -> None:
             vol.Required("enabled"): bool,
         }
     )
+    @websocket_api.require_admin
     @websocket_api.async_response
     async def websocket_set_enabled(
         hass: HomeAssistant,
         connection: websocket_api.ActiveConnection,
         msg: Mapping[str, Any],
     ) -> None:
-        connection.require_admin()
         entry = _entry_or_error(hass, connection, msg)
         if entry is None:
             return
@@ -154,13 +154,13 @@ def async_register_technology_profile_websocket(hass: HomeAssistant) -> None:
             vol.Required("entry_id"): str,
         }
     )
+    @websocket_api.require_admin
     @websocket_api.async_response
     async def websocket_get_energy_flow_settings(
         hass: HomeAssistant,
         connection: websocket_api.ActiveConnection,
         msg: Mapping[str, Any],
     ) -> None:
-        connection.require_admin()
         entry = _entry_or_error(hass, connection, msg)
         if entry is None:
             return
@@ -176,13 +176,13 @@ def async_register_technology_profile_websocket(hass: HomeAssistant) -> None:
             vol.Optional(CONF_EV_WALLBOX_RELATION): vol.In(EV_WALLBOX_RELATIONS),
         }
     )
+    @websocket_api.require_admin
     @websocket_api.async_response
     async def websocket_set_energy_flow_settings(
         hass: HomeAssistant,
         connection: websocket_api.ActiveConnection,
         msg: Mapping[str, Any],
     ) -> None:
-        connection.require_admin()
         entry = _entry_or_error(hass, connection, msg)
         if entry is None:
             return
