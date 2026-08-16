@@ -41,18 +41,57 @@ jobs:
               path.write_text(text, encoding="utf-8")
               changed.append(str(path))
 
-          if not changed:
-              print("No legacy admin calls remain")
-          else:
-              print("Updated:")
-              print("\n".join(changed))
-
-          leftovers = []
-          for path in root.rglob("*.py"):
-              if "connection.require_admin()" in path.read_text(encoding="utf-8"):
-                  leftovers.append(str(path))
+          leftovers = [
+              str(path)
+              for path in root.rglob("*.py")
+              if "connection.require_admin()" in path.read_text(encoding="utf-8")
+          ]
           if leftovers:
               raise SystemExit("Legacy require_admin calls remain: " + ", ".join(leftovers))
+
+          test_path = Path("tests/test_websocket_admin_compat.py")
+          test_content = '''from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from homeassistant.exceptions import Unauthorized
+
+from custom_components.frakon_energy.ws_auth import ensure_admin
+
+
+INTEGRATION_ROOT = Path("custom_components/frakon_energy")
+
+
+def test_removed_active_connection_require_admin_is_not_used() -> None:
+    """Current Home Assistant ActiveConnection has no require_admin method."""
+    violations = []
+    for path in INTEGRATION_ROOT.rglob("*.py"):
+        if path.name == "ws_auth.py":
+            continue
+        if "connection.require_admin()" in path.read_text(encoding="utf-8"):
+            violations.append(str(path))
+    assert not violations, "Removed HA websocket API is still used: " + ", ".join(violations)
+
+
+def test_current_admin_guard_accepts_admin_and_rejects_non_admin() -> None:
+    ensure_admin(SimpleNamespace(user=SimpleNamespace(is_admin=True)))
+    with pytest.raises(Unauthorized):
+        ensure_admin(SimpleNamespace(user=SimpleNamespace(is_admin=False)))
+    with pytest.raises(Unauthorized):
+        ensure_admin(SimpleNamespace(user=None))
+'''
+          if not test_path.exists() or test_path.read_text(encoding="utf-8") != test_content:
+              test_path.write_text(test_content, encoding="utf-8")
+
+          backend = Path(".github/workflows/backend.yml")
+          backend_text = backend.read_text(encoding="utf-8")
+          gate = "          tests/test_websocket_admin_compat.py\n"
+          if gate not in backend_text:
+              if not backend_text.endswith("\n"):
+                  backend_text += "\n"
+              backend.write_text(backend_text + gate, encoding="utf-8")
           PY
       - name: Commit migration
         run: |
@@ -60,7 +99,7 @@ jobs:
             exit 0
           fi
           git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add custom_components/frakon_energy
-          git commit -m "Replace removed websocket admin connection API"
+          git config user.email "41898282+Krlesul@users.noreply.github.com"
+          git add custom_components/frakon_energy tests/test_websocket_admin_compat.py .github/workflows/backend.yml
+          git commit -m "Gate current Home Assistant websocket admin API"
           git push origin HEAD:agent/ha-websocket-admin-compat
