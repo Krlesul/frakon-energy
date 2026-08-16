@@ -1,0 +1,108 @@
+name: Temporary Tariff Preview Final Runner
+
+on:
+  push:
+    branches:
+      - agent/fix-tariff-preview-timeout
+
+permissions:
+  contents: write
+
+jobs:
+  apply-test-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: agent/fix-tariff-preview-timeout
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Apply prepared source patch
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import textwrap
+
+          source = Path('.github/workflows/tmp-tariff-preview-timeout-fix.yml').read_text(encoding='utf-8')
+          start_marker = "          python - <<'PY'\n"
+          end_marker = "\n          PY\n"
+          start = source.find(start_marker)
+          if start < 0:
+              raise SystemExit('prepared patch start marker not found')
+          start += len(start_marker)
+          end = source.find(end_marker, start)
+          if end < 0:
+              raise SystemExit('prepared patch end marker not found')
+          script = textwrap.dedent(source[start:end])
+          Path('/tmp/apply_tariff_preview_fix.py').write_text(script, encoding='utf-8')
+          PY
+          python /tmp/apply_tariff_preview_fix.py
+      - name: Install backend test dependencies
+        run: python -m pip install -q pytest pypdf==6.14.2
+      - name: Run targeted backend regressions
+        run: |
+          python -m pytest -q \
+            tests/test_tariff_pdf_text.py \
+            tests/test_tariff_parser_preview.py \
+            tests/test_tariff_parse_preview_ws_api.py \
+            tests/test_tariff_http_transport.py \
+            tests/test_tariff_http_ha.py
+      - name: Verify exact live CEZ D25d document
+        run: |
+          curl --fail --location --max-time 25 --output /tmp/cez.pdf 'https://www.cez.cz/file/edee/2025/10/x01_moo_ee_na_dobu_neurcitou.pdf'
+          timeout 20s python - <<'PY'
+          import importlib.util
+          import sys
+          from pypdf import PdfReader
+
+          reader = PdfReader('/tmp/cez.pdf', strict=False)
+          layout = reader.pages[0].extract_text(extraction_mode='layout', layout_mode_space_vertically=False) or ''
+          plain = reader.pages[0].extract_text() or ''
+          assert len(reader.pages) == 1
+          assert not layout.strip()
+          assert 'Elektřina na dobu neurčitou' in plain
+          assert 'D25d' in plain
+
+          name = 'cez_parser_live_final_runner'
+          spec = importlib.util.spec_from_file_location(name, 'custom_components/frakon_energy/providers/cez_tariff_parser.py')
+          mod = importlib.util.module_from_spec(spec)
+          sys.modules[name] = mod
+          spec.loader.exec_module(mod)
+          parsed = mod.parse_cez_commercial_price_text(plain, distribution_tariff='D25d')
+          print(parsed)
+          assert parsed.product_name == 'Elektřina na dobu neurčitou'
+          assert str(parsed.high_rate_czk_per_kwh) == '3.96'
+          assert str(parsed.low_rate_czk_per_kwh) == '3.70'
+          assert str(parsed.supplier_standing_czk_month) == '146.41'
+          PY
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm install
+      - name: Validate and build frontend
+        working-directory: frontend
+        run: |
+          npm run check:live-data
+          npm run build
+      - name: Package dashboard
+        run: bash scripts/build_frontend.sh
+      - name: Commit source fix only
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            custom_components/frakon_energy/tariff_pdf_text.py \
+            custom_components/frakon_energy/tariff_parser_preview.py \
+            custom_components/frakon_energy/tariff_parse_preview_ws_api.py \
+            custom_components/frakon_energy/frontend_app \
+            frontend/src/tariff-wizard.tsx \
+            frontend/scripts/check-runtime-live-data-contract.mjs \
+            tests/test_tariff_pdf_text.py \
+            tests/test_tariff_parser_preview.py \
+            tests/test_tariff_parse_preview_ws_api.py
+          git commit -m "Fix live CEZ tariff preview extraction"
+          git push origin HEAD:agent/fix-tariff-preview-timeout
