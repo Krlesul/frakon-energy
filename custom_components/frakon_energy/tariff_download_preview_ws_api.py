@@ -7,7 +7,6 @@ from typing import Any, Mapping
 
 import voluptuous as vol
 from homeassistant.components import websocket_api
-from .ws_auth import ensure_admin
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.util import dt as dt_util
 
@@ -71,13 +70,13 @@ def async_register_tariff_download_preview_websocket(hass: HomeAssistant) -> Non
             _VOL_OPTIONAL("source_context"): dict,
         }
     )
+    @websocket_api.require_admin
     @websocket_api.async_response
     async def websocket_tariff_download_preview(
         hass: HomeAssistant,
         connection: websocket_api.ActiveConnection,
         msg: Mapping[str, Any],
     ) -> None:
-        ensure_admin(connection)
         entry = _entry_or_error(hass, connection, msg)
         if entry is None:
             return

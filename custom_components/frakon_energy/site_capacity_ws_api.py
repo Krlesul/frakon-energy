@@ -5,7 +5,6 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant.components import websocket_api
-from .ws_auth import ensure_admin
 from homeassistant.core import HomeAssistant, callback
 
 from .const import DOMAIN
@@ -110,13 +109,13 @@ def async_register_site_capacity_websocket(hass: HomeAssistant) -> None:
             vol.Required("entry_id"): str,
         }
     )
+    @websocket_api.require_admin
     @websocket_api.async_response
     async def websocket_status(
         hass: HomeAssistant,
         connection: websocket_api.ActiveConnection,
         msg: dict[str, Any],
     ) -> None:
-        ensure_admin(connection)
         try:
             result = await async_site_capacity_status(hass, entry_id=msg["entry_id"])
         except ValueError as err:
@@ -133,13 +132,13 @@ def async_register_site_capacity_websocket(hass: HomeAssistant) -> None:
             vol.Required("entry_id"): str,
         }
     )
+    @websocket_api.require_admin
     @websocket_api.async_response
     async def websocket_phase_current_status(
         hass: HomeAssistant,
         connection: websocket_api.ActiveConnection,
         msg: dict[str, Any],
     ) -> None:
-        ensure_admin(connection)
         try:
             result = await async_site_phase_current_status(hass, entry_id=msg["entry_id"])
         except ValueError as err:
@@ -156,13 +155,13 @@ def async_register_site_capacity_websocket(hass: HomeAssistant) -> None:
             vol.Required("entry_id"): str,
         }
     )
+    @websocket_api.require_admin
     @websocket_api.async_response
     async def websocket_phase_capacity_status(
         hass: HomeAssistant,
         connection: websocket_api.ActiveConnection,
         msg: dict[str, Any],
     ) -> None:
-        ensure_admin(connection)
         try:
             result = await async_site_phase_capacity_status(hass, entry_id=msg["entry_id"])
         except ValueError as err:
@@ -181,13 +180,13 @@ def async_register_site_capacity_websocket(hass: HomeAssistant) -> None:
             vol.Optional(CONF_EXECUTION_GUARD_ENABLED): bool,
         }
     )
+    @websocket_api.require_admin
     @websocket_api.async_response
     async def websocket_set(
         hass: HomeAssistant,
         connection: websocket_api.ActiveConnection,
         msg: dict[str, Any],
     ) -> None:
-        ensure_admin(connection)
         try:
             entry = _entry(hass, msg["entry_id"])
             value = msg[CONF_MAX_GRID_IMPORT_KW]
@@ -227,13 +226,13 @@ def async_register_site_capacity_websocket(hass: HomeAssistant) -> None:
             vol.Required(CONF_MAX_PHASE_CURRENT_A): vol.Any(None, _finite_positive_amps),
         }
     )
+    @websocket_api.require_admin
     @websocket_api.async_response
     async def websocket_phase_capacity_set(
         hass: HomeAssistant,
         connection: websocket_api.ActiveConnection,
         msg: dict[str, Any],
     ) -> None:
-        ensure_admin(connection)
         try:
             entry = _entry(hass, msg["entry_id"])
             value = msg[CONF_MAX_PHASE_CURRENT_A]

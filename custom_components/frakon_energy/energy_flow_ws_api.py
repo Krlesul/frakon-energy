@@ -4,7 +4,6 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant.components import websocket_api
-from .ws_auth import ensure_admin
 from homeassistant.core import HomeAssistant, callback
 
 from .const import DOMAIN
@@ -48,13 +47,13 @@ def async_register_energy_flow_websocket(hass: HomeAssistant) -> None:
             vol.Required("entry_id"): str,
         }
     )
+    @websocket_api.require_admin
     @websocket_api.async_response
     async def websocket_status(
         hass: HomeAssistant,
         connection: websocket_api.ActiveConnection,
         msg: dict[str, Any],
     ) -> None:
-        ensure_admin(connection)
         try:
             result = await async_energy_flow_status(
                 hass,

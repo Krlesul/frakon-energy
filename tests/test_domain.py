@@ -137,8 +137,14 @@ def test_removed_active_connection_require_admin_is_not_used() -> None:
     )
 
 
-def test_websocket_admin_guard_matches_current_home_assistant_contract() -> None:
-    source = (ROOT / "ws_auth.py").read_text(encoding="utf-8")
-    assert "connection.require_admin()" not in source
-    assert "user.is_admin" in source
-    assert "Unauthorized" in source
+def test_websocket_admin_handlers_use_current_home_assistant_decorator() -> None:
+    admin_modules = [
+        path
+        for path in ROOT.rglob("*_ws_api.py")
+        if "@websocket_api.require_admin" in path.read_text(encoding="utf-8")
+    ]
+    assert admin_modules
+    for path in admin_modules:
+        source = path.read_text(encoding="utf-8")
+        assert "ensure_admin(connection)" not in source
+        assert "connection.require_admin()" not in source
