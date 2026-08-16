@@ -21,27 +21,31 @@ jobs:
         with:
           python-version: "3.13"
       - run: python -m pip install --upgrade pip pytest pypdf==6.14.2
-      - name: Tests A-F
+      - name: Sequence quarter 1
         continue-on-error: true
         shell: bash
         run: |
-          mapfile -t files < <(find tests -maxdepth 1 -type f -name 'test_*.py' -printf '%f\n' | sort | awk 'tolower(substr($0,6,1)) ~ /^[a-f]$/ {print "tests/"$0}')
-          python -m pytest -q "${files[@]}"
-      - name: Tests G-L
+          mapfile -t files < <(grep -oE 'tests/test_[A-Za-z0-9_]+\.py' .github/workflows/backend.yml | awk '!seen[$0]++')
+          n=${#files[@]}; q=$(( (n + 3) / 4 ));
+          python -m pytest -q "${files[@]:0:q}"
+      - name: Sequence quarter 2
         continue-on-error: true
         shell: bash
         run: |
-          mapfile -t files < <(find tests -maxdepth 1 -type f -name 'test_*.py' -printf '%f\n' | sort | awk 'tolower(substr($0,6,1)) ~ /^[g-l]$/ {print "tests/"$0}')
-          python -m pytest -q "${files[@]}"
-      - name: Tests M-R
+          mapfile -t files < <(grep -oE 'tests/test_[A-Za-z0-9_]+\.py' .github/workflows/backend.yml | awk '!seen[$0]++')
+          n=${#files[@]}; q=$(( (n + 3) / 4 ));
+          python -m pytest -q "${files[@]:q:q}"
+      - name: Sequence quarter 3
         continue-on-error: true
         shell: bash
         run: |
-          mapfile -t files < <(find tests -maxdepth 1 -type f -name 'test_*.py' -printf '%f\n' | sort | awk 'tolower(substr($0,6,1)) ~ /^[m-r]$/ {print "tests/"$0}')
-          python -m pytest -q "${files[@]}"
-      - name: Tests S-Z
+          mapfile -t files < <(grep -oE 'tests/test_[A-Za-z0-9_]+\.py' .github/workflows/backend.yml | awk '!seen[$0]++')
+          n=${#files[@]}; q=$(( (n + 3) / 4 ));
+          python -m pytest -q "${files[@]:q*2:q}"
+      - name: Sequence quarter 4
         continue-on-error: true
         shell: bash
         run: |
-          mapfile -t files < <(find tests -maxdepth 1 -type f -name 'test_*.py' -printf '%f\n' | sort | awk 'tolower(substr($0,6,1)) ~ /^[s-z]$/ {print "tests/"$0}')
-          python -m pytest -q "${files[@]}"
+          mapfile -t files < <(grep -oE 'tests/test_[A-Za-z0-9_]+\.py' .github/workflows/backend.yml | awk '!seen[$0]++')
+          n=${#files[@]}; q=$(( (n + 3) / 4 ));
+          python -m pytest -q "${files[@]:q*3}"
