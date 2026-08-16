@@ -60,6 +60,7 @@ from .site_capacity_ws_api import async_register_site_capacity_websocket
 from .spot_price_settings_ws_api import async_register_spot_price_settings_websocket
 from .spot_price_ws_api import async_register_spot_price_websocket
 from .tariff_all_in_preview_ws_api import async_register_tariff_all_in_preview_websocket
+from .tariff_diagnostics_ws_api import async_register_tariff_diagnostics_websocket
 from .tariff_discovery_ws_api import async_register_tariff_discovery_websocket
 from .tariff_download_preview_ws_api import async_register_tariff_download_preview_websocket
 from .tariff_parse_preview_ws_api import async_register_tariff_parse_preview_websocket
@@ -203,6 +204,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         async_register_customer_tariff_proposals_websocket(hass)
         async_register_manual_customer_tariff_websocket(hass)
         async_register_daily_all_in_costs_websocket(hass)
+        async_register_tariff_diagnostics_websocket(hass)
         async_register_mnd_source_proposals_websocket(hass)
         async_register_load_plan_websocket(hass)
         async_register_load_profiles_websocket(hass)
