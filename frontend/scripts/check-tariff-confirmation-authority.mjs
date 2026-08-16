@@ -49,7 +49,11 @@ for (const forbidden of ["contract:", "candidate_fingerprint", "source_url", "do
   assert.equal(confirmCall[0].includes(forbidden), false, `confirmation request must not contain ${forbidden}`);
 }
 
-assert.match(source, /errorCode\(error\) === "regulated_tariff_not_available"/, "regulated bootstrap must trigger only on the backend error code");
+assert.match(
+  source,
+  /if \(errorCode\(error\) !== "regulated_tariff_not_available"\) throw error;/,
+  "regulated bootstrap must fail closed for every backend error except regulated_tariff_not_available",
+);
 assert.match(source, /response\.server_authored !== true/, "official regulated response must be server-authored");
 assert.match(source, /bundle\.confirmed !== false/, "regulated proposal must stay unconfirmed until the explicit fingerprint confirmation");
 assert.match(source, /response\.candidate_fingerprint !== candidate\.fingerprint/, "proposal response candidate identity must be checked");
