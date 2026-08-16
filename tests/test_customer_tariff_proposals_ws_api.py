@@ -35,6 +35,7 @@ def load_module(*, supplier="cez", regulator_mode="success", confirm_mode="succe
         "custom_components.frakon_energy.tariff_http_ha",
         "custom_components.frakon_energy.tariff_parser_preview",
         "custom_components.frakon_energy.tariff_pdf_text",
+        "custom_components.frakon_energy.tariff_source_context",
         "custom_components.frakon_energy.customer_tariff_proposals_ws_api",
         "homeassistant",
         "homeassistant.components",
@@ -241,6 +242,20 @@ def load_module(*, supplier="cez", regulator_mode="success", confirm_mode="succe
     pdf = types.ModuleType("custom_components.frakon_energy.tariff_pdf_text")
     pdf.extract_validated_tariff_pdf_text = lambda download: calls.append(("extract", download)) or "text"
     sys.modules[pdf.__name__] = pdf
+
+    source_context = types.ModuleType("custom_components.frakon_energy.tariff_source_context")
+
+    class TariffSourceResolutionContext:
+        is_empty = True
+
+        @classmethod
+        def from_value(cls, value):
+            calls.append(("source_context", value))
+            return cls()
+
+    source_context.TariffSourceResolutionContext = TariffSourceResolutionContext
+    source_context.tariff_source_context_fingerprint = lambda _value: "0" * 64
+    sys.modules[source_context.__name__] = source_context
 
     schemas = []
     vol = types.ModuleType("voluptuous")
