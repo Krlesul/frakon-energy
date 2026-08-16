@@ -42,15 +42,18 @@ ERU_1_2026_AMENDMENT_PAGE = "https://eru.gov.cz/energeticky-regulacni-vestnik-22
 class RegulatedAuthority(StrEnum):
     ERU = "eru"
     OTE = "ote"
+    CUSTOMS = "celni_sprava"
 
 
 _OFFICIAL_DOMAINS = {
     RegulatedAuthority.ERU: "eru.gov.cz",
     RegulatedAuthority.OTE: "ote-cr.cz",
+    RegulatedAuthority.CUSTOMS: "celnisprava.gov.cz",
 }
 _SOURCE_NAMES = {
     RegulatedAuthority.ERU: "Energetický regulační úřad",
     RegulatedAuthority.OTE: "OTE",
+    RegulatedAuthority.CUSTOMS: "Celní správa ČR",
 }
 
 
@@ -70,7 +73,7 @@ def _normalize_tariff(value: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class RegulatedPriceSource:
-    """One official ERÚ/OTE source used by a parsed regulated value set."""
+    """One official authority source used by a parsed regulated value set."""
 
     authority: RegulatedAuthority
     document_id: str
