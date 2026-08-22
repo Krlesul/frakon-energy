@@ -170,6 +170,11 @@ async def _async_cleanup_unloaded_entry(
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    # Keep the FRAKON shell reachable even when a provider is temporarily offline.
+    # Provider I/O and the remaining runtime bootstrap must never decide whether the
+    # Home Assistant sidebar entry exists.
+    await async_register_panel(hass)
+
     provider = entry.data.get(CONF_PROVIDER, PROVIDER_VISIONQ)
     if provider == PROVIDER_CEZ_HDO:
         coordinator = CezHdoCoordinator(hass, entry)
