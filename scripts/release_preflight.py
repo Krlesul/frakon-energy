@@ -54,6 +54,23 @@ def main() -> None:
     if not frontend_index.is_file():
         fail("packaged frontend_app/index.html is missing")
 
+    brand_dir = ROOT / "custom_components/frakon_energy/brand"
+    required_brand_assets = (
+        "icon.png",
+        "icon@2x.png",
+        "dark_icon.png",
+        "dark_icon@2x.png",
+        "logo.png",
+        "logo@2x.png",
+        "dark_logo.png",
+        "dark_logo@2x.png",
+    )
+    missing_brand_assets = [
+        name for name in required_brand_assets if not (brand_dir / name).is_file()
+    ]
+    if missing_brand_assets:
+        fail(f"missing Home Assistant brand assets: {', '.join(missing_brand_assets)}")
+
     print(f"release preflight OK: FRAKON Energy {version}")
 
 
