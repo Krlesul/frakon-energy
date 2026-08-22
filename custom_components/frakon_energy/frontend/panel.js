@@ -24,7 +24,7 @@ class FrakonEnergyPanel extends HTMLElement {
     this.style.background = "#071019";
 
     const iframe = document.createElement("iframe");
-    iframe.src = "/frakon-energy-static/app/index.html";
+    iframe.src = "/frakon-energy-app-static/index.html";
     iframe.title = "FRAKON Energy";
     iframe.style.display = "block";
     iframe.style.width = "100%";
