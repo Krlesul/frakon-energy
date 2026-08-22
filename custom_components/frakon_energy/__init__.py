@@ -8,6 +8,7 @@ from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.typing import ConfigType
 
 from .const import CONF_PROVIDER, DOMAIN, PROVIDER_CEZ_HDO, PROVIDER_VISIONQ
 from .coordinator import FrakonEnergyCoordinator
@@ -169,10 +170,15 @@ async def _async_cleanup_unloaded_entry(
         raise first_error
 
 
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Set up the FRAKON Energy shell independently of config-entry providers."""
+    await async_register_panel(hass)
+    return True
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    # Keep the FRAKON shell reachable even when a provider is temporarily offline.
-    # Provider I/O and the remaining runtime bootstrap must never decide whether the
-    # Home Assistant sidebar entry exists.
+    # Keep a retry-safe fallback here for direct config-entry reloads/tests. Normal
+    # Home Assistant startup already registered the shell from async_setup().
     await async_register_panel(hass)
 
     provider = entry.data.get(CONF_PROVIDER, PROVIDER_VISIONQ)
@@ -241,7 +247,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         async_register_load_execution_commissioning_preflight_websocket(hass)
         await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
         sensors_forwarded = True
-        await async_register_panel(hass)
         # Start execution workers only after every other setup step has succeeded. The
         # transactional helper rolls back partial worker startup on its own failure.
         await async_start_execution_runtimes(hass, entry.entry_id)
