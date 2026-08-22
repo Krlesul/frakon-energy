@@ -1,4 +1,4 @@
-"""WebSocket API for persistent FRAKON Energy spot-price settings."""
+"""WebSocket APIs for persistent FRAKON Energy dashboard settings."""
 
 from __future__ import annotations
 
@@ -10,10 +10,13 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 
 from .const import DOMAIN
+from .dashboard_display_settings import DashboardDisplaySettings
 from .spot_price_settings import FX_MODE_AUTO, FX_MODE_MANUAL, SpotPriceSettings
 
 COMMAND_GET = f"{DOMAIN}/spot_price_settings/get"
 COMMAND_SET = f"{DOMAIN}/spot_price_settings/set"
+COMMAND_DISPLAY_GET = f"{DOMAIN}/dashboard_display_settings/get"
+COMMAND_DISPLAY_SET = f"{DOMAIN}/dashboard_display_settings/set"
 _REGISTERED_KEY = "spot_price_settings_websocket_registered"
 
 
@@ -68,6 +71,49 @@ def async_register_spot_price_settings_websocket(hass: HomeAssistant) -> None:
         hass.config_entries.async_update_entry(entry, options=options)
         connection.send_result(msg["id"], settings.as_dict())
 
+    @websocket_api.websocket_command({
+        vol.Required("type"): COMMAND_DISPLAY_GET,
+        vol.Required("entry_id"): str,
+    })
+    @websocket_api.async_response
+    async def websocket_display_get(
+        hass: HomeAssistant,
+        connection: websocket_api.ActiveConnection,
+        msg: dict[str, Any],
+    ) -> None:
+        try:
+            settings = DashboardDisplaySettings.from_options(_entry(hass, msg["entry_id"]).options)
+        except (ValueError, TypeError) as err:
+            connection.send_error(msg["id"], "invalid_dashboard_display_settings", str(err))
+            return
+        connection.send_result(msg["id"], settings.as_dict())
+
+    @websocket_api.websocket_command({
+        vol.Required("type"): COMMAND_DISPLAY_SET,
+        vol.Required("entry_id"): str,
+        vol.Required("key"): vol.In(DashboardDisplaySettings.keys()),
+        vol.Required("enabled"): bool,
+    })
+    @websocket_api.async_response
+    async def websocket_display_set(
+        hass: HomeAssistant,
+        connection: websocket_api.ActiveConnection,
+        msg: dict[str, Any],
+    ) -> None:
+        try:
+            entry = _entry(hass, msg["entry_id"])
+            current = DashboardDisplaySettings.from_options(entry.options)
+            settings = current.with_value(msg["key"], msg["enabled"])
+        except (ValueError, TypeError) as err:
+            connection.send_error(msg["id"], "invalid_dashboard_display_settings", str(err))
+            return
+        options = dict(entry.options)
+        options.update(settings.option_values())
+        hass.config_entries.async_update_entry(entry, options=options)
+        connection.send_result(msg["id"], settings.as_dict())
+
     websocket_api.async_register_command(hass, websocket_get)
     websocket_api.async_register_command(hass, websocket_set)
+    websocket_api.async_register_command(hass, websocket_display_get)
+    websocket_api.async_register_command(hass, websocket_display_set)
     domain_data[_REGISTERED_KEY] = True
