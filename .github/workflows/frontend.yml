@@ -67,9 +67,17 @@ jobs:
           cmp frontend/public/load-all-in-estimate-bridge.js custom_components/frakon_energy/frontend_app/load-all-in-estimate-bridge.js
           cmp frontend/public/legacy-tariff-migration-bridge.js custom_components/frakon_energy/frontend_app/legacy-tariff-migration-bridge.js
 
+      - name: Upload validated dashboard build
+        uses: actions/upload-artifact@v4
+        with:
+          name: frakon-energy-frontend-${{ github.sha }}
+          path: custom_components/frakon_energy/frontend_app
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Verify committed dashboard is current
         run: |
           if ! git diff --exit-code -- custom_components/frakon_energy/frontend_app; then
-            echo "Packaged frontend_app is stale. Build frontend locally and commit the generated dashboard."
+            echo "Packaged frontend_app is stale. Download the validated dashboard artifact from this run and commit it."
             exit 1
           fi

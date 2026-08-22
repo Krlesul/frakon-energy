@@ -1,0 +1,122 @@
+.dashboard-display-settings {
+  overflow: hidden;
+}
+
+.display-toggle-list {
+  display: grid;
+  gap: 1px;
+  margin-top: 18px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,.06);
+  border-radius: 18px;
+  background: rgba(255,255,255,.055);
+}
+
+.display-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  min-height: 72px;
+  padding: 14px 16px;
+  background: rgba(10,15,22,.96);
+  cursor: pointer;
+}
+
+.display-toggle__copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.display-toggle__copy b {
+  color: #eef3fa;
+  font-size: 14px;
+}
+
+.display-toggle__copy small,
+.display-settings-status {
+  color: #7f8b9d;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.display-switch {
+  position: relative;
+  flex: 0 0 auto;
+  width: 48px;
+  height: 28px;
+}
+
+.display-switch input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.display-switch i {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,.12);
+  background: #273140;
+  transition: background .18s ease, border-color .18s ease;
+}
+
+.display-switch i::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #a5afbd;
+  transition: transform .18s ease, background .18s ease;
+}
+
+.display-switch input:checked + i {
+  border-color: rgba(73,214,143,.45);
+  background: rgba(73,214,143,.28);
+}
+
+.display-switch input:checked + i::after {
+  transform: translateX(20px);
+  background: #63dc9d;
+}
+
+.display-switch input:focus-visible + i {
+  outline: 2px solid #6ca9ff;
+  outline-offset: 2px;
+}
+
+.display-switch input:disabled + i {
+  opacity: .5;
+}
+
+.display-settings-status {
+  display: block;
+  margin-top: 12px;
+}
+
+.frakon-hide-technology-overview #frakon-technology-overview-host,
+.frakon-hide-energy-flow #frakon-energy-flow-host {
+  display: none !important;
+}
+
+.frakon-hide-photovoltaics .technology-overview__card[data-technology="photovoltaics"] {
+  display: none !important;
+}
+
+@media (max-width: 560px) {
+  .display-toggle {
+    min-height: 68px;
+    padding: 12px 14px;
+  }
+
+  .display-toggle__copy small {
+    font-size: 11px;
+  }
+}

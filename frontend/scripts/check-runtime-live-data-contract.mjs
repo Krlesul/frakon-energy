@@ -106,8 +106,39 @@ for (const forbidden of ["DEFAULT_NT_SCHEDULE", "fallbackNtIntervals", "Použív
     throw new Error(`Production HDO UI must not fabricate fallback intervals: ${forbidden}`);
   }
 }
+if (!mainUi.includes("state.countdownSeconds !== null && state.nextChange !== null")) {
+  throw new Error("HDO countdown must only render when the next transition is also available.");
+}
+if (!mainUi.includes("hasTrustedTransition ? <div className=\"countdown\"")) {
+  throw new Error("HDO countdown must be conditionally rendered behind the trusted-transition guard.");
+}
 if (!helper.includes("findStructuredScheduleEntity")) {
   throw new Error("home-assistant.ts must discover structured HDO schedules even when entity names are customized.");
+}
+
+const displaySettings = read("src/dashboard-display-settings.tsx");
+for (const required of [
+  'frakon_energy/dashboard_display_settings/get',
+  'frakon_energy/dashboard_display_settings/set',
+  'show_hdo',
+  'show_spot_prices',
+  'show_daily_consumption',
+  'show_photovoltaics',
+  'show_energy_flow',
+]) {
+  if (!displaySettings.includes(required)) {
+    throw new Error(`Dashboard visibility settings are missing contract token: ${required}`);
+  }
+}
+const displayCss = read("src/dashboard-display-settings.css");
+for (const required of [
+  ".frakon-hide-technology-overview #frakon-technology-overview-host",
+  ".frakon-hide-energy-flow #frakon-energy-flow-host",
+  '[data-technology="photovoltaics"]',
+]) {
+  if (!displayCss.includes(required)) {
+    throw new Error(`Dashboard visibility CSS is missing ${required}.`);
+  }
 }
 
 const spotSettings = read("src/spot-price-settings.tsx");
