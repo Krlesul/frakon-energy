@@ -1,23 +1,21 @@
 name: Temporary RC9 changelog
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/temp-rc9-changelog.yml"
-      - "CHANGELOG.md"
+  push:
+    branches:
+      - "release/1.0.0-rc.9"
 
 permissions:
   contents: write
 
 jobs:
   update:
-    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout PR head
+      - name: Checkout release branch
         uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.pull_request.head.ref }}
+          ref: release/1.0.0-rc.9
 
       - name: Prepend RC9 changelog
         shell: python
@@ -54,10 +52,11 @@ Devátý release candidate opravuje živé zobrazení HDO v dashboardu podle nat
       - name: Commit changelog
         run: |
           if git diff --quiet -- CHANGELOG.md; then
+            echo "RC9 changelog already current."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add CHANGELOG.md
           git commit -m "Document FRAKON Energy 1.0.0-rc.9"
-          git push origin HEAD:${{ github.event.pull_request.head.ref }}
+          git push origin HEAD:release/1.0.0-rc.9
