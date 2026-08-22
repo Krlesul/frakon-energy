@@ -2,17 +2,31 @@ name: Release
 
 on:
   push:
+    branches:
+      - main
     tags:
-      - "v*"
+      - "*.*.*"
+    paths:
+      - ".github/workflows/release.yml"
+      - "scripts/release_preflight.py"
+      - "scripts/release_notes.py"
+      - "VERSION"
+      - "CHANGELOG.md"
+      - "hacs.json"
+      - "frontend/package.json"
+      - "custom_components/frakon_energy/manifest.json"
   pull_request:
     paths:
       - ".github/workflows/release.yml"
       - "scripts/release_preflight.py"
+      - "scripts/release_notes.py"
       - "VERSION"
       - "CHANGELOG.md"
+      - "hacs.json"
       - "frontend/**"
       - "custom_components/frakon_energy/frontend_app/**"
       - "custom_components/frakon_energy/manifest.json"
+      - "tests/test_versioning.py"
 
 permissions:
   contents: read
@@ -22,7 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
-      prerelease: ${{ steps.version.outputs.prerelease }}
+      github_prerelease: ${{ steps.version.outputs.github_prerelease }}
     steps:
       - name: Checkout candidate commit
         uses: actions/checkout@v5
@@ -76,9 +90,9 @@ jobs:
         run: |
           set -euo pipefail
           version="$(tr -d '\r\n' < VERSION)"
-          expected_tag="v${version}"
+          expected_tag="${version}"
 
-          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+          if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF}" == refs/tags/* ]]; then
             actual_tag="${GITHUB_REF_NAME}"
             if [[ "${actual_tag}" != "${expected_tag}" ]]; then
               echo "Tag ${actual_tag} does not match VERSION ${version}; expected ${expected_tag}" >&2
@@ -89,20 +103,28 @@ jobs:
               echo "Tagged commit ${GITHUB_SHA} is not reachable from main" >&2
               exit 1
             fi
+          elif [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            echo "Main release candidate: ${expected_tag}"
           else
             echo "PR dry-run: release tag would be ${expected_tag}"
           fi
 
-          if [[ "${version}" == *-alpha.* || "${version}" == *-beta.* || "${version}" == *-rc.* ]]; then
-            prerelease=true
+          # Alpha/beta builds stay behind HACS' beta switch. RC builds are
+          # intentionally normal GitHub Releases so HACS can show the semantic
+          # version to commissioning users without falling back to a commit SHA.
+          if [[ "${version}" == *-alpha.* || "${version}" == *-beta.* ]]; then
+            github_prerelease=true
           else
-            prerelease=false
+            github_prerelease=false
           fi
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
-          echo "prerelease=${prerelease}" >> "${GITHUB_OUTPUT}"
+          echo "github_prerelease=${github_prerelease}" >> "${GITHUB_OUTPUT}"
 
       - name: Release preflight contract
         run: python scripts/release_preflight.py
+
+      - name: Verify release notes are extractable
+        run: python scripts/release_notes.py "${{ steps.version.outputs.version }}" > /tmp/release-notes.md
 
       - name: Compile integration
         run: python -m compileall -q custom_components/frakon_energy
@@ -155,19 +177,15 @@ jobs:
           cp -R frontend/dist/. /tmp/frakon-energy-frontend-app/
           diff -ru /tmp/frakon-energy-frontend-app custom_components/frakon_energy/frontend_app
 
-      - name: Build release archive
-        env:
-          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+      - name: Build HACS release archive
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
           from zipfile import ZIP_DEFLATED, ZipFile
-          import os
 
-          version = os.environ["RELEASE_VERSION"]
-          archive = Path(f"frakon-energy-{version}.zip")
+          archive = Path("frakon-energy.zip")
           source = Path("custom_components/frakon_energy")
           with ZipFile(archive, "w", compression=ZIP_DEFLATED) as zf:
               for path in sorted(source.rglob("*")):
@@ -180,41 +198,73 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: frakon-energy-${{ steps.version.outputs.version }}
-          path: frakon-energy-${{ steps.version.outputs.version }}.zip
+          path: frakon-energy.zip
           if-no-files-found: error
           retention-days: 7
 
   publish:
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push'
     needs: validate
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Checkout tagged commit
+      - name: Checkout release commit
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
-      - name: Download validated release artifact
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14.2"
+
+      - name: Download validated HACS artifact
         uses: actions/download-artifact@v5
         with:
           name: frakon-energy-${{ needs.validate.outputs.version }}
 
-      - name: Publish GitHub Release
+      - name: Publish semantic GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.validate.outputs.version }}
-          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+          GITHUB_PRERELEASE: ${{ needs.validate.outputs.github_prerelease }}
         shell: bash
         run: |
           set -euo pipefail
+          tag="${VERSION}"
+
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            echo "Release ${tag} already exists; nothing to publish."
+            exit 0
+          fi
+
+          git fetch origin --tags --force
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            tag_sha="$(git rev-list -n 1 "refs/tags/${tag}")"
+            if [[ "${tag_sha}" != "${GITHUB_SHA}" ]]; then
+              echo "Tag ${tag} already points to ${tag_sha}, not current release commit ${GITHUB_SHA}. Bump VERSION before publishing another release." >&2
+              exit 1
+            fi
+          else
+            if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+              echo "Expected existing tag ${tag} for tag-triggered release." >&2
+              exit 1
+            fi
+            git tag "${tag}" "${GITHUB_SHA}"
+            git push origin "refs/tags/${tag}"
+          fi
+
+          python scripts/release_notes.py "${VERSION}" > release-notes.md
+
           args=(
-            "v${VERSION}"
-            "frakon-energy-${VERSION}.zip"
+            "${tag}"
+            "frakon-energy.zip"
             --title "FRAKON Energy ${VERSION}"
-            --generate-notes
+            --notes-file release-notes.md
             --verify-tag
           )
-          if [[ "${PRERELEASE}" == "true" ]]; then
+          if [[ "${GITHUB_PRERELEASE}" == "true" ]]; then
             args+=(--prerelease)
           fi
           gh release create "${args[@]}"
