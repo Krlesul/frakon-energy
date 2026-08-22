@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.0.0-rc.4
+
+Čtvrtý release candidate opravuje reálný start integračního panelu v Home Assistantu a dokončuje lokální branding pro světlý, tmavý a HiDPI režim. Hlavní změnou je oddělení dostupnosti postranního panelu od prvního síťového bootstrapu VisionQ/HDO providerů.
+
+### Opraveno
+
+- FRAKON Energy se nyní registruje do postranního panelu ještě před prvním provider I/O a `async_config_entry_first_refresh()`.
+- Dočasná nedostupnost VisionQ nebo HDO při startu už nemá způsobit zmizení celé položky FRAKON Energy z levého menu Home Assistantu.
+- Přidán regresní test, který simuluje selhání provider refresh a ověřuje, že panel byl zaregistrován dříve.
+
+### Branding a distribuce
+
+- Doplněny lokální Home Assistant brand assety pro světlý a tmavý režim v 1× i 2× rozlišení: ikona i logo.
+- Generátor brandů nyní vytváří HiDPI varianty automaticky.
+- Release preflight odmítne balíček, pokud některý z povinných brand souborů chybí.
+- HACS update dialog může dočasně nadále zobrazit `icon not available`, protože současný HACS pro update entity stále používá centrální Home Assistant Brands URL místo lokálního brand adresáře custom integrace. FRAKON Energy má svou část připravenou správně.
+
+### Omezení RC
+
+- Pokud selže samotný import integrace nebo instalace Python dependency ještě před spuštěním `async_setup_entry`, panel se pochopitelně registrovat nemůže; taková chyba musí být viditelná v Home Assistant logu.
+- Stabilní `1.0.0` zůstává podmíněna dokončením reálného commissioningu, restart/reload ověřením a řízeným end-to-end testem fyzické exekuce.
+
 ## 1.0.0-rc.3
 
 Třetí release candidate je zaměřený na reálný commissioning v Home Assistantu, ověřené all-in ceny elektřiny a stabilní živé HDO zobrazení. Současně přechází FRAKON Energy z commitových HACS aktualizací na skutečné verzované release balíčky.
