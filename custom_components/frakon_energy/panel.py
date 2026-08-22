@@ -14,8 +14,10 @@ from .const import DOMAIN
 _LOGGER = logging.getLogger(__name__)
 
 PANEL_URL_PATH = "frakon-energy"
-PANEL_STATIC_URL = "/frakon-energy-static"
-PANEL_MODULE_URL = f"{PANEL_STATIC_URL}/panel.js"
+PANEL_MODULE_STATIC_URL = "/frakon-energy-panel-static"
+PANEL_APP_STATIC_URL = "/frakon-energy-app-static"
+PANEL_MODULE_URL = f"{PANEL_MODULE_STATIC_URL}/panel.js"
+PANEL_APP_URL = f"{PANEL_APP_STATIC_URL}/index.html"
 PANEL_TITLE = "FRAKON Energy"
 PANEL_ICON = "mdi:lightning-bolt-circle"
 
@@ -39,49 +41,60 @@ def _registration_lock(hass: HomeAssistant) -> asyncio.Lock:
     return lock
 
 
-async def _async_ensure_panel(hass: HomeAssistant) -> None:
-    """Ensure static routes and the real Home Assistant panel registry entry exist."""
-    async with _registration_lock(hass):
-        frontend_dir = Path(__file__).parent / "frontend"
-        app_dir = Path(__file__).parent / "frontend_app"
+async def _async_register_panel_registry(hass: HomeAssistant) -> None:
+    """Register the actual Home Assistant panel independently of asset routing."""
+    if panel_is_registered(hass):
+        return
 
-        if not hass.data.get(_STATIC_PATHS_REGISTERED_KEY):
-            await hass.http.async_register_static_paths(
-                [
-                    StaticPathConfig(PANEL_STATIC_URL, str(frontend_dir), False),
-                    StaticPathConfig(
-                        f"{PANEL_STATIC_URL}/app",
-                        str(app_dir),
-                        False,
-                    ),
-                ]
-            )
-            # Static routes persist for the Home Assistant process lifetime.
-            hass.data[_STATIC_PATHS_REGISTERED_KEY] = True
+    await panel_custom.async_register_panel(
+        hass,
+        webcomponent_name="frakon-energy-panel",
+        frontend_url_path=PANEL_URL_PATH,
+        sidebar_title=PANEL_TITLE,
+        sidebar_icon=PANEL_ICON,
+        module_url=PANEL_MODULE_URL,
+        embed_iframe=False,
+        require_admin=False,
+    )
 
-        # Home Assistant's frontend registry is the only source of truth.  Do not
-        # keep a second boolean that can become stale during frontend bootstrap.
-        if panel_is_registered(hass):
-            return
-
-        await panel_custom.async_register_panel(
-            hass,
-            webcomponent_name="frakon-energy-panel",
-            frontend_url_path=PANEL_URL_PATH,
-            sidebar_title=PANEL_TITLE,
-            sidebar_icon=PANEL_ICON,
-            module_url=PANEL_MODULE_URL,
-            embed_iframe=False,
-            require_admin=False,
+    if not panel_is_registered(hass):
+        raise RuntimeError(
+            "FRAKON Energy panel registration returned without adding the "
+            "panel to the Home Assistant frontend registry"
         )
 
-        if not panel_is_registered(hass):
-            raise RuntimeError(
-                "FRAKON Energy panel registration returned without adding the "
-                "panel to the Home Assistant frontend registry"
-            )
+    _LOGGER.info("FRAKON Energy sidebar panel registered")
 
-        _LOGGER.info("FRAKON Energy sidebar panel registered")
+
+async def _async_register_static_assets(hass: HomeAssistant) -> None:
+    """Register independent, non-overlapping static roots for FRAKON UI assets."""
+    if hass.data.get(_STATIC_PATHS_REGISTERED_KEY):
+        return
+
+    frontend_dir = Path(__file__).parent / "frontend"
+    app_dir = Path(__file__).parent / "frontend_app"
+
+    await hass.http.async_register_static_paths(
+        [
+            StaticPathConfig(PANEL_MODULE_STATIC_URL, str(frontend_dir), False),
+            StaticPathConfig(PANEL_APP_STATIC_URL, str(app_dir), False),
+        ]
+    )
+    hass.data[_STATIC_PATHS_REGISTERED_KEY] = True
+    _LOGGER.info("FRAKON Energy frontend static assets registered")
+
+
+async def _async_ensure_panel(hass: HomeAssistant) -> None:
+    """Ensure both the HA panel registry entry and its static assets exist.
+
+    The panel itself is deliberately registered first.  A problem in aiohttp
+    static-path registration must never make the `/frakon-energy` route vanish;
+    it may only make the panel show an asset-loading error, which is visible and
+    diagnosable while VisionQ/HDO/sensors remain unaffected.
+    """
+    async with _registration_lock(hass):
+        await _async_register_panel_registry(hass)
+        await _async_register_static_assets(hass)
 
 
 async def _async_reconcile_panel_after_start(
@@ -117,11 +130,11 @@ async def async_register_panel(hass: HomeAssistant) -> None:
 
     Config entries can load while Home Assistant is still constructing the
     frontend registry.  We therefore register immediately and reconcile once
-    again after Home Assistant has fully started.  A transient panel failure is
-    logged but never takes VisionQ/HDO/sensors down.
+    again after Home Assistant has fully started.  UI failures are logged but
+    never take VisionQ/HDO/sensors down.
     """
     _schedule_post_start_reconcile(hass)
     try:
         await _async_ensure_panel(hass)
     except Exception:
-        _LOGGER.exception("Unable to register FRAKON Energy sidebar panel")
+        _LOGGER.exception("Unable to fully register FRAKON Energy sidebar panel")
