@@ -14,6 +14,8 @@ Třetí release candidate je zaměřený na reálný commissioning v Home Assist
 - Explicitní migrace původních ručně zadaných VT/NT cen do historického snapshotu bez přepsání nových potvrzených tarifů.
 - All-in cenové scénáře pro flexibilní zátěže, například EV a bojler.
 - Samostatný HDO regresní gate proti Home Assistantu pro živý stav, rozvrh, odpočet a přechody přes půlnoc.
+- V Nastavení je nová sekce „Zobrazení přehledu“ s trvalými přepínači pro HDO, HDO plán, spotové ceny, denní a měsíční spotřebu, stav baterie VisionQ, odhad vyúčtování, technická měření, technologie domu, fotovoltaiku a energetické toky.
+- Nastavení viditelnosti je uložené v Home Assistant config entry options, takže platí shodně na telefonu, tabletu i počítači a přežije restart.
 
 ### Opraveno
 
@@ -24,8 +26,10 @@ Třetí release candidate je zaměřený na reálný commissioning v Home Assist
 - HDO už nepoužívá vymyšlený náhradní rozvrh. Pokud je strukturovaný rozvrh dostupný, používá jej jako primární autoritu.
 - Obnova přesného upstream ČEZ HDO rozvrhu ze správně svázaných sibling entit, včetně ochrany proti napojení FRAKONu zpět na vlastní zrcadlenou entitu.
 - Horní HDO karta nyní umí zobrazit čas další změny a odpočet i při dočasně chybějícím normalizovaném `next_switch`, pokud stejné živé ČEZ HDO zařízení poskytuje přesný `LowTariffEnd` nebo `HighTariffEnd`.
+- HDO karta už nezobrazuje samotný odpočet, pokud není současně dostupný ověřený čas další změny. Tím nevzniká rozpor typu „Vypnutí NT za …“ a zároveň „Čas další změny není dostupný“.
 - Přechody HDO přes půlnoc a výběr správného signálu při více HDO zdrojích.
 - Billing základní data a zaplacené zálohy zůstávají viditelné i tehdy, když zatím chybí potvrzená cena.
+- Vypnuté moduly už v hlavním přehledu nezabírají prázdné místo; doplňkové karty technologií, FVE a Energy Flow respektují stejné nastavení viditelnosti.
 
 ### Distribuce a aktualizace
 
