@@ -1,0 +1,63 @@
+name: Temporary RC9 changelog
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/temp-rc9-changelog.yml"
+      - "CHANGELOG.md"
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+
+      - name: Prepend RC9 changelog
+        shell: python
+        run: |
+          from pathlib import Path
+          path = Path("CHANGELOG.md")
+          text = path.read_text(encoding="utf-8")
+          if "## 1.0.0-rc.9" in text:
+              raise SystemExit(0)
+          marker = "# Changelog\n\n"
+          if not text.startswith(marker):
+              raise SystemExit("Unexpected changelog header")
+          entry = """## 1.0.0-rc.9
+
+Devátý release candidate opravuje živé zobrazení HDO v dashboardu podle nativního strukturovaného rozvrhu ČEZ.
+
+### Opraveno
+
+- Dashboard nyní upřednostní skutečnou HDO entitu se strukturovaným `schedule` před pomocnou entitou nalezenou pouze podle názvu.
+- Nativní ČEZ intervaly s ISO `start`, `end` a tarifem `NT`/`VT` se přímo rozdělí na dnešní a zítřejší plán.
+- Pokud chybí nebo není použitelný samostatný senzor dalšího přepnutí, čas další změny a odpočet se dopočítají ze strukturovaného rozvrhu.
+- Pokud chybí samostatný stav tarifu, aktuální `NT`/`VT` lze bezpečně odvodit z právě aktivního intervalu rozvrhu.
+- Produkční frontendový bundle byl znovu sestaven a je shodný se zdrojovým kódem.
+
+### Ověření
+
+- Oprava byla ověřena proti reálnému formátu `sensor.cez_hdo_schedule_prepinani_nt` s atributem `schedule`.
+- Frontend, Backend, HACS, Hassfest, Home Assistant Current i kompletní Release gate prošly před přípravou RC9.
+- Stabilní `1.0.0` zůstává podmíněna dokončením reálného commissioningu v Home Assistantu.
+
+"""
+          path.write_text(marker + entry + text[len(marker):], encoding="utf-8")
+
+      - name: Commit changelog
+        run: |
+          if git diff --quiet -- CHANGELOG.md; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          git commit -m "Document FRAKON Energy 1.0.0-rc.9"
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
