@@ -67,3 +67,5 @@ Desátý release candidate nahrazuje prázdnou záložku Historie skutečným re
           git diff --cached --quiet && exit 0
           git commit -m "Document FRAKON Energy 1.0.0-rc.10"
           git push origin HEAD:release/1.0.0-rc.10
+
+# trigger
