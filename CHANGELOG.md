@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.0.0-rc.9
+
+Devátý release candidate opravuje živé zobrazení HDO v dashboardu podle nativního strukturovaného rozvrhu ČEZ.
+
+### Opraveno
+
+- Dashboard nyní upřednostní skutečnou HDO entitu se strukturovaným `schedule` před pomocnou entitou nalezenou pouze podle názvu.
+- Nativní ČEZ intervaly s ISO `start`, `end` a tarifem `NT`/`VT` se přímo rozdělí na dnešní a zítřejší plán.
+- Pokud chybí nebo není použitelný samostatný senzor dalšího přepnutí, čas další změny a odpočet se dopočítají ze strukturovaného rozvrhu.
+- Pokud chybí samostatný stav tarifu, aktuální `NT`/`VT` lze bezpečně odvodit z právě aktivního intervalu rozvrhu.
+- Produkční frontendový bundle byl znovu sestaven a je shodný se zdrojovým kódem.
+
+### Ověření
+
+- Oprava byla ověřena proti reálnému formátu `sensor.cez_hdo_schedule_prepinani_nt` s atributem `schedule`.
+- Frontend, Backend, HACS, Hassfest, Home Assistant Current i kompletní Release gate prošly před přípravou RC9.
+- Stabilní `1.0.0` zůstává podmíněna dokončením reálného commissioningu v Home Assistantu.
+
 ## 1.0.0-rc.8
 
 Osmý release candidate opravuje distribuční chybu HACS, kvůli které mohl Home Assistant po aktualizaci nadále spouštět starší FRAKON Energy kód, přestože HACS zobrazoval novou RC verzi.
