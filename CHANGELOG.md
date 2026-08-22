@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.0.0-rc.5
+
+Pátý release candidate opravuje případ, kdy se FRAKON Energy po aktualizaci a restartu vůbec neobjeví v levém panelu Home Assistantu. Panel je nově registrován už v globálním `async_setup()` integrace a není tedy závislý na tom, zda Home Assistant následně spustí konkrétní VisionQ/HDO config entry.
+
+### Opraveno
+
+- Postranní panel FRAKON Energy se registruje při globálním bootstrapu integrace, ještě před načítáním jednotlivých config entry.
+- Zůstává zachovaný retry-safe fallback při přímém reloadu config entry.
+- Odstraněna zbytečná pozdní opakovaná registrace panelu po forwardu sensor platformy.
+- Přidán regresní test, který ověřuje dostupnost sidebaru i bez spuštění jediného config entry.
+
+### Kompatibilita Home Assistant
+
+- Přidán samostatný CI gate proti aktuálnímu Home Assistant `2026.8.0` na Pythonu 3.14.2.
+- Gate kontroluje skutečný import FRAKON Energy a bootstrap/HDO regresní testy proti aktuálnímu HA API.
+- Release zůstává fail-closed: chyby datových providerů nesmí rozhodovat o existenci uživatelského rozhraní.
+
+### Omezení RC
+
+- Pokud by selhal už samotný Python import modulu ještě před voláním `async_setup()`, musí být příčina viditelná v Home Assistant logu. Aktuální HA compatibility gate tento import výslovně testuje.
+- Stabilní `1.0.0` zůstává podmíněna dokončením reálného commissioningu, restart/reload ověřením a řízeným end-to-end testem fyzické exekuce.
+
 ## 1.0.0-rc.4
 
 Čtvrtý release candidate opravuje reálný start integračního panelu v Home Assistantu a dokončuje lokální branding pro světlý, tmavý a HiDPI režim. Hlavní změnou je oddělení dostupnosti postranního panelu od prvního síťového bootstrapu VisionQ/HDO providerů.
