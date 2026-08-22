@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.0.0-rc.10
+
+Desátý release candidate nahrazuje prázdnou záložku Historie skutečným read-only přehledem denní spotřeby a potvrzených variabilních nákladů.
+
+### Přidáno
+
+- Historie nabízí rozsah 30 dní, 90 dní nebo 1 rok.
+- Denní graf zobrazuje skutečnou spotřebu rozdělenou na VT a NT bez dopočítávání chybějících měření.
+- Souhrn ukazuje spotřebu za období, variabilní náklady, denní průměr, podíl NT a průměrnou variabilní cenu.
+- Denní detail zobrazuje posledních 14 záznamů včetně VT, NT, celkové spotřeby a potvrzených nákladů.
+- Rozložení je responzivní pro telefon, tablet i desktop a delší období lze vodorovně procházet.
+
+### Autorita ceny a bezpečnost dat
+
+- Historie používá existující serverový endpoint `frakon_energy/tariff/daily_costs`; frontend si cenu neurčuje sám.
+- Náklady se zobrazí pouze tehdy, když lze každý den přesně svázat s potvrzenou all-in historií tarifu.
+- Stálé měsíční platby se záměrně nerozpouštějí do denních nákladů a zůstávají součástí vyúčtování.
+- Pokud autoritativní tarifní historie chybí, UI stav explicitně oznámí a žádnou náhradní cenu nevyrábí.
+
+### Commissioning checkpoint
+
+- Předchozí RC9 byl po aktualizaci a plném restartu úspěšně ověřen v reálném Home Assistantu: vlastní panel je dostupný a živé HDO používá strukturovaný rozvrh.
+- Stabilní `1.0.0` zůstává podmíněna řízeným fyzickým start/stop commissioning testem execution vrstvy.
+
 ## 1.0.0-rc.9
 
 Devátý release candidate opravuje živé zobrazení HDO v dashboardu podle nativního strukturovaného rozvrhu ČEZ.
