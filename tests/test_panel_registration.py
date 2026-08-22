@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import pytest
 from homeassistant.components import frontend
-from homeassistant.components.http.server import HomeAssistantHTTP
+try:
+    from homeassistant.components.http.server import HomeAssistantHTTP
+except ImportError:  # Home Assistant <= 2026.7
+    from homeassistant.components.http import HomeAssistantHTTP  # type: ignore[attr-defined,no-redef]
 from homeassistant.core import CoreState
 from homeassistant.helpers.http import KEY_ALLOW_CONFIGURED_CORS
 

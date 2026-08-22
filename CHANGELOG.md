@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.0.0-rc.7
+
+Sedmý release candidate opravuje produkční stav, kdy VisionQ/HDO a senzory běží, ale Home Assistant vůbec nevytvoří položku FRAKON Energy ani cestu `/frakon-energy`.
+
+### Opraveno
+
+- Vlastní Home Assistant panel se nyní registruje dříve než statické frontendové soubory. Selhání HTTP/static routeru proto už nemůže zabránit vzniku `/frakon-energy` ani položky v sidebaru.
+- Původní vnořené cesty `/frakon-energy-static` a `/frakon-energy-static/app` byly nahrazeny dvěma nezávislými kořeny `/frakon-energy-panel-static` a `/frakon-energy-app-static`.
+- Loader panelu používá nový samostatný app route a již se nespoléhá na překrývající se statické prefixy.
+- VisionQ, HDO a energetické senzory zůstávají fail-safe oddělené od případné chyby uživatelského rozhraní.
+
+### Ověření
+
+- Regresní test nově používá skutečnou implementaci `HomeAssistantHTTP` a skutečný aiohttp router Home Assistantu, ne pouze falešný `hass.http` objekt.
+- Test ověřuje, že oba statické kořeny lze současně zaregistrovat a že jsou navzájem nepřekrývající.
+- Test explicitně ověřuje, že i při selhání registrace statických souborů zůstává skutečný Home Assistant panel `frakon-energy` zaregistrovaný.
+- Backend, HACS, Hassfest a Home Assistant Current gate proti Home Assistantu `2026.8.0` prošly před vydáním.
+
+### Omezení RC
+
+- Stabilní `1.0.0` zůstává podmíněna dokončením reálného commissioningu, restart/reload ověřením a řízeným end-to-end testem fyzické exekuce.
+
 ## 1.0.0-rc.6
 
 Šestý release candidate opravuje skutečnou příčinu případu, kdy FRAKON Energy backend a senzory po restartu fungují, ale vlastní panel zmizí z postranního menu a cesta `/frakon-energy` není dostupná.
