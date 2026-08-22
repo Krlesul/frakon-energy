@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.0.0-rc.8
+
+Osmý release candidate opravuje distribuční chybu HACS, kvůli které mohl Home Assistant po aktualizaci nadále spouštět starší FRAKON Energy kód, přestože HACS zobrazoval novou RC verzi.
+
+### Opraveno
+
+- Release `frakon-energy.zip` je nyní sestaven relativně přímo ke `custom_components/frakon_energy`, protože HACS rozbaluje `zip_release` přímo do `/config/custom_components/frakon_energy`.
+- Z archivu byl odstraněn chybný horní adresář `frakon_energy/`. Povinné soubory jako `__init__.py`, `manifest.json` a `panel.py` jsou nyní přímo v kořeni ZIPu a při aktualizaci skutečně přepíší soubory načítané Home Assistantem.
+- Tím se opravuje stav, kdy předchozí release mohly skončit v `/config/custom_components/frakon_energy/frakon_energy/` a skutečný kořen integrace zůstal na starší verzi.
+- Release balík už neobsahuje `__pycache__` ani `.pyc` soubory vytvořené během CI.
+
+### Ověření distribuce
+
+- Release workflow používá samostatný builder pro HACS archiv a následný fail-closed validátor struktury.
+- CI odmítne release, pokud `manifest.json`, `__init__.py`, `panel.py`, `frontend/panel.js` nebo `frontend_app/index.html` nejsou v očekávané cestě.
+- CI odmítne release, pokud se znovu objeví horní adresář `frakon_energy/` nebo Python cache soubory.
+- Opravený layout prošel kompletním Release gate, HACS validací a Hassfest kontrolou před vytvořením RC8.
+
+### Dopad na commissioning
+
+- RC8 je první release candidate po zavedení verzovaných HACS ZIPů, u kterého je explicitně ověřeno, že soubory panelu a backendu skončí přímo v adresáři, ze kterého je Home Assistant importuje.
+- Po aktualizaci je nutný plný restart Home Assistantu, aby se staré importované moduly nahradily RC8.
+- Stabilní `1.0.0` zůstává podmíněna dokončením reálného commissioningu, restart/reload ověřením a řízeným end-to-end testem fyzické exekuce.
+
 ## 1.0.0-rc.7
 
 Sedmý release candidate opravuje produkční stav, kdy VisionQ/HDO a senzory běží, ale Home Assistant vůbec nevytvoří položku FRAKON Energy ani cestu `/frakon-energy`.
