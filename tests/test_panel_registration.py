@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import pytest
 from homeassistant.components import frontend
+from homeassistant.components.http.server import HomeAssistantHTTP
 from homeassistant.core import CoreState
+from homeassistant.helpers.http import KEY_ALLOW_CONFIGURED_CORS
 
 from custom_components import frakon_energy
 from custom_components.frakon_energy import panel
@@ -38,6 +40,11 @@ class _Hass:
         self.http = _Http()
         self.bus = _Bus()
         self.state = CoreState.starting
+
+
+class _ExecutorHass(_Hass):
+    async def async_add_executor_job(self, target, *args):
+        return target(*args)
 
 
 @pytest.mark.asyncio
@@ -78,8 +85,6 @@ async def test_post_start_reconcile_repairs_panel_removed_during_bootstrap() -> 
     assert panel.panel_is_registered(hass) is True
     assert "homeassistant_started" in hass.bus.once
 
-    # Simulate Home Assistant rebuilding/resetting the frontend registry after the
-    # config entry registered its panel during an early bootstrap phase.
     del hass.data[frontend.DATA_PANELS][panel.PANEL_URL_PATH]
     assert panel.panel_is_registered(hass) is False
 
@@ -107,15 +112,15 @@ async def test_missing_panel_is_self_healed_on_later_registration_call() -> None
 
 
 @pytest.mark.asyncio
-async def test_failed_static_path_registration_is_non_fatal_and_retried() -> None:
+async def test_static_path_failure_cannot_remove_sidebar_route_and_is_retried() -> None:
     hass = _Hass()
     hass.http.fail = True
 
-    # UI failures must not fail FRAKON provider/config-entry setup.
+    # The actual HA panel route is registered before optional asset serving.
     await panel.async_register_panel(hass)  # type: ignore[arg-type]
     assert hass.http.calls == 1
     assert panel._STATIC_PATHS_REGISTERED_KEY not in hass.data
-    assert panel.panel_is_registered(hass) is False
+    assert panel.panel_is_registered(hass) is True
 
     hass.http.fail = False
     await panel.async_register_panel(hass)  # type: ignore[arg-type]
@@ -123,3 +128,36 @@ async def test_failed_static_path_registration_is_non_fatal_and_retried() -> Non
     assert hass.http.calls == 2
     assert hass.data[panel._STATIC_PATHS_REGISTERED_KEY] is True
     assert panel.panel_is_registered(hass) is True
+
+
+@pytest.mark.asyncio
+async def test_real_home_assistant_http_router_accepts_both_static_roots() -> None:
+    """Exercise the real HA aiohttp static-route implementation, not a mock."""
+    hass = _ExecutorHass()
+    http = HomeAssistantHTTP(
+        hass,  # type: ignore[arg-type]
+        ssl_certificate=None,
+        ssl_peer_certificate=None,
+        ssl_key=None,
+        server_host=["127.0.0.1"],
+        server_port=8123,
+        trusted_proxies=[],
+        ssl_profile="modern",
+    )
+    http.app[KEY_ALLOW_CONFIGURED_CORS] = lambda _resource: None
+    hass.http = http  # type: ignore[assignment]
+
+    await panel.async_register_panel(hass)  # type: ignore[arg-type]
+
+    assert panel.panel_is_registered(hass) is True
+    assert hass.data[panel._STATIC_PATHS_REGISTERED_KEY] is True
+    assert not panel.PANEL_APP_STATIC_URL.startswith(
+        f"{panel.PANEL_MODULE_STATIC_URL}/"
+    )
+    assert not panel.PANEL_MODULE_STATIC_URL.startswith(
+        f"{panel.PANEL_APP_STATIC_URL}/"
+    )
+
+    canonicals = {resource.canonical for resource in http.app.router.resources()}
+    assert panel.PANEL_MODULE_STATIC_URL in canonicals
+    assert panel.PANEL_APP_STATIC_URL in canonicals
