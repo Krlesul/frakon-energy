@@ -10,6 +10,7 @@ import {
   type DashboardDisplaySettings,
 } from "./dashboard-display-settings";
 import { findFrakonEnergyEntryId, formatCountdown, useFrakonEnergyState, useHomeAssistant } from "./home-assistant";
+import { HistoryView } from "./history-view";
 import { SpotPriceCard } from "./spot-price-card";
 import { SpotPriceSettingsCard } from "./spot-price-settings";
 import { TariffSetupWizard } from "./tariff-wizard";
@@ -169,10 +170,6 @@ function TariffsView({ display }: { display: DashboardDisplaySettings }) {
   </>;
 }
 
-function HistoryView() {
-  return <article className="chart-card"><span className="eyebrow">Historie</span><h2>Spotřeba a náklady</h2><div className="chart-placeholder"><span className="chart-caption">Graf se zobrazí po nasbírání historických denních hodnot.</span></div></article>;
-}
-
 function SettingsView({
   entryId,
   entryError,
@@ -277,7 +274,7 @@ function App() {
     {view === "overview" && <Overview display={display} />}
     {view === "billing" && <BillingView display={display} />}
     {view === "tariffs" && <TariffsView display={display} />}
-    {view === "history" && <HistoryView />}
+    {view === "history" && <HistoryView entryId={entryId} />}
     {view === "settings" && <SettingsView entryId={entryId} entryError={entryError} display={display} displayStatus={displayStatus} displaySaving={displaySaving} onDisplayChange={onDisplayChange} />}
     <nav className="bottom-nav">{(Object.keys(labels) as View[]).map((key) => <button key={key} className={view === key ? "active" : ""} onClick={() => { setView(key); window.scrollTo({ top: 0, behavior: "smooth" }); }}>{labels[key]}</button>)}</nav>
   </main>;
