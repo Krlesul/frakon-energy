@@ -11,8 +11,8 @@ on:
       - "VERSION"
       - "CHANGELOG.md"
       - "frontend/**"
-      - "custom_components/frakon_energy/**"
-      - "tests/**"
+      - "custom_components/frakon_energy/frontend_app/**"
+      - "custom_components/frakon_energy/manifest.json"
 
 permissions:
   contents: read
