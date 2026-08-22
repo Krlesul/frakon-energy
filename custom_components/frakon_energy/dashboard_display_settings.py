@@ -21,6 +21,7 @@ class DashboardDisplaySettings:
     show_spot_prices: bool = True
     show_daily_consumption: bool = True
     show_monthly_consumption: bool = True
+    show_battery_status: bool = True
     show_billing_estimate: bool = True
     show_technical_measurements: bool = True
     show_technology_overview: bool = True
