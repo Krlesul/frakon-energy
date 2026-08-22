@@ -154,7 +154,7 @@ def test_adapter_recovers_exact_upstream_schedule_from_live_sibling_suffix(monke
                         },
                         {
                             "start": "2026-08-22T10:30:00+02:00",
-                            "end": "2026-08-22T24:00:00+02:00",
+                            "end": "2026-08-23T00:00:00+02:00",
                             "tariff": "VT",
                         },
                     ],
@@ -181,7 +181,7 @@ def test_adapter_recovers_exact_upstream_schedule_from_live_sibling_suffix(monke
     assert snapshot.low_tariff_active is True
     assert snapshot.next_switch == datetime.fromisoformat("2026-08-22T10:30:00+02:00")
     assert snapshot.countdown_seconds == 2280
-    assert len(snapshot.today_schedule) == 2
+    assert len(snapshot.today_schedule) == 3
     assert snapshot.today_schedule[1]["tariff"] == "NT"
 
 
