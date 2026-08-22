@@ -1,0 +1,56 @@
+name: HDO
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/hdo.yml"
+      - "custom_components/frakon_energy/providers/cez_hdo.py"
+      - "custom_components/frakon_energy/providers/cez_hdo_discovery.py"
+      - "custom_components/frakon_energy/hdo_coordinator.py"
+      - "custom_components/frakon_energy/sensor.py"
+      - "custom_components/frakon_energy/config_flow.py"
+      - "tests/test_cez_hdo.py"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/hdo.yml"
+      - "custom_components/frakon_energy/providers/cez_hdo.py"
+      - "custom_components/frakon_energy/providers/cez_hdo_discovery.py"
+      - "custom_components/frakon_energy/hdo_coordinator.py"
+      - "custom_components/frakon_energy/sensor.py"
+      - "custom_components/frakon_energy/config_flow.py"
+      - "tests/test_cez_hdo.py"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14.2"
+
+      - name: Install Home Assistant test environment
+        run: >-
+          python -m pip install --upgrade pip
+          pytest pytest-asyncio
+          "homeassistant==2026.7.0"
+          "pypdf==6.14.2"
+
+      - name: Compile HDO integration code
+        run: >-
+          python -m compileall -q
+          custom_components/frakon_energy/providers/cez_hdo.py
+          custom_components/frakon_energy/providers/cez_hdo_discovery.py
+          custom_components/frakon_energy/hdo_coordinator.py
+          custom_components/frakon_energy/sensor.py
+
+      - name: Run HDO regressions
+        run: python -m pytest -q tests/test_cez_hdo.py
