@@ -8,15 +8,27 @@ from homeassistant.util import dt as dt_util
 
 from custom_components.frakon_energy.hdo_coordinator import CezHdoCoordinator
 from custom_components.frakon_energy.providers.cez_hdo import CezHdoAdapter, CezHdoSnapshot
-from custom_components.frakon_energy.providers.cez_hdo_discovery import CezHdoSource
+from custom_components.frakon_energy.providers.cez_hdo_discovery import (
+    CezHdoSource,
+    _is_frakon_generated_schedule,
+)
 
 
 class FakeStates:
     def __init__(self, states):
         self._states = states
+        for entity_id, state in states.items():
+            state.entity_id = entity_id
 
     def get(self, entity_id):
         return self._states.get(entity_id)
+
+    def async_all(self, domain=None):
+        states = list(self._states.values())
+        if not domain:
+            return states
+        prefix = f"{domain}."
+        return [state for state in states if state.entity_id.startswith(prefix)]
 
 
 def _state(value, **attributes):
@@ -101,6 +113,114 @@ def test_adapter_handles_interval_crossing_midnight(monkeypatch):
     assert snapshot.tariff == "VT"
     assert snapshot.countdown_seconds == 5400
     assert snapshot.next_switch == datetime.fromisoformat("2026-08-05T02:00:00+02:00")
+    assert snapshot.today_schedule == (
+        {
+            "start": "2026-08-05T00:00:00+02:00",
+            "end": "2026-08-05T02:00:00+02:00",
+            "tariff": "VT",
+        },
+    )
+
+
+def test_adapter_recovers_exact_upstream_schedule_from_live_sibling_suffix(monkeypatch):
+    monkeypatch.setattr(dt_util, "DEFAULT_TIME_ZONE", dt_util.get_time_zone("Europe/Prague"))
+    source = CezHdoSource(
+        source_id="home",
+        name="HDO doma",
+        schedule_entity_id="sensor.frakon_energy_hdo_dnesni_rozvrh",
+        low_tariff_entity_id="binary_sensor.cez_hdo_lowtariffactive_home",
+        current_price_entity_id="sensor.cez_hdo_currentprice_home",
+        data_valid_entity_id="binary_sensor.cez_hdo_data_valid_home",
+    )
+    hass = SimpleNamespace(
+        states=FakeStates(
+            {
+                "sensor.frakon_energy_hdo_dnesni_rozvrh": _state("", schedule=[]),
+                "binary_sensor.cez_hdo_lowtariffactive_home": _state("on"),
+                "sensor.cez_hdo_currentprice_home": _state("4.07394"),
+                "binary_sensor.cez_hdo_data_valid_home": _state("on"),
+                "sensor.cez_hdo_schedule_home": _state(
+                    "22.08.2026",
+                    schedule=[
+                        {
+                            "start": "2026-08-22T00:00:00+02:00",
+                            "end": "2026-08-22T08:30:00+02:00",
+                            "tariff": "VT",
+                        },
+                        {
+                            "start": "2026-08-22T08:30:00+02:00",
+                            "end": "2026-08-22T10:30:00+02:00",
+                            "tariff": "NT",
+                        },
+                        {
+                            "start": "2026-08-22T10:30:00+02:00",
+                            "end": "2026-08-22T24:00:00+02:00",
+                            "tariff": "VT",
+                        },
+                    ],
+                ),
+                "sensor.cez_hdo_schedule_other": _state(
+                    "22.08.2026",
+                    schedule=[
+                        {
+                            "start": "2026-08-22T00:00:00+02:00",
+                            "end": "2026-08-22T23:59:59+02:00",
+                            "tariff": "VT",
+                        }
+                    ],
+                ),
+            }
+        )
+    )
+
+    snapshot = CezHdoAdapter(hass, source).snapshot(
+        datetime.fromisoformat("2026-08-22T09:52:00+02:00")
+    )
+
+    assert snapshot.tariff == "NT"
+    assert snapshot.low_tariff_active is True
+    assert snapshot.next_switch == datetime.fromisoformat("2026-08-22T10:30:00+02:00")
+    assert snapshot.countdown_seconds == 2280
+    assert len(snapshot.today_schedule) == 2
+    assert snapshot.today_schedule[1]["tariff"] == "NT"
+
+
+def test_adapter_keeps_live_tariff_when_schedule_is_temporarily_empty(monkeypatch):
+    monkeypatch.setattr(dt_util, "DEFAULT_TIME_ZONE", dt_util.get_time_zone("Europe/Prague"))
+    hass = SimpleNamespace(
+        states=FakeStates(
+            {
+                "sensor.hdo_schedule": _state("22.08.2026", schedule=[]),
+                "binary_sensor.hdo_nt": _state("on"),
+                "sensor.hdo_price": _state("4.07394"),
+                "binary_sensor.hdo_valid": _state("on"),
+            }
+        )
+    )
+
+    snapshot = CezHdoAdapter(hass, _source()).snapshot(
+        datetime.fromisoformat("2026-08-22T09:52:00+02:00")
+    )
+
+    assert snapshot.source_available is True
+    assert snapshot.tariff == "NT"
+    assert snapshot.low_tariff_active is True
+    assert snapshot.current_price == 4.07394
+    assert snapshot.data_valid is True
+    assert snapshot.next_switch is None
+    assert snapshot.today_schedule == ()
+
+
+def test_discovery_excludes_frakon_mirrored_schedule():
+    assert _is_frakon_generated_schedule(
+        "sensor.any_name", SimpleNamespace(platform="frakon_energy")
+    ) is True
+    assert _is_frakon_generated_schedule(
+        "sensor.frakon_energy_hdo_dnesni_rozvrh", None
+    ) is True
+    assert _is_frakon_generated_schedule(
+        "sensor.cez_hdo_schedule_home", SimpleNamespace(platform="cez_hdo")
+    ) is False
 
 
 def test_tariff_change_event_skips_first_refresh_and_fires_once():
