@@ -1,5 +1,6 @@
 import React from "react";
 import { callHomeAssistantWs, type HomeAssistant } from "./home-assistant";
+import "./dashboard-display-settings.css";
 
 export type DashboardDisplayKey =
   | "show_hdo"
