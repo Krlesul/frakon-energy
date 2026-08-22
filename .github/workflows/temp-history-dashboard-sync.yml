@@ -1,0 +1,87 @@
+name: Temporary history dashboard sync
+
+on:
+  push:
+    branches:
+      - feat/history-dashboard
+    paths:
+      - "frontend/src/history-view.tsx"
+      - "frontend/src/history-view.css"
+      - ".github/workflows/temp-history-dashboard-sync.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v5
+        with:
+          ref: feat/history-dashboard
+
+      - name: Wire history view into dashboard
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("frontend/src/main.tsx")
+          text = path.read_text(encoding="utf-8")
+
+          import_anchor = 'import { findFrakonEnergyEntryId, formatCountdown, useFrakonEnergyState, useHomeAssistant } from "./home-assistant";\n'
+          history_import = 'import { HistoryView } from "./history-view";\n'
+          if history_import not in text:
+              if import_anchor not in text:
+                  raise SystemExit("History import anchor not found")
+              text = text.replace(import_anchor, import_anchor + history_import, 1)
+
+          placeholder = '''function HistoryView() {
+            return <article className="chart-card"><span className="eyebrow">Historie</span><h2>Spotřeba a náklady</h2><div className="chart-placeholder"><span className="chart-caption">Graf se zobrazí po nasbírání historických denních hodnot.</span></div></article>;
+          }
+
+          '''
+          if placeholder in text:
+              text = text.replace(placeholder, "", 1)
+          elif 'function HistoryView()' in text:
+              raise SystemExit("Unexpected HistoryView placeholder shape")
+
+          old_mount = '{view === "history" && <HistoryView />}'
+          new_mount = '{view === "history" && <HistoryView entryId={entryId} />}'
+          if old_mount in text:
+              text = text.replace(old_mount, new_mount, 1)
+          elif new_mount not in text:
+              raise SystemExit("History mount anchor not found")
+
+          path.write_text(text, encoding="utf-8")
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm install
+
+      - name: Type-check and build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Package dashboard
+        run: |
+          rm -rf custom_components/frakon_energy/frontend_app
+          mkdir -p custom_components/frakon_energy/frontend_app
+          cp -R frontend/dist/. custom_components/frakon_energy/frontend_app/
+
+      - name: Remove temporary workflow
+        run: rm .github/workflows/temp-history-dashboard-sync.yml
+
+      - name: Commit source wiring and production bundle
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add frontend/src/main.tsx frontend/src/history-view.tsx frontend/src/history-view.css custom_components/frakon_energy/frontend_app .github/workflows/temp-history-dashboard-sync.yml
+          git diff --cached --quiet && exit 0
+          git commit -m "feat: surface daily consumption and cost history"
+          git push origin HEAD:feat/history-dashboard
