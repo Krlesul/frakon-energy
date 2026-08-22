@@ -7,6 +7,7 @@ export type DashboardDisplayKey =
   | "show_spot_prices"
   | "show_daily_consumption"
   | "show_monthly_consumption"
+  | "show_battery_status"
   | "show_billing_estimate"
   | "show_technical_measurements"
   | "show_technology_overview"
@@ -21,6 +22,7 @@ export const DEFAULT_DASHBOARD_DISPLAY_SETTINGS: DashboardDisplaySettings = {
   show_spot_prices: true,
   show_daily_consumption: true,
   show_monthly_consumption: true,
+  show_battery_status: true,
   show_billing_estimate: true,
   show_technical_measurements: true,
   show_technology_overview: true,
@@ -58,6 +60,7 @@ const OPTIONS: Array<{ key: DashboardDisplayKey; label: string; description: str
   { key: "show_spot_prices", label: "Spotové ceny", description: "Aktuální a nadcházející spotové ceny elektřiny." },
   { key: "show_daily_consumption", label: "Denní spotřeba a náklady", description: "Spotřeba a cena elektřiny za dnešní den." },
   { key: "show_monthly_consumption", label: "Měsíční spotřeba", description: "Průběžná spotřeba v aktuálním měsíci." },
+  { key: "show_battery_status", label: "Stav baterie VisionQ", description: "Stav baterie zařízení VisionQ v hlavních metrikách." },
   { key: "show_billing_estimate", label: "Odhad vyúčtování", description: "Přeplatek, nedoplatek, zálohy a průběžné náklady." },
   { key: "show_technical_measurements", label: "Technická měření", description: "Registry elektroměru VT/NT a kvalita dat." },
   { key: "show_technology_overview", label: "Technologie domu", description: "Karty aktivních energetických technologií." },
