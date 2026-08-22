@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.0.0-rc.6
+
+Šestý release candidate opravuje skutečnou příčinu případu, kdy FRAKON Energy backend a senzory po restartu fungují, ale vlastní panel zmizí z postranního menu a cesta `/frakon-energy` není dostupná.
+
+### Opraveno
+
+- Registrace panelu už nepoužívá vlastní pomocný příznak „zaregistrováno“, který mohl zůstat v rozporu se skutečným frontend registry Home Assistantu.
+- Autoritou je nyní přímo `frontend.DATA_PANELS`; pokud položka `frakon-energy` skutečně chybí, FRAKON ji znovu vytvoří.
+- Registrace je serializovaná, takže souběžný globální setup a config-entry setup nemohou vytvořit duplicitní panel.
+- Po události `homeassistant_started` proběhne jednorázová reconciliation. Pokud Home Assistant během bootstrapu frontend registry přestaví a dříve registrovaný panel ztratí, FRAKON ho po dokončení startu automaticky obnoví.
+- Selhání volitelného UI panelu už nikdy neshodí VisionQ, HDO ani energetické senzory; chyba se zapíše do logu a panel se znovu zkusí po dokončení startu.
+
+### Ověření
+
+- Regresní test už nemockuje pouze volání `panel_custom.async_register_panel`, ale kontroluje skutečný Home Assistant `frontend.DATA_PANELS` registry.
+- Test ověřuje název, ikonu, URL, viditelnost sidebaru a skutečný `module_url` panelu.
+- Test explicitně simuluje odstranění panelu během bootstrapu a ověřuje jeho automatickou obnovu po `homeassistant_started`.
+- Home Assistant Current gate běží proti Home Assistant `2026.8.0`.
+
+### Omezení RC
+
+- Stabilní `1.0.0` zůstává podmíněna dokončením reálného commissioningu, restart/reload ověřením a řízeným end-to-end testem fyzické exekuce.
+
 ## 1.0.0-rc.5
 
 Pátý release candidate opravuje případ, kdy se FRAKON Energy po aktualizaci a restartu vůbec neobjeví v levém panelu Home Assistantu. Panel je nově registrován už v globálním `async_setup()` integrace a není tedy závislý na tom, zda Home Assistant následně spustí konkrétní VisionQ/HDO config entry.
