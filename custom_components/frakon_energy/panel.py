@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from pathlib import Path
+from urllib.parse import quote
 
 from homeassistant.components import frontend, panel_custom
 from homeassistant.components.http import StaticPathConfig
@@ -16,10 +18,30 @@ _LOGGER = logging.getLogger(__name__)
 PANEL_URL_PATH = "frakon-energy"
 PANEL_MODULE_STATIC_URL = "/frakon-energy-panel-static"
 PANEL_APP_STATIC_URL = "/frakon-energy-app-static"
-PANEL_MODULE_URL = f"{PANEL_MODULE_STATIC_URL}/panel.js"
-PANEL_APP_URL = f"{PANEL_APP_STATIC_URL}/index.html"
 PANEL_TITLE = "FRAKON Energy"
 PANEL_ICON = "mdi:lightning-bolt-circle"
+
+
+def _load_panel_asset_version() -> str:
+    """Return a URL-safe integration version for deterministic cache busting."""
+    try:
+        manifest_path = Path(__file__).parent / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        version = str(manifest.get("version", "")).strip()
+    except (OSError, ValueError, TypeError):
+        _LOGGER.exception("Unable to read FRAKON Energy version for panel assets")
+        return "unversioned"
+
+    if not version:
+        _LOGGER.warning("FRAKON Energy manifest has no version; panel assets are unversioned")
+        return "unversioned"
+    return quote(version, safe="")
+
+
+PANEL_ASSET_VERSION = _load_panel_asset_version()
+PANEL_ASSET_QUERY = f"?v={PANEL_ASSET_VERSION}"
+PANEL_MODULE_URL = f"{PANEL_MODULE_STATIC_URL}/panel.js{PANEL_ASSET_QUERY}"
+PANEL_APP_URL = f"{PANEL_APP_STATIC_URL}/index.html{PANEL_ASSET_QUERY}"
 
 _STATIC_PATHS_REGISTERED_KEY = f"{DOMAIN}_panel_static_paths_registered"
 _PANEL_LOCK_KEY = f"{DOMAIN}_panel_registration_lock"
@@ -63,7 +85,10 @@ async def _async_register_panel_registry(hass: HomeAssistant) -> None:
             "panel to the Home Assistant frontend registry"
         )
 
-    _LOGGER.info("FRAKON Energy sidebar panel registered")
+    _LOGGER.info(
+        "FRAKON Energy sidebar panel registered with asset version %s",
+        PANEL_ASSET_VERSION,
+    )
 
 
 async def _async_register_static_assets(hass: HomeAssistant) -> None:

@@ -1,3 +1,15 @@
+const FRAKON_APP_URL = "/frakon-energy-app-static/index.html";
+
+function versionedAppUrl() {
+  try {
+    const moduleUrl = new URL(import.meta.url);
+    return `${FRAKON_APP_URL}${moduleUrl.search || ""}`;
+  } catch (error) {
+    console.warn("FRAKON Energy: unable to derive versioned app URL", error);
+    return FRAKON_APP_URL;
+  }
+}
+
 class FrakonEnergyPanel extends HTMLElement {
   constructor() {
     super();
@@ -24,7 +36,7 @@ class FrakonEnergyPanel extends HTMLElement {
     this.style.background = "#071019";
 
     const iframe = document.createElement("iframe");
-    iframe.src = "/frakon-energy-app-static/index.html";
+    iframe.src = versionedAppUrl();
     iframe.title = "FRAKON Energy";
     iframe.style.display = "block";
     iframe.style.width = "100%";
