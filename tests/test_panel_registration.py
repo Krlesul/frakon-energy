@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from homeassistant.components import frontend
 try:
@@ -66,6 +68,30 @@ async def test_global_setup_registers_real_sidebar_panel_without_config_entry() 
     assert response["show_in_sidebar"] is True
     assert response["default_visible"] is True
     assert response["config"]["_panel_custom"]["module_url"] == panel.PANEL_MODULE_URL
+
+
+@pytest.mark.asyncio
+async def test_panel_module_and_iframe_are_version_cache_busted() -> None:
+    hass = _Hass()
+
+    await panel.async_register_panel(hass)  # type: ignore[arg-type]
+    registered = hass.data[frontend.DATA_PANELS][panel.PANEL_URL_PATH]
+    module_url = registered.to_response()["config"]["_panel_custom"]["module_url"]
+
+    assert panel.PANEL_ASSET_VERSION != "unversioned"
+    assert module_url == (
+        f"{panel.PANEL_MODULE_STATIC_URL}/panel.js?v={panel.PANEL_ASSET_VERSION}"
+    )
+    assert panel.PANEL_APP_URL == (
+        f"{panel.PANEL_APP_STATIC_URL}/index.html?v={panel.PANEL_ASSET_VERSION}"
+    )
+
+    loader = (
+        Path(panel.__file__).parent / "frontend" / "panel.js"
+    ).read_text(encoding="utf-8")
+    assert "new URL(import.meta.url)" in loader
+    assert "moduleUrl.search" in loader
+    assert 'iframe.src = versionedAppUrl();' in loader
 
 
 @pytest.mark.asyncio
