@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.0.0-rc.12
+
+Dvanáctý release candidate dokončuje ochranu proti smíšeným verzím frontendu v dlouho otevřeném Home Assistantu. RC11 přidal verzované URL assetů, ale prohlížeč mohl stále držet už jednou definovaný custom element z předchozí verze.
+
+### Opraveno
+
+- Každý release nyní používá vlastní Home Assistant custom-element jméno odvozené z verze integrace, například `frakon-energy-panel-1-0-0-rc-12`.
+- `panel.js` odvodí ze svého `?v=` parametru stejné jméno jako backend a definuje přesně tento release-specific element.
+- Pokud Home Assistant registry stále obsahuje starší FRAKON panel s jiným module URL nebo element jménem, backend jej bezpečně odstraní a zaregistruje aktuální verzi.
+- Dlouho otevřená Safari/Home Assistant relace tak nemusí spoléhat na přepsání již existujícího `frakon-energy-panel` custom elementu, které web platforma nepovoluje.
+
+### Regresní ochrana
+
+- Přidán test nahrazující záměrně zastaralou panel registraci aktuální verzí.
+- Testy ověřují shodu release-specific element identity mezi Python registrací a JavaScript loaderem.
+- Zachována je idempotence registrace, post-start self-heal a oddělené statické routy.
+- Backend, HACS, Hassfest a Home Assistant Current gate musí projít před vydáním RC12.
+
+### Commissioning checkpoint
+
+- HDO a backend zůstávají ověřené z reálného Home Assistantu.
+- Execution runtime zůstává `DISARMED`; RC12 nemění fyzickou exekuci ani ARM logiku.
+- Další field krok je ověřit nové History UI po HACS aktualizaci, následně založit software-only helper pro bezpečný commissioning execution pipeline.
+
 ## 1.0.0-rc.11
 
 Jedenáctý release candidate opravuje verzování frontendových assetů po aktualizaci HACS. Reálný commissioning RC10 ukázal, že iOS/Safari mohl po aktualizaci dál zobrazovat starší RC9 iframe, přestože backend a HDO už běžely z novější verze.
