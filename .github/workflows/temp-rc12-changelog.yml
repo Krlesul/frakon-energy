@@ -67,3 +67,5 @@ Dvanáctý release candidate dokončuje ochranu proti smíšeným verzím fronte
           git diff --cached --quiet && exit 0
           git commit -m "Document FRAKON Energy 1.0.0-rc.12"
           git push origin HEAD:release/1.0.0-rc.12
+
+# trigger-2
