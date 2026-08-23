@@ -48,6 +48,8 @@ jobs:
           node scripts/check-load-all-in-estimate-authority.mjs
           node --check public/legacy-tariff-migration-bridge.js
           node scripts/check-legacy-tariff-migration-authority.mjs
+          node --check public/settings-detail-visibility.js
+          node scripts/check-settings-detail-visibility.mjs
           node scripts/check-runtime-live-data-contract.mjs
 
       - name: Type-check and build
@@ -66,6 +68,7 @@ jobs:
           cmp frontend/public/manual-tariff-entry-bridge.js custom_components/frakon_energy/frontend_app/manual-tariff-entry-bridge.js
           cmp frontend/public/load-all-in-estimate-bridge.js custom_components/frakon_energy/frontend_app/load-all-in-estimate-bridge.js
           cmp frontend/public/legacy-tariff-migration-bridge.js custom_components/frakon_energy/frontend_app/legacy-tariff-migration-bridge.js
+          cmp frontend/public/settings-detail-visibility.js custom_components/frakon_energy/frontend_app/settings-detail-visibility.js
 
       - name: Upload validated dashboard build
         uses: actions/upload-artifact@v4
