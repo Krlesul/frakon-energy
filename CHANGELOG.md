@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.0.0-rc.14
+
+Čtrnáctý release candidate opravuje chybu Historie odhalenou při reálném přechodu z potvrzeného legacy snapshotu na nový potvrzený all-in tarif. Po aktivaci nového tarifu byl cenový plán správně sestaven, ale denní serializer předpokládal, že každá autorita je enum, a na legacy řetězci `legacy_manual_import` volal `.value`.
+
+### Opraveno
+
+- Denní nacenění nyní bezpečně normalizuje jak novou enum autoritu all-in tarifu, tak explicitní legacy string autoritu.
+- Historie přes hranici legacy → all-in už nekončí chybou `'str' object has no attribute 'value'`.
+- Legacy dny nadále nepředstírají all-in fingerprint, dodavatele ani produkt; typy denního záznamu nyní odpovídají tomuto fail-closed kontraktu.
+- Přidán regresní test pro jeden den z potvrzeného legacy snapshotu a následující den z potvrzeného all-in tarifu.
+
+### Bezpečnost a commissioning
+
+- Potvrzený all-in tarif má nad překrývajícím se legacy snapshotem stále přednost.
+- Chybějící nebo poškozená nová autorita se nikdy neschová legacy fallbackem a žádná cena se nedopočítává odhadem.
+- Reálný RC13 field test potvrdil aktivaci ČEZ D25d 3×25 A a současně ověřil, že oprava zamrzání tarifního bridge funguje; RC14 mění pouze čtení historických denních nákladů.
+- Execution runtime a ARM logika zůstávají beze změny a `DISARMED`.
+
 ## 1.0.0-rc.13
 
 Třináctý release candidate opravuje reálné zamrznutí celé karty Home Assistantu při sestavování regulované a následné all-in ceny. Field test ukázal, že problém nebyl v dostupnosti Home Assistant backendu, ale v nekonečné zpětné vazbě frontendového `MutationObserver` uvnitř tarifního bridge.
