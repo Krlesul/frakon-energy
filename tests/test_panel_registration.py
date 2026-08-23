@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from homeassistant.components import frontend
+from homeassistant.components import frontend, panel_custom
 try:
     from homeassistant.components.http.server import HomeAssistantHTTP
 except ImportError:  # Home Assistant <= 2026.7
@@ -59,6 +59,7 @@ async def test_global_setup_registers_real_sidebar_panel_without_config_entry() 
     assert await frakon_energy.async_setup(hass, {}) is True  # type: ignore[arg-type]
     assert hass.http.calls == 1
     assert panel.panel_is_registered(hass) is True
+    assert panel.panel_registration_is_current(hass) is True
 
     registered = hass.data[frontend.DATA_PANELS][panel.PANEL_URL_PATH]
     response = registered.to_response()
@@ -68,30 +69,67 @@ async def test_global_setup_registers_real_sidebar_panel_without_config_entry() 
     assert response["show_in_sidebar"] is True
     assert response["default_visible"] is True
     assert response["config"]["_panel_custom"]["module_url"] == panel.PANEL_MODULE_URL
+    assert response["config"]["_panel_custom"]["name"] == panel.PANEL_WEBCOMPONENT_NAME
 
 
 @pytest.mark.asyncio
-async def test_panel_module_and_iframe_are_version_cache_busted() -> None:
+async def test_panel_module_iframe_and_element_are_version_cache_busted() -> None:
     hass = _Hass()
 
     await panel.async_register_panel(hass)  # type: ignore[arg-type]
     registered = hass.data[frontend.DATA_PANELS][panel.PANEL_URL_PATH]
-    module_url = registered.to_response()["config"]["_panel_custom"]["module_url"]
+    custom = registered.to_response()["config"]["_panel_custom"]
 
     assert panel.PANEL_ASSET_VERSION != "unversioned"
-    assert module_url == (
+    assert custom["module_url"] == (
         f"{panel.PANEL_MODULE_STATIC_URL}/panel.js?v={panel.PANEL_ASSET_VERSION}"
     )
     assert panel.PANEL_APP_URL == (
         f"{panel.PANEL_APP_STATIC_URL}/index.html?v={panel.PANEL_ASSET_VERSION}"
+    )
+    assert custom["name"] == panel.PANEL_WEBCOMPONENT_NAME
+    assert panel.PANEL_WEBCOMPONENT_NAME.startswith("frakon-energy-panel-")
+    assert panel._webcomponent_name_for_version("1.0.0-rc.12") == (
+        "frakon-energy-panel-1-0-0-rc-12"
     )
 
     loader = (
         Path(panel.__file__).parent / "frontend" / "panel.js"
     ).read_text(encoding="utf-8")
     assert "new URL(import.meta.url)" in loader
-    assert "moduleUrl.search" in loader
+    assert 'searchParams.get("v")' in loader
+    assert "componentNameForVersion" in loader
     assert 'iframe.src = versionedAppUrl();' in loader
+    assert "customElements.define(FRAKON_COMPONENT_NAME" in loader
+
+
+@pytest.mark.asyncio
+async def test_stale_registered_panel_is_replaced_with_current_release() -> None:
+    hass = _Hass()
+
+    await panel_custom.async_register_panel(
+        hass,  # type: ignore[arg-type]
+        webcomponent_name="frakon-energy-panel-1-0-0-rc-9",
+        frontend_url_path=panel.PANEL_URL_PATH,
+        sidebar_title=panel.PANEL_TITLE,
+        sidebar_icon=panel.PANEL_ICON,
+        module_url=f"{panel.PANEL_MODULE_STATIC_URL}/panel.js?v=1.0.0-rc.9",
+        embed_iframe=False,
+        require_admin=False,
+    )
+    stale = hass.data[frontend.DATA_PANELS][panel.PANEL_URL_PATH]
+    assert panel.panel_is_registered(hass) is True
+    assert panel.panel_registration_is_current(hass) is False
+
+    await panel.async_register_panel(hass)  # type: ignore[arg-type]
+
+    current = hass.data[frontend.DATA_PANELS][panel.PANEL_URL_PATH]
+    custom = current.to_response()["config"]["_panel_custom"]
+    assert current is not stale
+    assert custom["name"] == panel.PANEL_WEBCOMPONENT_NAME
+    assert custom["module_url"] == panel.PANEL_MODULE_URL
+    assert panel.panel_registration_is_current(hass) is True
+    assert hass.http.calls == 1
 
 
 @pytest.mark.asyncio
@@ -122,6 +160,7 @@ async def test_post_start_reconcile_repairs_panel_removed_during_bootstrap() -> 
     await listener(None)  # type: ignore[operator]
 
     assert panel.panel_is_registered(hass) is True
+    assert panel.panel_registration_is_current(hass) is True
     assert hass.http.calls == 1
     assert panel._PANEL_STARTUP_RECONCILE_KEY not in hass.data
 
@@ -137,6 +176,7 @@ async def test_missing_panel_is_self_healed_on_later_registration_call() -> None
     await panel.async_register_panel(hass)  # type: ignore[arg-type]
 
     assert panel.panel_is_registered(hass) is True
+    assert panel.panel_registration_is_current(hass) is True
     assert hass.http.calls == 1
 
 
@@ -157,6 +197,7 @@ async def test_static_path_failure_cannot_remove_sidebar_route_and_is_retried() 
     assert hass.http.calls == 2
     assert hass.data[panel._STATIC_PATHS_REGISTERED_KEY] is True
     assert panel.panel_is_registered(hass) is True
+    assert panel.panel_registration_is_current(hass) is True
 
 
 @pytest.mark.asyncio
@@ -179,6 +220,7 @@ async def test_real_home_assistant_http_router_accepts_both_static_roots() -> No
     await panel.async_register_panel(hass)  # type: ignore[arg-type]
 
     assert panel.panel_is_registered(hass) is True
+    assert panel.panel_registration_is_current(hass) is True
     assert hass.data[panel._STATIC_PATHS_REGISTERED_KEY] is True
     assert not panel.PANEL_APP_STATIC_URL.startswith(
         f"{panel.PANEL_MODULE_STATIC_URL}/"
