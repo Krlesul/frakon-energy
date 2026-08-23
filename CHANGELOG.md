@@ -1,4 +1,30 @@
 # Changelog
+## 1.0.0-rc.15
+
+Patnáctý release candidate zpřehledňuje kartu Nastavení podle skutečně zapnutých částí FRAKON Energy. Horní seznam viditelnosti zůstává hlavním přepínačem a detailní konfigurace se níže zobrazuje pouze tehdy, když ji zapnutá funkce potřebuje.
+
+### Opraveno a zpřehledněno
+
+- Vypnuté funkce už nenechávají v Nastavení dlouhé bloky nepoužívané konfigurace.
+- Nastavení vyúčtování se skryje, pokud jsou současně vypnuté odhad vyúčtování, denní spotřeba i měsíční spotřeba.
+- Spotové nastavení včetně současného stacku profilů zátěží a commissioning/execution karet se zobrazí pouze při zapnutých Spotových cenách.
+- Detail Technologií domu se zobrazí jen tehdy, když je zapnutý přehled technologií, Fotovoltaika nebo Energetické toky.
+- FVE mapování se řídí samostatně přepínačem Fotovoltaika; vypnutá FVE se v detailním nastavení nezobrazuje.
+- Topologie energetických měření, Site Capacity a fázový settlement se zobrazují jen při zapnutých Energetických tocích.
+- Skrytí sekce nic nemaže ani nepřepisuje. Po opětovném zapnutí se zobrazí původně uložené hodnoty a mapování.
+
+### Regresní ochrana
+
+- Přidán samostatný settings-detail bridge s `requestAnimationFrame` reconciliation bez sledování vlastních atributových změn, aby nevznikla další MutationObserver smyčka.
+- Source a HACS balík musí obsahovat identický bridge a oba indexy jej musí načítat.
+- Přidány Node i Python kontraktní testy pro všechny hlavní visibility guardy.
+- PR #364 prošel Frontend, Backend, HACS, Hassfest, Home Assistant Current i Release gate.
+
+### Commissioning checkpoint
+
+- Historie 30 dní je po RC14 reálně ověřená v Home Assistantu včetně přechodu legacy cen 6.–22. 8. 2026 na potvrzený ČEZ all-in tarif od 23. 8. 2026.
+- Execution runtime zůstává `DISARMED`; RC15 nemění fyzický start/stop, ARM ani fail-closed bezpečnostní hranice.
+
 
 ## 1.0.0-rc.14
 
