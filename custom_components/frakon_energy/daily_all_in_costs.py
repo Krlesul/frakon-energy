@@ -47,6 +47,17 @@ def _rate(value: Decimal) -> Decimal:
     return value.quantize(_RATE, rounding=ROUND_HALF_UP)
 
 
+def _authority_method_text(value: Any) -> str:
+    """Normalize enum-backed and legacy string authority methods without guessing."""
+
+    if isinstance(value, str) and value.strip():
+        return value
+    raw = getattr(value, "value", None)
+    if isinstance(raw, str) and raw.strip():
+        return raw
+    raise ValueError("daily tariff authority method is unavailable")
+
+
 @dataclass(frozen=True, slots=True)
 class DailyAllInCost:
     """One measured daily VT/NT record priced with one confirmed tariff version."""
@@ -57,10 +68,10 @@ class DailyAllInCost:
     high_rate_czk_per_kwh: Decimal
     low_rate_czk_per_kwh: Decimal
     variable_cost_czk: Decimal
-    all_in_tariff_fingerprint: str
+    all_in_tariff_fingerprint: str | None
     authority_method: str
-    supplier: str
-    product_name: str
+    supplier: str | None
+    product_name: str | None
     fixed_monthly_excluded: bool = True
 
     @property
@@ -131,8 +142,8 @@ def price_confirmed_daily_consumption(
 
     Fixed monthly charges are intentionally excluded. They belong only to billing
     period totals and must never be spread into a displayed daily or per-kWh cost.
-    Every returned day carries the immutable all-in fingerprint and explicit
-    authority method that produced its VT/NT price.
+    Every returned day carries the exact confirmed authority method that produced
+    its VT/NT price. Legacy history never pretends to have an all-in fingerprint.
     """
 
     if not isinstance(options, Mapping):
@@ -168,7 +179,7 @@ def price_confirmed_daily_consumption(
                 low_rate_czk_per_kwh=segment.prices.low_rate_czk_per_kwh,
                 variable_cost_czk=_money(variable_cost),
                 all_in_tariff_fingerprint=segment.all_in_tariff_fingerprint,
-                authority_method=segment.authority_method.value,
+                authority_method=_authority_method_text(segment.authority_method),
                 supplier=segment.supplier,
                 product_name=segment.product_name,
             )
