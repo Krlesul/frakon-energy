@@ -1,14 +1,32 @@
 const FRAKON_APP_URL = "/frakon-energy-app-static/index.html";
 
-function versionedAppUrl() {
+function moduleUrl() {
   try {
-    const moduleUrl = new URL(import.meta.url);
-    return `${FRAKON_APP_URL}${moduleUrl.search || ""}`;
+    return new URL(import.meta.url);
   } catch (error) {
-    console.warn("FRAKON Energy: unable to derive versioned app URL", error);
-    return FRAKON_APP_URL;
+    console.warn("FRAKON Energy: unable to inspect panel module URL", error);
+    return null;
   }
 }
+
+function moduleVersion() {
+  return moduleUrl()?.searchParams.get("v") || "unversioned";
+}
+
+function componentNameForVersion(version) {
+  const token = String(version || "unversioned")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "unversioned";
+  return `frakon-energy-panel-${token}`;
+}
+
+function versionedAppUrl() {
+  const currentModuleUrl = moduleUrl();
+  return `${FRAKON_APP_URL}${currentModuleUrl?.search || ""}`;
+}
+
+const FRAKON_COMPONENT_NAME = componentNameForVersion(moduleVersion());
 
 class FrakonEnergyPanel extends HTMLElement {
   constructor() {
@@ -66,6 +84,6 @@ class FrakonEnergyPanel extends HTMLElement {
   }
 }
 
-if (!customElements.get("frakon-energy-panel")) {
-  customElements.define("frakon-energy-panel", FrakonEnergyPanel);
+if (!customElements.get(FRAKON_COMPONENT_NAME)) {
+  customElements.define(FRAKON_COMPONENT_NAME, FrakonEnergyPanel);
 }
