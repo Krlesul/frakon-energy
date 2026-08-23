@@ -10,13 +10,17 @@ assert.equal(source, packaged, "packaged settings detail visibility bridge must 
 assert.match(sourceIndex, /settings-detail-visibility\.js/, "source dashboard must load settings detail visibility");
 assert.match(packagedIndex, /settings-detail-visibility\.js/, "packaged dashboard must load settings detail visibility");
 
-assert.match(source, /frakon-hide-spot-prices/, "spot detail visibility must follow the Spot prices switch");
-assert.match(source, /frakon-hide-billing-estimate/, "billing detail visibility must follow billing-related switches");
-assert.match(source, /frakon-hide-daily-consumption/, "daily consumption must participate in billing detail visibility");
-assert.match(source, /frakon-hide-monthly-consumption/, "monthly consumption must participate in billing detail visibility");
-assert.match(source, /frakon-hide-technology-overview/, "technology detail visibility must follow the technology switch");
-assert.match(source, /frakon-hide-photovoltaics/, "FVE detail visibility must follow the photovoltaics switch");
-assert.match(source, /frakon-hide-energy-flow/, "energy-flow detail visibility must follow the energy-flow switch");
+for (const guard of [
+  "spot-prices",
+  "billing-estimate",
+  "daily-consumption",
+  "monthly-consumption",
+  "technology-overview",
+  "photovoltaics",
+  "energy-flow",
+]) {
+  assert.ok(source.includes(`isDisabled("${guard}")`), `missing settings visibility guard: ${guard}`);
+}
 assert.match(source, /site-capacity-settings/, "site and phase capacity details must be gated with energy flow");
 assert.match(source, /frakon-energy-dashboard-display-changed/, "visibility changes must apply immediately after a master switch changes");
 assert.match(source, /requestAnimationFrame/, "DOM reconciliation must be coalesced instead of running synchronously for every mutation");
