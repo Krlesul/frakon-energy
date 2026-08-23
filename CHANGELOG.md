@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.0.0-rc.13
+
+Třináctý release candidate opravuje reálné zamrznutí celé karty Home Assistantu při sestavování regulované a následné all-in ceny. Field test ukázal, že problém nebyl v dostupnosti Home Assistant backendu, ale v nekonečné zpětné vazbě frontendového `MutationObserver` uvnitř tarifního bridge.
+
+### Opraveno
+
+- Tarifní potvrzovací bridge už nikdy nereaguje na DOM změny, které sám vytvořil ve vlastním rootu. Tím je odstraněna smyčka `MutationObserver → render → replaceChildren → MutationObserver`, která mohla vytížit hlavní browser thread a zablokovat i Home Assistant sidebar.
+- Synchronizace změn mimo bridge je nově sloučena přes `requestAnimationFrame`, takže živé překreslování Home Assistantu nemůže spustit lavinu synchronních rerenderů.
+- Všechny Home Assistant WebSocket kroky v all-in workflow mají explicitní časový limit. Běžné lokální kroky končí po 12 s, krok se stažením a ověřením ceníku po 35 s.
+- Timeout vždy skončí fail-closed chybou v UI; žádný nepotvrzený návrh se tím neaktivuje a uživatel může workflow bezpečně zopakovat.
+- Zdrojový frontend i HACS balík používají stejný nový `tariff-confirmation-bridge-v2.js`; původní bridge už `index.html` nenačítá.
+
+### Regresní ochrana
+
+- Přidány testy, které hlídají, že source i packaged frontend načítají v2 bridge a jejich obsah je shodný.
+- Test explicitně zakazuje původní self-observing callback a vyžaduje filtr vlastních DOM mutací, `requestAnimationFrame` i bounded WebSocket timeouty.
+- PR #360 prošel Frontend, Backend, HACS, Hassfest, Home Assistant Current i kompletním Release gate před přípravou RC13.
+
+### Commissioning checkpoint
+
+- HDO a History UI jsou v reálném Home Assistantu ověřené; historický snapshot 6.–22. 8. 2026 je uložený bez změny živého tarifu.
+- Execution runtime zůstává `DISARMED`; RC13 nemění ARM, fyzické start/stop služby ani bezpečnostní execution guardy.
+- Další field krok je znovu projít potvrzení regulované části a kompletního all-in tarifu od 23. 8. 2026 a ověřit, že Home Assistant zůstává po celou dobu responzivní.
+
 ## 1.0.0-rc.12
 
 Dvanáctý release candidate dokončuje ochranu proti smíšeným verzím frontendu v dlouho otevřeném Home Assistantu. RC11 přidal verzované URL assetů, ale prohlížeč mohl stále držet už jednou definovaný custom element z předchozí verze.
