@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.0.0-rc.11
+
+Jedenáctý release candidate opravuje verzování frontendových assetů po aktualizaci HACS. Reálný commissioning RC10 ukázal, že iOS/Safari mohl po aktualizaci dál zobrazovat starší RC9 iframe, přestože backend a HDO už běžely z novější verze.
+
+### Opraveno
+
+- Home Assistant panel nyní přidává do `panel.js` cache-busting parametr odvozený přímo z verze v `manifest.json`.
+- Loader panelu předává stejnou verzi do iframe `frontend_app/index.html`, takže každý release dostane nový browser cache key.
+- Stabilní statické cesty zůstávají stejné; mění se pouze query parametr, takže se neopakuje problém s překrývajícími se routami.
+- Po aktualizaci už Safari/Home Assistant nemá znovu použít starý HTML dokument odkazující na předchozí hashovaný frontendový bundle.
+
+### Ověření
+
+- Field screenshoty RC10 přesně odpovídaly placeholderu Historie z RC9, zatímco HDO a backendová data už byla aktuální; tím byla příčina zúžena na cache frontendového iframe.
+- Přidán regresní test pro verzovaný `module_url` a přenos stejné verze do iframe URL.
+- Backend, HACS, Hassfest a Home Assistant Current gate musí projít před vydáním RC11.
+
+### Commissioning checkpoint
+
+- HDO je v reálném Home Assistantu ověřeno včetně aktuálního tarifu, další změny, odpočtu a tří denních NT intervalů.
+- Execution runtime zůstává bezpečně `DISARMED`; schedulery a recovery jsou zdravé a nebyl proveden žádný fyzický start.
+- Stabilní `1.0.0` zůstává podmíněna ověřením nového History UI a následným řízeným software-helper field testem před fyzickou exekucí.
+
 ## 1.0.0-rc.10
 
 Desátý release candidate nahrazuje prázdnou záložku Historie skutečným read-only přehledem denní spotřeby a potvrzených variabilních nákladů.
